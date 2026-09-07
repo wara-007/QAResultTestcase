@@ -1,0 +1,12 @@
+node_modules
+.pnpm-store
+.next
+.env
+.env.local
+.vercel
+.netlify
+*.log
+.DS_Store
+coverage
+*.tsbuildinfo
+supabase/.temp

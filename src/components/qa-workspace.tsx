@@ -296,6 +296,11 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
   const evidenceCount = resultSheets.reduce((total, sheet) => total + sheet.imageCount, 0);
   const update = (field: keyof TestCase, next: string) => setDraft((current) => ({ ...current, [field]: next }));
   const rememberDefaults = (testCase: TestCase) => window.localStorage.setItem(`qa-test-defaults:${projectId}`, JSON.stringify({ platform: testCase.platform, environment: testCase.environment, device: testCase.device, appVersion: testCase.appVersion, testData: testCase.testData }));
+  const withPassedTimestamp = (testCase: TestCase): TestCase => {
+    if (testCase.status !== "Pass" || (testCase.executedDate && testCase.executedTime)) return testCase;
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Bangkok", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(new Date()).map((part) => [part.type, part.value]));
+    return { ...testCase, executedDate: `${parts.day}/${parts.month}/${parts.year}`, executedTime: `${parts.hour}:${parts.minute}:${parts.second}` };
+  };
   function resetResultForm() {
     setActualResult("");
     setApiResponse("");
@@ -325,7 +330,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
       evidence: draft.evidence,
       createdAt,
     };
-    const next = {
+    const next = withPassedTimestamp({
       ...draft,
       executedBy: currentUserName.trim() || draft.executedBy,
       remark: actualResult.trim() || draft.remark,
@@ -333,7 +338,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
       results: editingResultId
         ? (draft.results ?? []).map((item) => item.id === editingResultId ? { ...result, id: editingResultId, createdAt: item.createdAt } : item)
         : [...(draft.results ?? []), result],
-    };
+    });
     setSavingResult(true);
     setError("");
     try {
@@ -363,12 +368,12 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
       id: crypto.randomUUID(), title: defectTitle.trim(), description: defectResult.trim(), status: defectStatus,
       jiraUrl: jiraUrl.trim(), apiResponse: apiResponse.trim(), log: log.trim(), evidence: draft.evidence, createdAt: new Date().toISOString(),
     };
-    const next = {
+    const next = withPassedTimestamp({
       ...draft, executedBy: currentUserName.trim() || draft.executedBy, evidence: [],
       defects: editingDefectId
         ? (draft.defects ?? []).map((item) => item.id === editingDefectId ? { ...defect, id: item.id, createdAt: item.createdAt } : item)
         : [...(draft.defects ?? []), defect],
-    };
+    });
     setSavingResult(true); setError("");
     try { rememberDefaults(next); const saved = await onSaveResult(next); setDraft(saved); resetResultForm(); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "บันทึก Defect ไม่สำเร็จ"); }
@@ -406,7 +411,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
     setSaving(true);
     setError("");
     try {
-      const next = { ...draft, executedBy: currentUserName.trim() || draft.executedBy };
+      const next = withPassedTimestamp({ ...draft, executedBy: currentUserName.trim() || draft.executedBy });
       rememberDefaults(next);
       await onSave(next);
     } catch (reason) {

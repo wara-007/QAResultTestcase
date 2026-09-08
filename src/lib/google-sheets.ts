@@ -228,20 +228,7 @@ export async function exportGoogleSheetWorkbook(spreadsheetId: string, auth: Goo
 export async function writeGoogleSheetResults(spreadsheetId: string, cases: TestCase[], auth: GoogleApiAuth = getGoogleServiceAuth()) {
   const sheets = google.sheets({ version: "v4", auth });
   const formulaText = (value: string) => value.replaceAll('"', '""');
-  const mainSheetData = [{
-    range: "Testcase!A1:E1",
-    values: [["Test Case Id", "Test Scenario*", "Test Case Name", "Test Step Description *", "Expected Result *"]],
-  }, ...cases.filter((testCase) => testCase.sourceRow > 0).flatMap((testCase) => [
-    {
-      range: `Testcase!A${testCase.sourceRow}:E${testCase.sourceRow}`,
-      values: [[testCase.id, testCase.scenario, testCase.name, testCase.steps, testCase.expected]],
-    },
-    {
-      range: `Testcase!H${testCase.sourceRow}:Q${testCase.sourceRow}`,
-      values: [[testCase.status, testCase.device, testCase.testData, testCase.appVersion, testCase.environment, testCase.resultReference, testCase.executedBy, testCase.executedDate, testCase.executedTime, testCase.remark]],
-    },
-  ])];
-  if (!mainSheetData.length) throw new Error("ไม่มี Testcase สำหรับซิงค์");
+  if (!cases.length) throw new Error("ไม่มี Testcase สำหรับซิงค์");
 
   const metadata = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets(properties(sheetId,title))" });
   const existing = new Map((metadata.data.sheets ?? []).map((sheet) => [sheet.properties?.title ?? "", sheet.properties?.sheetId]));
@@ -269,6 +256,17 @@ export async function writeGoogleSheetResults(spreadsheetId: string, cases: Test
 
   const refreshed = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets(properties(sheetId,title))" });
   const sheetIds = new Map((refreshed.data.sheets ?? []).map((sheet) => [sheet.properties?.title ?? "", sheet.properties?.sheetId]));
+  const mainSheetData = [{
+    range: "Testcase!A1:E1",
+    values: [["Test Case Id", "Test Scenario*", "Test Case Name", "Test Step Description *", "Expected Result *"]],
+  }, ...cases.filter((testCase) => testCase.sourceRow > 0).flatMap((testCase) => {
+    const resultSheetId = sheetIds.get(testCase.id);
+    const resultReference = resultSheetId != null ? `=HYPERLINK("#gid=${resultSheetId}&range=A1","RC : ${formulaText(testCase.id)}")` : testCase.resultReference;
+    return [
+      { range: `Testcase!A${testCase.sourceRow}:E${testCase.sourceRow}`, values: [[testCase.id, testCase.scenario, testCase.name, testCase.steps, testCase.expected]] },
+      { range: `Testcase!H${testCase.sourceRow}:Q${testCase.sourceRow}`, values: [[testCase.status, testCase.device, testCase.testData, testCase.appVersion, testCase.environment, resultReference, testCase.executedBy, testCase.executedDate, testCase.executedTime, testCase.remark]] },
+    ];
+  })];
   const resultSheetData = resultCases.map((testCase) => {
     const values = resultSheetValues(testCase, defectDisplayIds);
     return { range: `'${testCase.id.replaceAll("'", "''")}'!A1:J${values.length}`, values };

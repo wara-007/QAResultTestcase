@@ -377,7 +377,8 @@ td:first-child strong { display: block; overflow: hidden; margin-top: 4px; color
 .result-preview-list details { margin-top: 8px; font-size: 9px; }
 .result-preview-list pre { max-height: 180px; overflow: auto; margin-top: 6px; padding: 9px; background: #f6f8fb; border-radius: 6px; }
 .result-evidence-gallery { margin-top: 10px; }
-.defect-preview { display: flex; justify-content: space-between; gap: 8px; margin-top: 9px; padding: 8px; color: #a33b50; background: #fff4f6; border-radius: 6px; font-size: 9px; }
+.defect-preview { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-top: 9px; padding: 8px; color: #a33b50; background: #fff4f6; border-radius: 6px; font-size: 9px; }
+.defect-preview p { flex-basis: 100%; margin: 0; color: #6c4450; white-space: pre-wrap; }
 .defect-preview a { color: #356bc4; }
 .defect-list { display: grid; gap: 10px; padding: 14px; }
 .defect-list article { display: grid; grid-template-columns: minmax(220px, 1fr) auto auto; align-items: center; gap: 12px; padding: 14px; border: 1px solid #e7eaf0; border-radius: 9px; }

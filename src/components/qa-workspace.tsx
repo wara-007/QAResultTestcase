@@ -409,14 +409,6 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
           <section className="readonly-block"><p>ขั้นตอนทดสอบ</p><div className="multiline">{draft.steps || "—"}</div></section>
           <section className="readonly-block expected"><p>ผลลัพธ์ที่คาดหวัง</p><div className="multiline">{draft.expected || "—"}</div></section>
           <div className="form-section-title"><span>บันทึกผลการทดสอบ</span><span className="required-note">* จำเป็น</span></div>
-          <label className="field-label">สถานะผลทดสอบ</label>
-          <div className="status-picker">
-            {TEST_STATUSES.map((status) => (
-              <button key={status} className={draft.status === status ? "selected" : ""} onClick={() => setDraft((current) => ({ ...current, status }))}>
-                <span className={`picker-dot ${statusMeta[status].className}`} />{statusMeta[status].label}
-              </button>
-            ))}
-          </div>
           <div className="two-column-fields">
             <label><span>Platform</span><input value={draft.platform} onChange={(event) => update("platform", event.target.value)} placeholder="เช่น Mobile, Web, iOS/Android" /></label>
             <label><span>Environment</span><input value={draft.environment} onChange={(event) => update("environment", event.target.value)} placeholder="เช่น UAT, SIT, Production" /></label>
@@ -459,6 +451,14 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
             <div className="result-sheet-heading"><span>ผลและหลักฐานจาก Excel</span><strong>{resultSheets.length} sheets · {evidenceCount} รูป</strong></div>
             {resultSheets.length ? <div className="result-sheet-list">{resultSheets.map((sheet) => <button className={viewingSheet?.path === sheet.path ? "active" : ""} onClick={() => setViewingSheet(sheet)} key={sheet.path}><FileSpreadsheet size={16} /><span><strong>{sheet.name}</strong><small>{sheet.imageCount ? `${sheet.imageCount} รูปหลักฐาน` : "ไม่มีรูปในชีต"}</small></span><ChevronRight size={15} /></button>)}</div> : <p className="no-result-sheet">ไม่พบชีตผลลัพธ์ที่อ้างอิง {value.id}</p>}
             {viewingSheet && source && <ResultSheetViewer key={viewingSheet.path} source={source} sheet={viewingSheet} />}
+          </div>
+          <label className="field-label">สถานะผลทดสอบ</label>
+          <div className="status-picker">
+            {TEST_STATUSES.map((status) => (
+              <button type="button" key={status} className={draft.status === status ? "selected" : ""} onClick={() => setDraft((current) => ({ ...current, status }))}>
+                <span className={`picker-dot ${statusMeta[status].className}`} />{statusMeta[status].label}
+              </button>
+            ))}
           </div>
         </div>
         {error && <p className="form-error"><CircleAlert size={16} />{error}</p>}

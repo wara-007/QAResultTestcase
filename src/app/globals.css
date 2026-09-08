@@ -362,8 +362,12 @@ td:first-child strong { display: block; overflow: hidden; margin-top: 4px; color
 .result-evidence-entry { display: grid; gap: 8px; margin-top: 12px; }
 .add-defect-button { width: 100%; justify-content: center; margin-top: 12px; color: #96364b; }
 .add-result-button { width: 100%; justify-content: center; margin-top: 12px; }
+.result-editor-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.result-editor-actions .add-result-button { flex: 1; margin-top: 0; }
 .result-preview-list { display: grid; gap: 9px; margin: 14px 0; }
 .result-preview-list article { padding: 12px; border: 1px solid #e2e7ef; border-radius: 8px; background: white; }
+.result-preview-list article.editing { border-color: #9ab5e8; box-shadow: 0 0 0 3px rgba(62,116,217,.08); }
+.inline-result-editor { margin: 10px 0 0; box-shadow: none; }
 .result-preview-list article header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .result-preview-list article header time { margin-left: auto; color: #8b94a5; font-size: 8px; }
 .result-edit-button { min-height: 28px; padding: 5px 9px; font-size: 9px; }

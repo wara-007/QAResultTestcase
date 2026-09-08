@@ -292,6 +292,18 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
   const evidenceCount = resultSheets.reduce((total, sheet) => total + sheet.imageCount, 0);
   const update = (field: keyof TestCase, next: string) => setDraft((current) => ({ ...current, [field]: next }));
   const rememberDefaults = (testCase: TestCase) => window.localStorage.setItem(`qa-test-defaults:${projectId}`, JSON.stringify({ device: testCase.device, appVersion: testCase.appVersion, testData: testCase.testData }));
+  function resetResultForm() {
+    setActualResult("");
+    setApiResponse("");
+    setLog("");
+    setDefectTitle("");
+    setDefectStatus("Open");
+    setJiraUrl("");
+    setShowDefectForm(false);
+    setEditingResultId(null);
+    setShowResultEntry(false);
+    setDraft((current) => ({ ...current, evidence: [] }));
+  }
   async function saveResult() {
     if (!actualResult.trim() && !apiResponse.trim() && !log.trim() && !draft.evidence.length && !(showDefectForm && defectTitle.trim())) {
       setError("กรุณาใส่ผลทดสอบ รูป API response log หรือ Defect อย่างน้อยหนึ่งรายการ");
@@ -323,7 +335,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
       rememberDefaults(next);
       const saved = await onSaveResult(next);
       setDraft(saved);
-      setActualResult(""); setApiResponse(""); setLog(""); setDefectTitle(""); setDefectStatus("Open"); setJiraUrl(""); setShowDefectForm(false); setEditingResultId(null); setShowResultEntry(false);
+      resetResultForm();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "บันทึก Result ไม่สำเร็จ");
     } finally {
@@ -331,7 +343,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
     }
   }
   function editResult(result: TestResult) {
-    setShowResultEntry(true);
+    setShowResultEntry(false);
     setEditingResultId(result.id);
     setActualResult(result.actualResult);
     setApiResponse(result.apiResponse);
@@ -349,9 +361,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
     try {
       const saved = await onSaveResult({ ...draft, evidence: [], results: (draft.results ?? []).filter((item) => item.id !== result.id) });
       setDraft(saved);
-      if (editingResultId === result.id) {
-        setEditingResultId(null); setShowResultEntry(false); setActualResult(""); setApiResponse(""); setLog(""); setDefectTitle(""); setJiraUrl("");
-      }
+      if (editingResultId === result.id) resetResultForm();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "ลบ Result ไม่สำเร็จ");
     } finally {
@@ -396,6 +406,32 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
       if (evidenceInput.current) evidenceInput.current.value = "";
     }
   }
+  function renderResultFields(submitLabel: string, onCancel?: () => void) {
+    return <>
+      <label className="text-field"><span>ผลที่พบ / Actual result</span><textarea rows={3} value={actualResult} onChange={(event) => setActualResult(event.target.value)} placeholder="รายละเอียดผลทดสอบรอบนี้" /></label>
+      <div className="result-input-grid"><label className="text-field"><span>API response</span><textarea className="code-input" rows={7} value={apiResponse} onChange={(event) => setApiResponse(event.target.value)} placeholder="วาง response JSON หรือข้อความ" /></label>
+      <label className="text-field"><span>Log</span><textarea className="code-input" rows={7} value={log} onChange={(event) => setLog(event.target.value)} placeholder="วาง application log" /></label></div>
+      <div className="result-evidence-entry">
+        <span className="field-label">รูปหลักฐานของ Result นี้</span>
+        {draft.evidence.length > 0 && <div className="drive-evidence-gallery">{draft.evidence.map((item) => <a href={`/api/google/evidence/${item.fileId}`} target="_blank" rel="noreferrer" key={item.fileId}><Image src={`/api/google/evidence/${item.fileId}`} alt={item.name} width={500} height={350} unoptimized /><span>{item.name}</span></a>)}</div>}
+        <button type="button" className="attachment-button" onClick={() => evidenceInput.current?.click()} disabled={uploadingEvidence}><Paperclip size={17} />{uploadingEvidence ? "กำลังอัปโหลดไป Google Drive..." : "เพิ่มรูปหลักฐานให้ Result นี้"}<span>{draft.evidence.length} รูป</span></button>
+        <input ref={evidenceInput} type="file" accept="image/*" hidden onChange={(event) => void uploadEvidence(event.target.files?.[0])} />
+      </div>
+      {!showDefectForm ? <button className="secondary-button add-defect-button" type="button" onClick={() => setShowDefectForm(true)}><PlusIcon />เพิ่ม Defect</button> :
+      <div className="defect-entry">
+        <div className="defect-entry-heading"><strong>Defect ของ Result นี้</strong><button type="button" className="icon-button" aria-label="ยกเลิกเพิ่ม Defect" onClick={() => { setShowDefectForm(false); setDefectTitle(""); setDefectStatus("Open"); setJiraUrl(""); }}><X size={16} /></button></div>
+        <label className="text-field"><span>ชื่อ Defect</span><input value={defectTitle} onChange={(event) => setDefectTitle(event.target.value)} placeholder="ชื่อหรือรายละเอียดย่อ" /></label>
+        <div className="two-column-fields">
+          <label><span>สถานะ Defect</span><select value={defectStatus} onChange={(event) => setDefectStatus(event.target.value)}><option>Open</option><option>In Progress</option><option>Resolved</option><option>Closed</option></select></label>
+          <label><span>Jira card URL</span><input type="url" value={jiraUrl} onChange={(event) => setJiraUrl(event.target.value)} placeholder="https://...atlassian.net/browse/..." /></label>
+        </div>
+      </div>}
+      <div className="result-editor-actions">
+        {onCancel && <button className="secondary-button" type="button" onClick={onCancel} disabled={savingResult}>ยกเลิกการแก้ไข</button>}
+        <button className="primary-button add-result-button" type="button" onClick={() => void saveResult()} disabled={savingResult}>{savingResult ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}{submitLabel}</button>
+      </div>
+    </>;
+  }
   return (
     <div className={`drawer-backdrop ${pageMode ? "case-route-backdrop" : ""}`} role="presentation" onMouseDown={pageMode ? undefined : onClose}>
       <aside className={`case-drawer ${pageMode ? "case-route-editor" : ""}`} role="dialog" aria-modal="true" aria-labelledby="case-title" onMouseDown={(event) => event.stopPropagation()}>
@@ -420,32 +456,14 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
           <label className="text-field"><span>ผู้ทดสอบ</span><input value={draft.executedBy || currentUserName} readOnly aria-readonly="true" title="ใช้ชื่อจากบัญชี Google ที่ Login" /></label>
           <label className="text-field"><span>Test data</span><input value={draft.testData} onChange={(event) => update("testData", event.target.value)} /></label>
           <label className="text-field"><span>หมายเหตุ / Actual result</span><textarea rows={4} value={draft.remark} onChange={(event) => update("remark", event.target.value)} placeholder="บันทึกสิ่งที่พบระหว่างการทดสอบ..." /></label>
-          {!showResultEntry && <button type="button" className="primary-button open-result-button" onClick={() => setShowResultEntry(true)}><PlusIcon />Add Result</button>}
+          {!showResultEntry && !editingResultId && <button type="button" className="primary-button open-result-button" onClick={() => { resetResultForm(); setShowResultEntry(true); }}><PlusIcon />Add Result</button>}
           {showResultEntry && <div className="result-entry-block">
-            <div className="result-form-heading"><div><span>{editingResultId ? `แก้ไข Result ของ ${draft.id}` : `เพิ่ม Result ให้ ${draft.id}`}</span><small>{draft.name}</small></div><strong>{draft.results?.length ?? 0} results</strong></div>
-            <label className="text-field"><span>ผลที่พบ / Actual result</span><textarea rows={3} value={actualResult} onChange={(event) => setActualResult(event.target.value)} placeholder="รายละเอียดผลทดสอบรอบนี้" /></label>
-            <div className="result-input-grid"><label className="text-field"><span>API response</span><textarea className="code-input" rows={7} value={apiResponse} onChange={(event) => setApiResponse(event.target.value)} placeholder="วาง response JSON หรือข้อความ" /></label>
-            <label className="text-field"><span>Log</span><textarea className="code-input" rows={7} value={log} onChange={(event) => setLog(event.target.value)} placeholder="วาง application log" /></label></div>
-            <div className="result-evidence-entry">
-              <span className="field-label">รูปหลักฐานของ Result นี้</span>
-              {draft.evidence.length > 0 && <div className="drive-evidence-gallery">{draft.evidence.map((item) => <a href={`/api/google/evidence/${item.fileId}`} target="_blank" rel="noreferrer" key={item.fileId}><Image src={`/api/google/evidence/${item.fileId}`} alt={item.name} width={500} height={350} unoptimized /><span>{item.name}</span></a>)}</div>}
-              <button type="button" className="attachment-button" onClick={() => evidenceInput.current?.click()} disabled={uploadingEvidence}><Paperclip size={17} />{uploadingEvidence ? "กำลังอัปโหลดไป Google Drive..." : "เพิ่มรูปหลักฐานให้ Result นี้"}<span>{draft.evidence.length} รูป</span></button>
-              <input ref={evidenceInput} type="file" accept="image/*" hidden onChange={(event) => void uploadEvidence(event.target.files?.[0])} />
-            </div>
-            {!showDefectForm ? <button className="secondary-button add-defect-button" type="button" onClick={() => setShowDefectForm(true)}><PlusIcon />เพิ่ม Defect</button> :
-            <div className="defect-entry">
-              <div className="defect-entry-heading"><strong>Defect ของ Result นี้</strong><button type="button" className="icon-button" aria-label="ยกเลิกเพิ่ม Defect" onClick={() => { setShowDefectForm(false); setDefectTitle(""); setDefectStatus("Open"); setJiraUrl(""); }}><X size={16} /></button></div>
-              <label className="text-field"><span>ชื่อ Defect</span><input value={defectTitle} onChange={(event) => setDefectTitle(event.target.value)} placeholder="ชื่อหรือรายละเอียดย่อ" /></label>
-              <div className="two-column-fields">
-                <label><span>สถานะ Defect</span><select value={defectStatus} onChange={(event) => setDefectStatus(event.target.value)}><option>Open</option><option>In Progress</option><option>Resolved</option><option>Closed</option></select></label>
-                <label><span>Jira card URL</span><input type="url" value={jiraUrl} onChange={(event) => setJiraUrl(event.target.value)} placeholder="https://...atlassian.net/browse/..." /></label>
-              </div>
-            </div>}
-            <button className="primary-button add-result-button" type="button" onClick={() => void saveResult()} disabled={savingResult}>{savingResult ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}{editingResultId ? "บันทึกการแก้ไข Result" : "บันทึก Result รายการนี้"}</button>
+            <div className="result-form-heading"><div><span>{`เพิ่ม Result ให้ ${draft.id}`}</span><small>{draft.name}</small></div><strong>{draft.results?.length ?? 0} results</strong></div>
+            {renderResultFields("บันทึก Result รายการนี้")}
           </div>}
           {(draft.results?.length ?? 0) > 0 && <div className="result-preview-list">
             <div className="result-sheet-heading"><span>Preview Results</span><strong>{draft.results?.length} รายการ</strong></div>
-            {draft.results?.map((result, index) => <article key={result.id}><header><strong>ผลที่ {index + 1}</strong><StatusBadge status={result.status} /><time>{new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short" }).format(new Date(result.createdAt))}</time><button type="button" className="secondary-button result-edit-button" onClick={() => editResult(result)}>แก้ไข</button><button type="button" className="danger-button result-delete-button" disabled={savingResult} onClick={() => void deleteResult(result)}><Trash2 size={13} />ลบ</button></header>{result.actualResult && <p>{result.actualResult}</p>}{result.apiResponse && <details><summary>API response</summary><pre>{result.apiResponse}</pre></details>}{result.log && <details><summary>Log</summary><pre>{result.log}</pre></details>}{result.evidence.length > 0 && <div className="drive-evidence-gallery result-evidence-gallery">{result.evidence.map((item) => <a href={`/api/google/evidence/${item.fileId}`} target="_blank" rel="noreferrer" key={item.fileId}><Image src={`/api/google/evidence/${item.fileId}`} alt={item.name} width={500} height={350} unoptimized /><span>{item.name}</span></a>)}</div>}{result.defects.map((defect) => <div className="defect-preview" key={defect.id}><strong>{defect.status}: {defect.title}</strong>{defect.jiraUrl && <a href={defect.jiraUrl} target="_blank" rel="noreferrer">เปิด Jira</a>}</div>)}</article>)}
+            {draft.results?.map((result, index) => <article key={result.id} className={editingResultId === result.id ? "editing" : ""}><header><strong>ผลที่ {index + 1}</strong><StatusBadge status={result.status} /><time>{new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short" }).format(new Date(result.createdAt))}</time>{editingResultId !== result.id && <><button type="button" className="secondary-button result-edit-button" onClick={() => editResult(result)}>แก้ไข</button><button type="button" className="danger-button result-delete-button" disabled={savingResult} onClick={() => void deleteResult(result)}><Trash2 size={13} />ลบ</button></>}</header>{editingResultId === result.id ? <div className="result-entry-block inline-result-editor"><div className="result-form-heading"><div><span>{`แก้ไขผลที่ ${index + 1} ของ ${draft.id}`}</span><small>บันทึกแล้วจะแทนที่ Result รายการนี้</small></div></div>{renderResultFields("บันทึกการแก้ไข Result", resetResultForm)}</div> : <>{result.actualResult && <p>{result.actualResult}</p>}{result.apiResponse && <details><summary>API response</summary><pre>{result.apiResponse}</pre></details>}{result.log && <details><summary>Log</summary><pre>{result.log}</pre></details>}{result.evidence.length > 0 && <div className="drive-evidence-gallery result-evidence-gallery">{result.evidence.map((item) => <a href={`/api/google/evidence/${item.fileId}`} target="_blank" rel="noreferrer" key={item.fileId}><Image src={`/api/google/evidence/${item.fileId}`} alt={item.name} width={500} height={350} unoptimized /><span>{item.name}</span></a>)}</div>}{result.defects.map((defect) => <div className="defect-preview" key={defect.id}><strong>{defect.status}: {defect.title}</strong>{defect.jiraUrl && <a href={defect.jiraUrl} target="_blank" rel="noreferrer">เปิด Jira</a>}</div>)}</>}</article>)}
           </div>}
           <div className="result-sheet-block">
             <div className="result-sheet-heading"><span>ผลและหลักฐานจาก Excel</span><strong>{resultSheets.length} sheets · {evidenceCount} รูป</strong></div>

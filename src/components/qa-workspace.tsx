@@ -310,6 +310,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
     };
     const next = {
       ...draft,
+      executedBy: currentUserName.trim() || draft.executedBy,
       remark: actualResult.trim() || draft.remark,
       evidence: [],
       results: editingResultId
@@ -361,8 +362,9 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
     setSaving(true);
     setError("");
     try {
-      rememberDefaults(draft);
-      await onSave(draft);
+      const next = { ...draft, executedBy: currentUserName.trim() || draft.executedBy };
+      rememberDefaults(next);
+      await onSave(next);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "บันทึกผลไม่สำเร็จ");
     } finally {
@@ -419,6 +421,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
             <label><span>Device</span><select value={draft.device} onChange={(event) => update("device", event.target.value)}><option value="">เลือก Device</option><option value="iOS">iOS</option><option value="Android">Android</option><option value="iOS/Android">iOS/Android</option></select></label>
             <label><span>App version</span><input value={draft.appVersion} onChange={(event) => update("appVersion", event.target.value)} placeholder="Build number" /></label>
           </div>
+          <label className="text-field"><span>ผู้ทดสอบ</span><input value={draft.executedBy || currentUserName} readOnly aria-readonly="true" title="ใช้ชื่อจากบัญชี Google ที่ Login" /></label>
           <label className="text-field"><span>Test data</span><input value={draft.testData} onChange={(event) => update("testData", event.target.value)} /></label>
           <label className="text-field"><span>หมายเหตุ / Actual result</span><textarea rows={4} value={draft.remark} onChange={(event) => update("remark", event.target.value)} placeholder="บันทึกสิ่งที่พบระหว่างการทดสอบ..." /></label>
           {!showResultEntry && <button type="button" className="primary-button open-result-button" onClick={() => setShowResultEntry(true)}><PlusIcon />Add Result</button>}
@@ -556,6 +559,7 @@ export function QaWorkspace({
             appVersion: useStoredFields ? stored.appVersion : item.appVersion,
             environment: useStoredFields ? stored.environment : item.environment,
             remark: useStoredFields ? stored.remark : item.remark,
+            executedBy: useStoredFields ? (stored.executedBy || currentUser?.name || item.executedBy) : item.executedBy,
           } : item;
         }) ?? workspace.cases;
         setCases(mergedCases);
@@ -579,7 +583,7 @@ export function QaWorkspace({
         if (active) setLoadingWorkspace(false);
       });
     return () => { active = false; };
-  }, [selectedProject]);
+  }, [selectedProject, currentUser?.name]);
 
   async function saveCase(next: TestCase) {
     if (!selectedProject) throw new Error("กรุณาเลือก Project");

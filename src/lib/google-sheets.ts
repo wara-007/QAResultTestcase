@@ -2,7 +2,7 @@ import "server-only";
 
 import { google } from "googleapis";
 import type { googleOAuthClient } from "@/lib/google-user-oauth";
-import type { TestCase, TestEvidence, TestResult, TestStatus, WorkbookSheet } from "@/lib/types";
+import type { TestCase, TestDefect, TestEvidence, TestResult, TestStatus, WorkbookSheet } from "@/lib/types";
 
 const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/spreadsheets",
@@ -124,7 +124,12 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
     const resultValues = await sheets.spreadsheets.values.batchGet({ spreadsheetId, ranges, valueRenderOption: "FORMULA" });
     ranges.forEach((_range, index) => {
       const testCase = cases.find((item) => item.id === [...resultSheetNames][index]);
-      if (testCase) testCase.results = resultsFromRows(resultValues.data.valueRanges?.[index]?.values ?? []);
+      if (testCase) {
+        const rows = resultValues.data.valueRanges?.[index]?.values ?? [];
+        const parsedResults = resultsFromRows(rows);
+        testCase.results = parsedResults.map((result) => ({ ...result, defects: undefined }));
+        testCase.defects = [...defectsFromRows(rows), ...parsedResults.flatMap((result) => result.defects ?? [])];
+      }
     });
   }
   return { title: metadata.data.properties?.title ?? "Google Sheet", cases, sheets: workbookSheets };
@@ -143,7 +148,8 @@ function resultsFromRows(rows: unknown[][]): TestResult[] {
     defect: indexOf(["defect"], 6), defectStatus: indexOf(["defect status"], 6), jira: indexOf(["jira url"], 7),
     createdAt: indexOf(["created at"], 8),
   };
-  const dataRows = headerIndex >= 0 ? rows.slice(headerIndex + 1) : rows;
+  const defectHeaderIndex = rows.findIndex((row) => row.some((cell) => normalize(cell) === "defect id"));
+  const dataRows = (headerIndex >= 0 ? rows.slice(headerIndex + 1) : rows).slice(0, defectHeaderIndex >= 0 ? defectHeaderIndex - headerIndex - 1 : undefined);
   const logicalRows: unknown[][] = [];
   for (const row of dataRows) {
     const id = String(row[indexes.id] ?? "").trim();
@@ -178,10 +184,33 @@ function resultsFromRows(rows: unknown[][]): TestResult[] {
       defects: defectLabels.map((label, defectIndex) => {
         const [legacyStatus, ...legacyTitle] = label.split(":");
         const hasSeparateStatus = indexes.defectStatus !== indexes.defect;
-        return { id: `${id}-defect-${defectIndex + 1}`, status: hasSeparateStatus ? (defectStatuses[defectIndex] ?? "Open") : (legacyStatus.trim() || "Open"), title: hasSeparateStatus ? label : (legacyTitle.join(":").trim() || label), description: "", jiraUrl: jiraUrls[defectIndex] ?? "" };
+        return { id: `${id}-defect-${defectIndex + 1}`, status: hasSeparateStatus ? (defectStatuses[defectIndex] ?? "Open") : (legacyStatus.trim() || "Open"), title: hasSeparateStatus ? label : (legacyTitle.join(":").trim() || label), description: "", jiraUrl: jiraUrls[defectIndex] ?? "", apiResponse: "", log: "", evidence: [], createdAt: String(row[indexes.createdAt] ?? "") || new Date(0 + index).toISOString() };
       }),
       createdAt: String(row[indexes.createdAt] ?? "") || new Date(0 + index).toISOString(),
     }];
+  });
+}
+
+function defectsFromRows(rows: unknown[][]): TestDefect[] {
+  const headerIndex = rows.findIndex((row) => row.some((cell) => normalize(cell) === "defect id"));
+  if (headerIndex < 0) return [];
+  const logicalRows: unknown[][] = [];
+  for (const row of rows.slice(headerIndex + 1)) {
+    if (String(row[0] ?? "").trim()) logicalRows.push([...row]);
+    else {
+      const previous = logicalRows.at(-1);
+      if (!previous) continue;
+      for (let column = 3; column < row.length; column += 1) previous[column] = `${String(previous[column] ?? "")}\n${String(row[column] ?? "")}`.trim();
+    }
+  }
+  return logicalRows.flatMap((row, index) => {
+    const id = String(row[0] ?? "").trim();
+    if (!id) return [];
+    const evidence = String(row[6] ?? "").split(/\n+/).flatMap((url, evidenceIndex) => {
+      const fileId = new URLSearchParams(url.split("?")[1] ?? "").get("id");
+      return fileId ? [{ fileId, name: `Defect evidence ${evidenceIndex + 1}`, mimeType: "image/*" }] : [];
+    });
+    return [{ id, status: String(row[1] ?? "Open"), title: String(row[2] ?? "Defect"), description: String(row[3] ?? ""), apiResponse: String(row[4] ?? ""), log: String(row[5] ?? ""), evidence, jiraUrl: String(row[7] ?? ""), createdAt: String(row[8] ?? "") || new Date(index).toISOString() }];
   });
 }
 
@@ -215,8 +244,11 @@ export async function writeGoogleSheetResults(spreadsheetId: string, cases: Test
 
   const metadata = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets(properties(sheetId,title))" });
   const existing = new Map((metadata.data.sheets ?? []).map((sheet) => [sheet.properties?.title ?? "", sheet.properties?.sheetId]));
-  const resultCases = cases.filter((testCase) => (testCase.results?.length ?? 0) > 0);
-  const evidenceIds = [...new Set(resultCases.flatMap((testCase) => (testCase.results ?? []).flatMap((result) => result.evidence.map((evidence) => evidence.fileId))))];
+  const resultCases = cases.filter((testCase) => (testCase.results?.length ?? 0) > 0 || (testCase.defects?.length ?? 0) > 0);
+  const evidenceIds = [...new Set(resultCases.flatMap((testCase) => [
+    ...(testCase.results ?? []).flatMap((result) => result.evidence),
+    ...(testCase.defects ?? []).flatMap((defect) => defect.evidence),
+  ]).map((evidence) => evidence.fileId))];
   if (evidenceIds.length) {
     const drive = google.drive({ version: "v3", auth });
     await Promise.all(evidenceIds.map(async (fileId) => {
@@ -295,9 +327,9 @@ function resultSheetValues(testCase: TestCase) {
       result.evidence.length
         ? result.evidence.map((evidence) => `=IMAGE("https://drive.usercontent.google.com/download?id=${evidence.fileId}&export=view",1)`)
         : [""],
-      chunks(result.defects.map((defect) => defect.title).join("\n")),
-      chunks(result.defects.map((defect) => defect.status).join("\n")),
-      chunks(result.defects.map((defect) => defect.jiraUrl).filter(Boolean).join("\n")),
+      [""],
+      [""],
+      [""],
       chunks(result.createdAt),
     ];
     const rowCount = Math.max(...columns.map((column) => column.length));
@@ -307,6 +339,14 @@ function resultSheetValues(testCase: TestCase) {
         rowIndex === 0 ? result.status : "",
         ...columns.map((column) => column[rowIndex] ?? ""),
       ]);
+    }
+  }
+  if ((testCase.defects?.length ?? 0) > 0) {
+    rows.push([], ["Defect ID", "Status", "Title", "Actual Result", "API Response", "Log", "Evidence", "Jira URL", "Created At"]);
+    for (const defect of testCase.defects ?? []) {
+      const columns = [chunks(defect.description), chunks(defect.apiResponse), chunks(defect.log), defect.evidence.length ? defect.evidence.map((evidence) => `=IMAGE("https://drive.usercontent.google.com/download?id=${evidence.fileId}&export=view",1)`) : [""], chunks(defect.jiraUrl), chunks(defect.createdAt)];
+      const rowCount = Math.max(...columns.map((column) => column.length));
+      for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) rows.push([rowIndex === 0 ? defect.id : "", rowIndex === 0 ? defect.status : "", rowIndex === 0 ? defect.title : "", ...columns.map((column) => column[rowIndex] ?? "")]);
     }
   }
   return rows;

@@ -1,5 +1,5 @@
 import { createClient } from "@/lib/supabase/client";
-import type { TestCase, TestResult, TestStatus, WorkbookSheet, WorkbookSource } from "@/lib/types";
+import type { TestCase, TestDefect, TestResult, TestStatus, WorkbookSheet, WorkbookSource } from "@/lib/types";
 
 const SOURCE_BUCKET = "testcase-source-files";
 const SOURCE_CHUNK_SIZE = 8 * 1024 * 1024;
@@ -42,27 +42,49 @@ type CaseRow = {
 };
 
 type StoredResultPayload = {
-  version: 1;
+  version: 1 | 2;
   resultReference: string;
   results: TestResult[];
+  defects?: TestDefect[];
 };
 
+function normalizeDefect(defect: Partial<TestDefect>, fallbackId: string): TestDefect {
+  return {
+    id: defect.id ?? fallbackId,
+    title: defect.title ?? "Defect",
+    description: defect.description ?? "",
+    status: defect.status ?? "Open",
+    jiraUrl: defect.jiraUrl ?? "",
+    apiResponse: defect.apiResponse ?? "",
+    log: defect.log ?? "",
+    evidence: Array.isArray(defect.evidence) ? defect.evidence : [],
+    createdAt: defect.createdAt ?? new Date(0).toISOString(),
+  };
+}
+
 function parseStoredResults(value: string | undefined) {
-  if (!value?.startsWith("qa-results:")) return { resultReference: value ?? "", results: [] as TestResult[], persistedLocally: false };
+  if (!value?.startsWith("qa-results:")) return { resultReference: value ?? "", results: [] as TestResult[], defects: [] as TestDefect[], persistedLocally: false };
   try {
     const payload = JSON.parse(value.slice("qa-results:".length)) as StoredResultPayload;
+    const results = Array.isArray(payload.results) ? payload.results : [];
+    const migratedDefects = results.flatMap((result) => (result.defects ?? []).map((defect, index) => normalizeDefect(defect, `${result.id}-defect-${index + 1}`)));
     return {
       resultReference: typeof payload.resultReference === "string" ? payload.resultReference : "",
-      results: Array.isArray(payload.results) ? payload.results : [],
+      results: results.map((result) => {
+        const normalized = { ...result };
+        delete normalized.defects;
+        return normalized;
+      }),
+      defects: Array.isArray(payload.defects) ? payload.defects.map((defect, index) => normalizeDefect(defect, `defect-${index + 1}`)) : migratedDefects,
       persistedLocally: true,
     };
   } catch {
-    return { resultReference: "", results: [] as TestResult[], persistedLocally: false };
+    return { resultReference: "", results: [] as TestResult[], defects: [] as TestDefect[], persistedLocally: false };
   }
 }
 
 function serializeStoredResults(testCase: TestCase) {
-  const payload: StoredResultPayload = { version: 1, resultReference: testCase.resultReference, results: testCase.results ?? [] };
+  const payload: StoredResultPayload = { version: 2, resultReference: testCase.resultReference, results: testCase.results ?? [], defects: testCase.defects ?? [] };
   return `qa-results:${JSON.stringify(payload)}`;
 }
 
@@ -152,6 +174,7 @@ export async function loadProjectWorkspace(projectId: string): Promise<ProjectWo
       remark: execution?.remark ?? "",
       evidence: [],
       results: stored.results,
+      defects: stored.defects,
     };
   });
 

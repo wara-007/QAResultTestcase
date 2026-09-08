@@ -14,6 +14,10 @@ export type TestDefect = {
   description: string;
   status: string;
   jiraUrl: string;
+  apiResponse: string;
+  log: string;
+  evidence: TestEvidence[];
+  createdAt: string;
 };
 
 export type TestResult = {
@@ -23,7 +27,8 @@ export type TestResult = {
   apiResponse: string;
   log: string;
   evidence: TestEvidence[];
-  defects: TestDefect[];
+  /** @deprecated Defects now belong to the TestCase. Kept for old saved payloads. */
+  defects?: TestDefect[];
   createdAt: string;
 };
 
@@ -51,6 +56,7 @@ export type TestCase = {
   remark: string;
   evidence: TestEvidence[];
   results?: TestResult[];
+  defects?: TestDefect[];
 };
 
 export type WorkbookSource = {

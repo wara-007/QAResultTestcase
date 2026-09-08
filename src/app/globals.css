@@ -348,6 +348,8 @@ td:first-child strong { display: block; overflow: hidden; margin-top: 4px; color
 .attachment-button span { margin-left: auto; color: #9ba2af; font-size: 8px; }
 .result-sheet-block { margin: 17px 0 10px; padding: 13px; background: #f7f9fd; border: 1px solid #e5eaf3; border-radius: 9px; }
 .result-entry-block { margin: 17px 0 10px; padding: 20px; background: #fff; border: 1px solid #dfe7f6; border-radius: 12px; box-shadow: 0 8px 24px rgba(31,58,105,.07); }
+.entry-type-actions { display: flex; gap: 10px; margin-top: 14px; }
+.entry-type-actions .open-result-button, .entry-type-actions .add-defect-button { margin-top: 0; }
 .open-result-button { width: 100%; justify-content: center; margin: 16px 0 10px; }
 .result-entry-block .text-field { margin-top: 10px; }
 .result-form-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding-bottom: 13px; border-bottom: 1px solid #e5eaf2; }

@@ -227,6 +227,7 @@ export async function exportGoogleSheetWorkbook(spreadsheetId: string, auth: Goo
 
 export async function writeGoogleSheetResults(spreadsheetId: string, cases: TestCase[], auth: GoogleApiAuth = getGoogleServiceAuth()) {
   const sheets = google.sheets({ version: "v4", auth });
+  const formulaText = (value: string) => value.replaceAll('"', '""');
   const mainSheetData = [{
     range: "Testcase!A1:E1",
     values: [["Test Case Id", "Test Scenario*", "Test Case Name", "Test Step Description *", "Expected Result *"]],
@@ -245,6 +246,8 @@ export async function writeGoogleSheetResults(spreadsheetId: string, cases: Test
   const metadata = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets(properties(sheetId,title))" });
   const existing = new Map((metadata.data.sheets ?? []).map((sheet) => [sheet.properties?.title ?? "", sheet.properties?.sheetId]));
   const resultCases = cases.filter((testCase) => (testCase.results?.length ?? 0) > 0 || (testCase.defects?.length ?? 0) > 0);
+  const defectRecords = cases.flatMap((testCase) => (testCase.defects ?? []).map((defect) => ({ testCase, defect }))).map((record, index) => ({ ...record, displayId: `DEF-${String(index + 1).padStart(2, "0")}` }));
+  const defectDisplayIds = new Map(defectRecords.map((record) => [record.defect.id, record.displayId]));
   const evidenceIds = [...new Set(resultCases.flatMap((testCase) => [
     ...(testCase.results ?? []).flatMap((result) => result.evidence),
     ...(testCase.defects ?? []).flatMap((defect) => defect.evidence),
@@ -258,25 +261,54 @@ export async function writeGoogleSheetResults(spreadsheetId: string, cases: Test
       }
     }));
   }
-  const addRequests = resultCases.filter((testCase) => !existing.has(testCase.id)).map((testCase) => ({ addSheet: { properties: { title: testCase.id } } }));
+  const addRequests = [
+    ...resultCases.filter((testCase) => !existing.has(testCase.id)).map((testCase) => ({ addSheet: { properties: { title: testCase.id } } })),
+    ...(defectRecords.length > 0 && !existing.has("Defected") ? [{ addSheet: { properties: { title: "Defected" } } }] : []),
+  ];
   if (addRequests.length) await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: addRequests } });
 
+  const refreshed = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets(properties(sheetId,title))" });
+  const sheetIds = new Map((refreshed.data.sheets ?? []).map((sheet) => [sheet.properties?.title ?? "", sheet.properties?.sheetId]));
   const resultSheetData = resultCases.map((testCase) => {
-    const values = resultSheetValues(testCase);
+    const values = resultSheetValues(testCase, defectDisplayIds);
     return { range: `'${testCase.id.replaceAll("'", "''")}'!A1:J${values.length}`, values };
   });
+  const testcaseSheetId = sheetIds.get("Testcase");
+  const defectedValues = [["Defected Id", "Platform", "App version", "Defected Description", "Jira Card", "Status", "Reporter", "Report Date", "Ref\n(Testcase)", "Ref\n(RC)", ""]];
+  for (const record of defectRecords) {
+    const detailValues = resultSheetData.find((item) => item.range.startsWith(`'${record.testCase.id.replaceAll("'", "''")}'!`))?.values ?? [];
+    const detailRow = detailValues.findIndex((row) => String(row[0] ?? "") === record.displayId) + 1;
+    const detailSheetId = sheetIds.get(record.testCase.id);
+    const detailLink = detailSheetId != null && detailRow > 0 ? `#gid=${detailSheetId}&range=A${detailRow}` : "";
+    const testcaseLink = testcaseSheetId != null && record.testCase.sourceRow > 0 ? `#gid=${testcaseSheetId}&range=A${record.testCase.sourceRow}` : "";
+    const jiraLabel = record.defect.jiraUrl.split("/").filter(Boolean).at(-1) || "เปิด Jira";
+    const reportDate = Number.isNaN(Date.parse(record.defect.createdAt)) ? "" : new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Bangkok" }).format(new Date(record.defect.createdAt));
+    defectedValues.push([
+      detailLink ? `=HYPERLINK("${detailLink}","${record.displayId}")` : record.displayId,
+      record.testCase.platform,
+      record.testCase.appVersion,
+      [record.defect.title, record.defect.description].filter(Boolean).join("\n"),
+      record.defect.jiraUrl ? `=HYPERLINK("${formulaText(record.defect.jiraUrl)}","${formulaText(jiraLabel)}")` : "",
+      record.defect.status,
+      record.testCase.executedBy,
+      reportDate,
+      testcaseLink ? `=HYPERLINK("${testcaseLink}","${formulaText(record.testCase.id)}")` : record.testCase.id,
+      detailLink ? `=HYPERLINK("${detailLink}","RC : ${record.displayId}")` : `RC : ${record.displayId}`,
+      "",
+    ]);
+  }
+  const defectedSheetData = defectRecords.length > 0 || existing.has("Defected") ? [{ range: `Defected!A1:K${defectedValues.length}`, values: defectedValues }] : [];
   if (resultSheetData.length) {
     await sheets.spreadsheets.values.batchClear({ spreadsheetId, requestBody: { ranges: resultCases.map((testCase) => `'${testCase.id.replaceAll("'", "''")}'!A:J`) } });
   }
+  if (defectedSheetData.length) await sheets.spreadsheets.values.clear({ spreadsheetId, range: "Defected!A:K" });
   const result = await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId,
-    requestBody: { valueInputOption: "USER_ENTERED", data: [...mainSheetData, ...resultSheetData] },
+    requestBody: { valueInputOption: "USER_ENTERED", data: [...mainSheetData, ...resultSheetData, ...defectedSheetData] },
   });
   if (resultCases.length) {
-    const refreshed = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets(properties(sheetId,title))" });
-    const resultSheetIds = new Map((refreshed.data.sheets ?? []).map((sheet) => [sheet.properties?.title ?? "", sheet.properties?.sheetId]));
     await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: resultCases.flatMap((testCase) => {
-      const sheetId = resultSheetIds.get(testCase.id);
+      const sheetId = sheetIds.get(testCase.id);
       if (sheetId == null) return [];
       return [
         { updateSheetProperties: { properties: { sheetId, gridProperties: { frozenRowCount: 4 } }, fields: "gridProperties.frozenRowCount" } },
@@ -288,6 +320,14 @@ export async function writeGoogleSheetResults(spreadsheetId: string, cases: Test
       ];
     }) } });
   }
+  const defectedSheetId = sheetIds.get("Defected");
+  if (defectedSheetId != null) await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: [
+    { updateSheetProperties: { properties: { sheetId: defectedSheetId, gridProperties: { frozenRowCount: 1 } }, fields: "gridProperties.frozenRowCount" } },
+    { repeatCell: { range: { sheetId: defectedSheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 11 }, cell: { userEnteredFormat: { textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } }, backgroundColor: { red: 0.12, green: 0.29, blue: 0.57 }, horizontalAlignment: "CENTER", verticalAlignment: "MIDDLE", wrapStrategy: "WRAP" } }, fields: "userEnteredFormat" } },
+    { repeatCell: { range: { sheetId: defectedSheetId, startRowIndex: 1, endRowIndex: defectedValues.length, startColumnIndex: 0, endColumnIndex: 11 }, cell: { userEnteredFormat: { verticalAlignment: "TOP", wrapStrategy: "WRAP" } }, fields: "userEnteredFormat(verticalAlignment,wrapStrategy)" } },
+    { updateDimensionProperties: { range: { sheetId: defectedSheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 11 }, properties: { pixelSize: 155 }, fields: "pixelSize" } },
+    { updateDimensionProperties: { range: { sheetId: defectedSheetId, dimension: "COLUMNS", startIndex: 3, endIndex: 4 }, properties: { pixelSize: 360 }, fields: "pixelSize" } },
+  ] } });
   if (resultCases.length) {
     const verification = await sheets.spreadsheets.values.batchGet({
       spreadsheetId,
@@ -301,10 +341,15 @@ export async function writeGoogleSheetResults(spreadsheetId: string, cases: Test
       }
     });
   }
-  return { updatedCells: result.data.totalUpdatedCells ?? 0, resultSheets: resultCases.length };
+  if (defectedSheetData.length) {
+    const verification = await sheets.spreadsheets.values.get({ spreadsheetId, range: `Defected!A1:K${defectedValues.length}`, valueRenderOption: "FORMULA" });
+    const values = verification.data.values ?? [];
+    if (String(values[0]?.[0] ?? "") !== "Defected Id" || values.length !== defectedValues.length) throw new Error("เขียนข้อมูลลงแท็บ Defected ไม่สำเร็จ");
+  }
+  return { updatedCells: result.data.totalUpdatedCells ?? 0, resultSheets: resultCases.length, defects: defectRecords.length };
 }
 
-function resultSheetValues(testCase: TestCase) {
+function resultSheetValues(testCase: TestCase, defectDisplayIds = new Map<string, string>()) {
   const MAX_CELL_LENGTH = 45_000;
   const chunks = (value: string) => {
     if (!value) return [""];
@@ -346,7 +391,7 @@ function resultSheetValues(testCase: TestCase) {
     for (const defect of testCase.defects ?? []) {
       const columns = [chunks(defect.description), chunks(defect.apiResponse), chunks(defect.log), defect.evidence.length ? defect.evidence.map((evidence) => `=IMAGE("https://drive.usercontent.google.com/download?id=${evidence.fileId}&export=view",1)`) : [""], chunks(defect.jiraUrl), chunks(defect.createdAt)];
       const rowCount = Math.max(...columns.map((column) => column.length));
-      for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) rows.push([rowIndex === 0 ? defect.id : "", rowIndex === 0 ? defect.status : "", rowIndex === 0 ? defect.title : "", ...columns.map((column) => column[rowIndex] ?? "")]);
+      for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) rows.push([rowIndex === 0 ? (defectDisplayIds.get(defect.id) ?? defect.id) : "", rowIndex === 0 ? defect.status : "", rowIndex === 0 ? defect.title : "", ...columns.map((column) => column[rowIndex] ?? "")]);
     }
   }
   return rows;

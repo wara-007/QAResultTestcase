@@ -710,7 +710,7 @@ export function QaWorkspace({
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "ซิงค์ Google Sheet ไม่สำเร็จ");
       setHasUnsyncedChanges(false);
-      flash(`ซิงค์แล้ว ${data.updatedCells} cells · ${data.resultSheets ?? 0} result sheets`);
+      flash(`ซิงค์แล้ว ${data.updatedCells} cells · ${data.resultSheets ?? 0} result sheets · ${data.defects ?? 0} defects`);
     } catch (reason) {
       flash(reason instanceof Error ? reason.message : "ซิงค์ Google Sheet ไม่สำเร็จ");
     } finally {

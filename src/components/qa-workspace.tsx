@@ -418,6 +418,10 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
             ))}
           </div>
           <div className="two-column-fields">
+            <label><span>Platform</span><input value={draft.platform} onChange={(event) => update("platform", event.target.value)} placeholder="เช่น Mobile, Web, iOS/Android" /></label>
+            <label><span>Environment</span><input value={draft.environment} onChange={(event) => update("environment", event.target.value)} placeholder="เช่น UAT, SIT, Production" /></label>
+          </div>
+          <div className="two-column-fields">
             <label><span>Device</span><select value={draft.device} onChange={(event) => update("device", event.target.value)}><option value="">เลือก Device</option><option value="iOS">iOS</option><option value="Android">Android</option><option value="iOS/Android">iOS/Android</option></select></label>
             <label><span>App version</span><input value={draft.appVersion} onChange={(event) => update("appVersion", event.target.value)} placeholder="Build number" /></label>
           </div>

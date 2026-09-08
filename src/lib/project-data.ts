@@ -265,7 +265,10 @@ export async function persistTestCaseResult(projectId: string, testCase: TestCas
   }
   const caseUpdate = await supabase
     .from("test_cases")
-    .update({ test_data: testCase.testData })
+    .update({
+      platform: testCase.platform,
+      test_data: testCase.testData,
+    })
     .eq("id", recordId)
     .eq("project_id", projectId);
   if (caseUpdate.error) throw new Error(caseUpdate.error.message);

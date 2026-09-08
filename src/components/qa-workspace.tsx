@@ -263,10 +263,12 @@ function ResultSheetViewer({ source, sheet }: { source: WorkbookSource; sheet: W
 
 function CaseDrawer({ value, projectId, source, currentUserName, pageMode = false, onClose, onSave, onSaveResult }: { value: TestCase; projectId: string; source: WorkbookSource | null; currentUserName: string; pageMode?: boolean; onClose: () => void; onSave: (value: TestCase) => Promise<void>; onSaveResult: (value: TestCase) => Promise<TestCase> }) {
   const [draft, setDraft] = useState<TestCase>(() => {
-    let remembered: { device?: string; appVersion?: string; testData?: string } = {};
+    let remembered: { platform?: string; environment?: string; device?: string; appVersion?: string; testData?: string } = {};
     try { remembered = JSON.parse(window.localStorage.getItem(`qa-test-defaults:${projectId}`) ?? "{}"); } catch { /* ใช้ค่าเดิมเมื่อ localStorage ไม่พร้อม */ }
     return {
       ...value,
+      platform: value.platform || remembered.platform || "",
+      environment: value.environment || remembered.environment || "",
       device: value.device || remembered.device || "",
       appVersion: value.appVersion || remembered.appVersion || "",
       testData: value.testData || remembered.testData || "",
@@ -293,7 +295,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
   const resultSheets = source?.sheets.filter((sheet) => sheet.testCaseIds.includes(value.id.toUpperCase())) ?? [];
   const evidenceCount = resultSheets.reduce((total, sheet) => total + sheet.imageCount, 0);
   const update = (field: keyof TestCase, next: string) => setDraft((current) => ({ ...current, [field]: next }));
-  const rememberDefaults = (testCase: TestCase) => window.localStorage.setItem(`qa-test-defaults:${projectId}`, JSON.stringify({ device: testCase.device, appVersion: testCase.appVersion, testData: testCase.testData }));
+  const rememberDefaults = (testCase: TestCase) => window.localStorage.setItem(`qa-test-defaults:${projectId}`, JSON.stringify({ platform: testCase.platform, environment: testCase.environment, device: testCase.device, appVersion: testCase.appVersion, testData: testCase.testData }));
   function resetResultForm() {
     setActualResult("");
     setApiResponse("");
@@ -368,7 +370,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
         : [...(draft.defects ?? []), defect],
     };
     setSavingResult(true); setError("");
-    try { const saved = await onSaveResult(next); setDraft(saved); resetResultForm(); }
+    try { rememberDefaults(next); const saved = await onSaveResult(next); setDraft(saved); resetResultForm(); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "บันทึก Defect ไม่สำเร็จ"); }
     finally { setSavingResult(false); }
   }

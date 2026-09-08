@@ -576,6 +576,7 @@ export function QaWorkspace({
             persistedLocally: stored.persistedLocally,
             results: hasStoredResults ? stored.results : item.results,
             evidence: stored.evidence,
+            platform: useStoredFields ? stored.platform : item.platform,
             status: useStoredFields ? stored.status : item.status,
             device: useStoredFields ? stored.device : item.device,
             appVersion: useStoredFields ? stored.appVersion : item.appVersion,

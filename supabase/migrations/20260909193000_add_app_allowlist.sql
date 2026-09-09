@@ -25,9 +25,9 @@ as $$
   select (select private.is_system_owner()) or exists (
     select 1
     from auth.users u
-    join private.app_authorizations authorization on authorization.email = lower(u.email)
+    join private.app_authorizations access_entry on access_entry.email = lower(u.email)
     where u.id = (select auth.uid())
-      and authorization.enabled
+      and access_entry.enabled
   );
 $$;
 
@@ -164,17 +164,17 @@ set search_path = ''
 as $$
   select
     u.id,
-    coalesce(authorization.email, lower(u.email)),
-    coalesce(p.display_name, split_part(coalesce(authorization.email, u.email, ''), '@', 1)),
-    owner.user_id is not null or coalesce(authorization.enabled, false),
+    coalesce(access_entry.email, lower(u.email)),
+    coalesce(p.display_name, split_part(coalesce(access_entry.email, u.email, ''), '@', 1)),
+    owner.user_id is not null or coalesce(access_entry.enabled, false),
     owner.user_id is not null,
     u.last_sign_in_at
-  from private.app_authorizations authorization
-  full join auth.users u on lower(u.email) = authorization.email
+  from private.app_authorizations access_entry
+  full join auth.users u on lower(u.email) = access_entry.email
   left join public.profiles p on p.id = u.id
   left join private.system_owners owner on owner.user_id = u.id
   where (select private.is_system_owner())
-  order by lower(coalesce(authorization.email, u.email, ''));
+  order by lower(coalesce(access_entry.email, u.email, ''));
 $$;
 
 create or replace function public.set_app_user_access(requested_email text, requested_enabled boolean)

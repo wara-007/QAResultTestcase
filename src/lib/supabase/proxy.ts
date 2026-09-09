@@ -22,7 +22,7 @@ export async function updateSession(request: NextRequest) {
   const { data } = await supabase.auth.getClaims();
   const signedIn = Boolean(data?.claims);
   const path = request.nextUrl.pathname;
-  const protectedPage = path === "/" || path === "/groups" || path.startsWith("/groups/") || path.startsWith("/admin/");
+  const protectedPage = path === "/groups" || path.startsWith("/groups/") || path.startsWith("/admin/");
   const protectedApi = path.startsWith("/api/projects/") || path.startsWith("/api/google/evidence/");
 
   if (!signedIn && protectedApi) {
@@ -33,7 +33,7 @@ export async function updateSession(request: NextRequest) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = "/auth/login";
     loginUrl.search = "";
-    loginUrl.searchParams.set("next", path === "/" ? "/groups" : `${path}${request.nextUrl.search}`);
+    loginUrl.searchParams.set("next", `${path}${request.nextUrl.search}`);
     const redirect = NextResponse.redirect(loginUrl);
     response.cookies.getAll().forEach((cookie) => redirect.cookies.set(cookie));
     return redirect;

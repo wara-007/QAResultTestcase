@@ -107,7 +107,8 @@ export async function loadProjectWorkspace(projectId: string): Promise<ProjectWo
       .from("test_cases")
       .select("id, testcase_key, source_row, sort_order, platform, condition_text, scenario, case_name, steps, expected_result, test_data, test_executions(id, status, device, app_version, environment, remark, result_reference, executed_by_name, executed_date, executed_time, attempt_no)")
       .eq("project_id", projectId)
-      .order("sort_order", { ascending: true }),
+      .order("sort_order", { ascending: true })
+      .order("source_row", { ascending: true }),
   ]);
 
   if (sourceResult.error) throw new Error(sourceResult.error.message);
@@ -147,9 +148,15 @@ export async function loadProjectWorkspace(projectId: string): Promise<ProjectWo
     };
   }
 
+  let previousScenario = "";
+  let previousSteps = "";
   const cases = ((casesResult.data ?? []) as CaseRow[]).map((row) => {
     const execution = [...(row.test_executions ?? [])].sort((a, b) => b.attempt_no - a.attempt_no)[0];
     const stored = parseStoredResults(execution?.result_reference);
+    const scenario = row.scenario || previousScenario;
+    const steps = row.steps || previousSteps;
+    if (scenario) previousScenario = scenario;
+    if (steps) previousSteps = steps;
     return {
       id: row.testcase_key,
       recordId: row.id,
@@ -158,9 +165,9 @@ export async function loadProjectWorkspace(projectId: string): Promise<ProjectWo
       sourceRow: row.source_row ?? 0,
       platform: row.platform,
       condition: row.condition_text,
-      scenario: row.scenario,
+      scenario,
       name: row.case_name,
-      steps: row.steps,
+      steps,
       expected: row.expected_result,
       status: execution?.status ?? "Not Start",
       device: execution?.device ?? "",

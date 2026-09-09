@@ -194,18 +194,24 @@ export function importTestCases(buffer: ArrayBuffer, fileName: string) {
   const maximumRow = Math.max(...cells.map((cell) => rowFromRef(cell.getAttribute("r") ?? "0")));
   const get = (field: string, row: number) => values.get(`${columns[field]}${row}`)?.trim() ?? "";
   const cases: TestCase[] = [];
+  let previousScenario = "";
+  let previousSteps = "";
 
   for (let row = headerRow + 1; row <= maximumRow; row += 1) {
     const id = get("id", row);
     if (!id || !/^(TC|TEST|CASE)[\s_-]*\d+/i.test(id)) continue;
+    const scenario = get("scenario", row) || previousScenario;
+    const steps = get("steps", row) || previousSteps;
+    if (scenario) previousScenario = scenario;
+    if (steps) previousSteps = steps;
     cases.push({
       id,
       sourceRow: row,
       platform: get("platform", row),
       condition: get("condition", row),
-      scenario: get("scenario", row),
+      scenario,
       name: get("name", row),
-      steps: get("steps", row),
+      steps,
       expected: get("expected", row),
       status: asStatus(get("status", row)),
       device: get("device", row),

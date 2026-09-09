@@ -79,31 +79,22 @@ function casesFromRows(rows: unknown[][]): TestCase[] {
     indexes[field] = exact >= 0 ? exact : header.findIndex((cell) => names.some((name) => normalize(cell).includes(name)));
   }
   const get = (row: unknown[], field: string) => indexes[field] >= 0 ? String(row[indexes[field]] ?? "").trim() : "";
+  let previousScenario = "";
+  let previousSteps = "";
   return rows.slice(headerIndex + 1).flatMap((row, offset) => {
     const id = get(row, "id");
     if (!/^(TC|TEST|CASE)[\s_-]*\d+/i.test(id)) return [];
+    const scenario = get(row, "scenario") || previousScenario;
+    const steps = get(row, "steps") || previousSteps;
+    if (scenario) previousScenario = scenario;
+    if (steps) previousSteps = steps;
     return [{
-      id, sourceRow: headerIndex + offset + 2, platform: get(row, "platform"), condition: get(row, "condition"), scenario: get(row, "scenario"),
-      name: get(row, "name"), steps: get(row, "steps"), expected: get(row, "expected"), status: statusFromValue(get(row, "status")), device: get(row, "device"),
+      id, sourceRow: headerIndex + offset + 2, platform: get(row, "platform"), condition: get(row, "condition"), scenario,
+      name: get(row, "name"), steps, expected: get(row, "expected"), status: statusFromValue(get(row, "status")), device: get(row, "device"),
       testData: get(row, "testData"), appVersion: get(row, "appVersion"), environment: get(row, "environment"), resultReference: get(row, "resultReference"),
       executedBy: get(row, "executedBy"), executedDate: get(row, "executedDate"), executedTime: get(row, "executedTime"), remark: get(row, "remark"),
       evidence: evidenceFromValue(get(row, "evidence")),
     }];
-  });
-}
-
-export async function appendGoogleSheetEvidence(spreadsheetId: string, sourceRow: number, evidence: TestEvidence[], auth: GoogleApiAuth = getGoogleServiceAuth()) {
-  if (!Number.isInteger(sourceRow) || sourceRow < 2) throw new Error("ไม่พบแถวของ Testcase ใน Google Sheets");
-  const sheets = google.sheets({ version: "v4", auth });
-  await sheets.spreadsheets.values.batchUpdate({
-    spreadsheetId,
-    requestBody: {
-      valueInputOption: "RAW",
-      data: [
-        { range: "Testcase!R1", values: [["Evidence"]] },
-        { range: `Testcase!R${sourceRow}`, values: [[JSON.stringify(evidence)]] },
-      ],
-    },
   });
 }
 
@@ -296,6 +287,7 @@ export async function writeGoogleSheetResults(spreadsheetId: string, cases: Test
     ]);
   }
   const defectedSheetData = defectRecords.length > 0 || existing.has("Defected") ? [{ range: `Defected!A1:K${defectedValues.length}`, values: defectedValues }] : [];
+  await sheets.spreadsheets.values.clear({ spreadsheetId, range: "Testcase!R:R" });
   if (resultSheetData.length) {
     await sheets.spreadsheets.values.batchClear({ spreadsheetId, requestBody: { ranges: resultCases.map((testCase) => `'${testCase.id.replaceAll("'", "''")}'!A:J`) } });
   }

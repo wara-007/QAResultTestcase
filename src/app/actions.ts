@@ -98,7 +98,7 @@ export async function createGroup(input: { name: string; description: string }) 
     .single();
   if (error) return { error: error.message };
   revalidatePath("/groups");
-  return { group: { id: data.id, name: data.name, description: data.description, projectCount: 0, createdAt: data.created_at } };
+  return { group: { id: data.id, name: data.name, description: data.description, projectCount: 0, createdAt: data.created_at, canAccess: true, canManage: true } };
 }
 
 export async function updateGroupName(input: { groupId: string; name: string }) {
@@ -128,6 +128,21 @@ export async function removeGroupMember(input: { groupId: string; memberId: stri
   const { error } = await supabase.rpc("remove_group_member", { requested_group_id: input.groupId, requested_member_id: input.memberId || null, requested_email: input.email });
   if (error) return { error: error.message };
   revalidatePath(`/groups/${input.groupId}/members`);
+  return { success: true };
+}
+
+export async function setSystemOwner(input: { userId: string; enabled: boolean }) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.userId)) {
+    return { error: "User ID ไม่ถูกต้อง" };
+  }
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("set_system_owner", {
+    requested_user_id: input.userId,
+    requested_enabled: input.enabled,
+  });
+  if (error) return { error: error.message };
+  revalidatePath("/admin/users");
+  revalidatePath("/groups");
   return { success: true };
 }
 

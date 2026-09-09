@@ -104,6 +104,8 @@ export type Group = {
   description: string;
   projectCount: number;
   createdAt: string;
+  canAccess: boolean;
+  canManage: boolean;
 };
 
 export type GroupMember = {
@@ -119,4 +121,13 @@ export type CurrentUser = {
   id: string;
   email: string;
   name: string;
+  isSystemOwner?: boolean;
+};
+
+export type SystemUser = {
+  id: string;
+  email: string;
+  displayName: string;
+  isSystemOwner: boolean;
+  lastSignInAt: string | null;
 };

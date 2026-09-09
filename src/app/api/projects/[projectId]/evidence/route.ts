@@ -2,7 +2,6 @@ import { Readable } from "node:stream";
 import { cookies } from "next/headers";
 import { google, type drive_v3 } from "googleapis";
 import { createClient } from "@/lib/supabase/server";
-import { appendGoogleSheetEvidence } from "@/lib/google-sheets";
 import { googleOAuthClient, GOOGLE_USER_COOKIE, openGoogleToken } from "@/lib/google-user-oauth";
 import type { TestEvidence } from "@/lib/types";
 
@@ -27,9 +26,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
     const form = await request.formData();
     const file = form.get("file");
     const testCaseId = String(form.get("testCaseId") ?? "").trim();
-    const sourceRow = Number(form.get("sourceRow"));
-    const parsedEvidence = JSON.parse(String(form.get("evidence") ?? "[]"));
-    const currentEvidence = Array.isArray(parsedEvidence) ? parsedEvidence as TestEvidence[] : [];
     if (!(file instanceof File) || !file.type.startsWith("image/")) throw new Error("กรุณาเลือกไฟล์รูปภาพ");
     if (file.size > 10 * 1024 * 1024) throw new Error("รูปต้องมีขนาดไม่เกิน 10 MB");
     if (!/^[A-Za-z]+[-_ ]?\d+$/.test(testCaseId)) throw new Error("Testcase ID ไม่ถูกต้อง");
@@ -56,7 +52,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
       await drive.permissions.create({ fileId: uploaded.data.id, requestBody: { type: "user", role: "reader", emailAddress: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL }, sendNotificationEmail: false });
     }
     const evidence: TestEvidence = { fileId: uploaded.data.id, name: uploaded.data.name ?? file.name, mimeType: uploaded.data.mimeType ?? file.type };
-    await appendGoogleSheetEvidence(project.google_sheet_id, sourceRow, [...currentEvidence, evidence], oauth);
     return Response.json({ evidence });
   } catch (reason) {
     return Response.json({ error: reason instanceof Error ? reason.message : "อัปโหลดรูปไม่สำเร็จ" }, { status: 400 });

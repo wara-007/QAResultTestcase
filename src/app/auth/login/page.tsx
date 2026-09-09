@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import Link from "next/link";
 import { ClipboardCheck, LogIn, ShieldCheck } from "lucide-react";
 import { safeReturnTo } from "@/lib/google-user-oauth";
 import { hasValidSupabasePublicConfig } from "@/lib/supabase/config";
@@ -26,6 +27,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
           <button className="google-login-button" type="submit"><LogIn size={19} />เข้าสู่ระบบด้วย Google</button>
         </form>
         <div className="login-security"><ShieldCheck size={16} /><span>ระบบขอสิทธิ์เฉพาะไฟล์ใน Drive ที่ QA Workspace สร้างหรือเปิดใช้งาน</span></div>
+        <nav className="login-legal"><Link href="/privacy">Privacy Policy</Link><Link href="/terms">Terms of Service</Link></nav>
       </section>
     </main>
   );

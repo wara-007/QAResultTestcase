@@ -101,6 +101,18 @@ export async function createGroup(input: { name: string; description: string }) 
   return { group: { id: data.id, name: data.name, description: data.description, projectCount: 0, createdAt: data.created_at } };
 }
 
+export async function updateGroupName(input: { groupId: string; name: string }) {
+  const name = input.name.trim();
+  if (!name || name.length > 120) return { error: "ชื่อกลุ่มต้องมี 1-120 ตัวอักษร" };
+  const supabase = await createClient();
+  const { error } = await supabase.from("groups").update({ name }).eq("id", input.groupId);
+  if (error) return { error: error.message };
+  revalidatePath("/groups");
+  revalidatePath(`/groups/${input.groupId}/members`);
+  revalidatePath(`/groups/${input.groupId}/projects`);
+  return { success: true, name };
+}
+
 export async function inviteGroupMember(input: { groupId: string; email: string; role: "admin" | "qa_lead" | "qa" | "viewer" }) {
   const email = input.email.trim().toLowerCase();
   if (!/^\S+@\S+\.\S+$/.test(email)) return { error: "กรุณาใส่อีเมลให้ถูกต้อง" };

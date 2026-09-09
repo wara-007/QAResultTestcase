@@ -46,6 +46,14 @@ const statusMeta: Record<TestStatus, { label: string; className: string }> = {
   Skip: { label: "Skip", className: "status-skip" },
 };
 
+function withPassedTimestamp(testCase: TestCase): TestCase {
+  if (testCase.status !== "Pass" || (testCase.executedDate && testCase.executedTime)) return testCase;
+  const passedAt = testCase.results?.find((result) => result.status === "Pass")?.createdAt;
+  const timestamp = passedAt && !Number.isNaN(Date.parse(passedAt)) ? new Date(passedAt) : new Date();
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Bangkok", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(timestamp).map((part) => [part.type, part.value]));
+  return { ...testCase, executedDate: `${parts.day}/${parts.month}/${parts.year}`, executedTime: `${parts.hour}:${parts.minute}:${parts.second}` };
+}
+
 export const PROJECT_PAGES = ["overview", "test-cases", "defects", "files", "settings"] as const;
 export type ProjectPageName = (typeof PROJECT_PAGES)[number];
 
@@ -296,11 +304,6 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
   const evidenceCount = resultSheets.reduce((total, sheet) => total + sheet.imageCount, 0);
   const update = (field: keyof TestCase, next: string) => setDraft((current) => ({ ...current, [field]: next }));
   const rememberDefaults = (testCase: TestCase) => window.localStorage.setItem(`qa-test-defaults:${projectId}`, JSON.stringify({ platform: testCase.platform, environment: testCase.environment, device: testCase.device, appVersion: testCase.appVersion, testData: testCase.testData }));
-  const withPassedTimestamp = (testCase: TestCase): TestCase => {
-    if (testCase.status !== "Pass" || (testCase.executedDate && testCase.executedTime)) return testCase;
-    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Bangkok", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(new Date()).map((part) => [part.type, part.value]));
-    return { ...testCase, executedDate: `${parts.day}/${parts.month}/${parts.year}`, executedTime: `${parts.hour}:${parts.minute}:${parts.second}` };
-  };
   function resetResultForm() {
     setActualResult("");
     setApiResponse("");
@@ -711,7 +714,12 @@ export function QaWorkspace({
     if (!selectedProject?.googleSheetId) return setShowGoogleSheetDialog(true);
     setSyncingGoogle(true);
     try {
-      const response = await fetch(`/api/projects/${selectedProject.id}/google-sheet`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cases }) });
+      const timestampedCases = cases.map(withPassedTimestamp);
+      const changedCases = timestampedCases.filter((testCase, index) => testCase.executedDate !== cases[index].executedDate || testCase.executedTime !== cases[index].executedTime);
+      const persistedCases = new Map((await Promise.all(changedCases.map((testCase) => persistTestCaseResult(selectedProject.id, testCase)))).map((testCase) => [testCase.id, testCase]));
+      const syncCases = timestampedCases.map((testCase) => persistedCases.get(testCase.id) ?? testCase);
+      if (changedCases.length) setCases(syncCases);
+      const response = await fetch(`/api/projects/${selectedProject.id}/google-sheet`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cases: syncCases }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "ซิงค์ Google Sheet ไม่สำเร็จ");
       setHasUnsyncedChanges(false);

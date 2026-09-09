@@ -101,6 +101,24 @@ export async function createGroup(input: { name: string; description: string }) 
   return { group: { id: data.id, name: data.name, description: data.description, projectCount: 0, createdAt: data.created_at } };
 }
 
+export async function inviteGroupMember(input: { groupId: string; email: string; role: "admin" | "qa_lead" | "qa" | "viewer" }) {
+  const email = input.email.trim().toLowerCase();
+  if (!/^\S+@\S+\.\S+$/.test(email)) return { error: "กรุณาใส่อีเมลให้ถูกต้อง" };
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("invite_group_member", { requested_group_id: input.groupId, requested_email: email, requested_role: input.role });
+  if (error) return { error: error.message };
+  revalidatePath(`/groups/${input.groupId}/members`);
+  return { success: true };
+}
+
+export async function removeGroupMember(input: { groupId: string; memberId: string; email: string }) {
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("remove_group_member", { requested_group_id: input.groupId, requested_member_id: input.memberId || null, requested_email: input.email });
+  if (error) return { error: error.message };
+  revalidatePath(`/groups/${input.groupId}/members`);
+  return { success: true };
+}
+
 export async function updateProjectGoogleSheet(projectId: string, googleSheetUrl: string) {
   const url = googleSheetUrl.trim();
   const googleSheetId = extractGoogleSheetId(url);
@@ -116,7 +134,7 @@ export async function updateProjectGoogleSheet(projectId: string, googleSheetUrl
 
 export async function deleteProject(projectId: string) {
   try {
-    const supabase = createAdminClient();
+    const supabase = await createClient();
     const sources = await supabase.from("source_files").select("storage_key, column_mapping").eq("project_id", projectId);
     if (sources.error) return { error: sources.error.message };
     const { error } = await supabase.from("projects").delete().eq("id", projectId);
@@ -128,7 +146,7 @@ export async function deleteProject(projectId: string) {
         ? Array.from({ length: chunkCount }, (_, index) => `${source.storage_key}/part-${String(index).padStart(3, "0")}`)
         : [source.storage_key];
     });
-    if (storagePaths.length) await supabase.storage.from("testcase-source-files").remove(storagePaths);
+    if (storagePaths.length) await createAdminClient().storage.from("testcase-source-files").remove(storagePaths);
     revalidatePath("/");
     return { success: true };
   } catch (reason) {

@@ -39,11 +39,11 @@ export function GroupsHome({ initialGroups, error, currentUser }: { initialGroup
         <div className="groups-heading"><div><p className="eyebrow">WORKSPACE</p><h1>กลุ่มของคุณ</h1><span>เลือกกลุ่มเพื่อดู Projects หรือสร้างกลุ่มใหม่สำหรับทีม QA</span></div><button className="primary-button" onClick={() => setShowCreate(true)}><Plus size={17} />สร้างกลุ่ม</button></div>
         {error ? <div className="project-error"><div><strong>โหลด Groups ไม่สำเร็จ</strong><span>{error}</span></div></div> : groups.length ? (
           <div className="group-grid">{groups.map((group) => (
-            <Link className="group-card" href={`/groups/${group.id}/projects`} key={group.id}>
+            <article className="group-card-shell" key={group.id}><Link className="group-card" href={`/groups/${group.id}/projects`}>
               <div className="group-card-top"><span className="group-icon"><Users size={23} /></span><ChevronRight size={20} /></div>
               <h2>{group.name}</h2><p>{group.description || "พื้นที่ทำงานสำหรับทีม QA"}</p>
               <div className="group-card-footer"><span><FolderKanban size={15} />{group.projectCount} Projects</span><small>สร้างเมื่อ {new Intl.DateTimeFormat("th-TH", { dateStyle: "medium" }).format(new Date(group.createdAt))}</small></div>
-            </Link>
+            </Link><Link className="group-members-link" href={`/groups/${group.id}/members`}><Users size={15} />จัดสมาชิก</Link></article>
           ))}</div>
         ) : <div className="panel groups-empty"><Layers3 size={42} /><h2>ยังไม่มีกลุ่ม</h2><p>สร้างกลุ่มแรกเพื่อรวบรวม Projects และสมาชิกทีม QA</p><button className="primary-button" onClick={() => setShowCreate(true)}><Plus size={17} />สร้างกลุ่มแรก</button></div>}
       </section>

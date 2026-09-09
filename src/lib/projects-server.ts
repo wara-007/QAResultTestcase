@@ -15,6 +15,7 @@ export async function loadProjects(groupId: string): Promise<{
   }
 
   const supabase = await createClient();
+  await supabase.rpc("claim_group_invitations");
   const [{ data, error }, { data: authData }] = await Promise.all([
     supabase.from("projects").select("id, name, description, sprint_no, environment, google_sheet_id, google_sheet_url, created_at").eq("group_id", groupId).order("created_at", { ascending: false }),
     supabase.auth.getUser(),

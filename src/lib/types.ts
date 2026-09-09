@@ -106,6 +106,15 @@ export type Group = {
   createdAt: string;
 };
 
+export type GroupMember = {
+  memberId: string;
+  email: string;
+  displayName: string;
+  role: "admin" | "qa_lead" | "qa" | "viewer";
+  pending: boolean;
+  isOwner: boolean;
+};
+
 export type CurrentUser = {
   id: string;
   email: string;

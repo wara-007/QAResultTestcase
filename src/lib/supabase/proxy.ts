@@ -22,7 +22,7 @@ export async function updateSession(request: NextRequest) {
   const { data } = await supabase.auth.getClaims();
   const signedIn = Boolean(data?.claims);
   const path = request.nextUrl.pathname;
-  const protectedPage = path === "/" || path === "/groups" || path.startsWith("/groups/");
+  const protectedPage = path === "/" || path === "/groups" || path.startsWith("/groups/") || path.startsWith("/admin/");
   const protectedApi = path.startsWith("/api/projects/") || path.startsWith("/api/google/evidence/");
 
   if (!signedIn && protectedApi) {
@@ -37,6 +37,20 @@ export async function updateSession(request: NextRequest) {
     const redirect = NextResponse.redirect(loginUrl);
     response.cookies.getAll().forEach((cookie) => redirect.cookies.set(cookie));
     return redirect;
+  }
+
+  if (signedIn && (protectedPage || protectedApi)) {
+    const { data: authorized, error: accessError } = await supabase.rpc("is_app_authorized");
+    // Fail open only while the allowlist migration has not been installed yet.
+    if (!accessError && authorized !== true) {
+      if (protectedApi) return NextResponse.json({ error: "บัญชีนี้ยังไม่ได้รับอนุมัติให้ใช้งาน" }, { status: 403 });
+      const deniedUrl = request.nextUrl.clone();
+      deniedUrl.pathname = "/auth/access-denied";
+      deniedUrl.search = "";
+      const email = typeof data?.claims?.email === "string" ? data.claims.email : "";
+      if (email) deniedUrl.searchParams.set("email", email);
+      return NextResponse.redirect(deniedUrl);
+    }
   }
 
   if (signedIn && path === "/auth/login") {

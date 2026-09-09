@@ -125,9 +125,10 @@ export type CurrentUser = {
 };
 
 export type SystemUser = {
-  id: string;
+  id: string | null;
   email: string;
   displayName: string;
+  isAuthorized: boolean;
   isSystemOwner: boolean;
   lastSignInAt: string | null;
 };

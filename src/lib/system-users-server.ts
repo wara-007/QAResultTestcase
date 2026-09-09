@@ -4,9 +4,10 @@ import { createClient } from "@/lib/supabase/server";
 import type { SystemUser } from "@/lib/types";
 
 type SystemUserRow = {
-  user_id: string;
+  user_id: string | null;
   email: string;
   display_name: string;
+  is_authorized: boolean;
   is_system_owner: boolean;
   last_sign_in_at: string | null;
 };
@@ -26,6 +27,7 @@ export async function loadSystemUsers(): Promise<{ users: SystemUser[]; error: s
       id: user.user_id,
       email: user.email,
       displayName: user.display_name,
+      isAuthorized: user.is_authorized ?? true,
       isSystemOwner: user.is_system_owner,
       lastSignInAt: user.last_sign_in_at,
     })),

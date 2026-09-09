@@ -146,6 +146,19 @@ export async function setSystemOwner(input: { userId: string; enabled: boolean }
   return { success: true };
 }
 
+export async function setAppUserAccess(input: { email: string; enabled: boolean }) {
+  const email = input.email.trim().toLowerCase();
+  if (!/^\S+@\S+\.\S+$/.test(email)) return { error: "กรุณาใส่อีเมลให้ถูกต้อง" };
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("set_app_user_access", {
+    requested_email: email,
+    requested_enabled: input.enabled,
+  });
+  if (error) return { error: error.message };
+  revalidatePath("/admin/users");
+  return { success: true };
+}
+
 export async function updateProjectGoogleSheet(projectId: string, googleSheetUrl: string) {
   const url = googleSheetUrl.trim();
   const googleSheetId = extractGoogleSheetId(url);

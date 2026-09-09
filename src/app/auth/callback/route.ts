@@ -21,6 +21,14 @@ export async function GET(request: Request) {
     return NextResponse.redirect(new URL(`/auth/login?error=${encodeURIComponent(error.message)}`, origin));
   }
 
+  const { data: authorized, error: accessError } = await supabase.rpc("is_app_authorized");
+  if (!accessError && authorized !== true) {
+    await supabase.auth.signOut();
+    const denied = NextResponse.redirect(new URL(`/auth/access-denied?email=${encodeURIComponent(data.user.email ?? "")}`, origin));
+    denied.cookies.delete(GOOGLE_USER_COOKIE);
+    return denied;
+  }
+
   const response = NextResponse.redirect(new URL(next, origin));
   if (data.session?.provider_token) {
     response.cookies.set(GOOGLE_USER_COOKIE, sealGoogleToken({

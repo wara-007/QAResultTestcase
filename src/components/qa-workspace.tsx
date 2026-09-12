@@ -17,7 +17,6 @@ import {
   LoaderCircle,
   Menu,
   MoreHorizontal,
-  Paperclip,
   Search,
   Settings,
   ShieldCheck,
@@ -297,6 +296,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
   const [savingResult, setSavingResult] = useState(false);
   const [saving, setSaving] = useState(false);
   const [uploadingEvidence, setUploadingEvidence] = useState(false);
+  const [draggingEvidence, setDraggingEvidence] = useState(false);
   const [error, setError] = useState("");
   const [viewingSheet, setViewingSheet] = useState<WorkbookSheet | null>(null);
   const evidenceInput = useRef<HTMLInputElement>(null);
@@ -423,30 +423,67 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
       setSaving(false);
     }
   }
-  async function uploadEvidence(file?: File) {
-    if (!file) return;
+  async function uploadEvidence(files?: ArrayLike<File>) {
+    const selectedFiles = Array.from(files ?? []);
+    if (!selectedFiles.length) return;
+    const invalidFile = selectedFiles.find((file) => !file.type.startsWith("image/") || file.size > 10 * 1024 * 1024);
+    if (invalidFile) {
+      setError(!invalidFile.type.startsWith("image/") ? `${invalidFile.name} ไม่ใช่ไฟล์รูปภาพ` : `${invalidFile.name} มีขนาดเกิน 10 MB`);
+      return;
+    }
     setUploadingEvidence(true);
     setError("");
     try {
-      const form = new FormData();
-      form.set("file", file);
-      form.set("testCaseId", draft.id);
-      form.set("sourceRow", String(draft.sourceRow));
-      form.set("evidence", JSON.stringify(draft.evidence));
-      const response = await fetch(`/api/projects/${projectId}/evidence`, { method: "POST", body: form });
-      const data = await response.json();
-      if (response.status === 401 && data.authUrl) {
-        window.location.href = data.authUrl;
-        return;
+      for (const file of selectedFiles) {
+        const form = new FormData();
+        form.set("file", file);
+        form.set("testCaseId", draft.id);
+        form.set("sourceRow", String(draft.sourceRow));
+        const response = await fetch(`/api/projects/${projectId}/evidence`, { method: "POST", body: form });
+        const data = await response.json();
+        if (response.status === 401 && data.authUrl) {
+          window.location.href = data.authUrl;
+          return;
+        }
+        if (!response.ok) throw new Error(data.error ?? `อัปโหลด ${file.name} ไม่สำเร็จ`);
+        setDraft((current) => ({ ...current, evidence: [...current.evidence, data.evidence] }));
       }
-      if (!response.ok) throw new Error(data.error ?? "อัปโหลดรูปไม่สำเร็จ");
-      setDraft((current) => ({ ...current, evidence: [...current.evidence, data.evidence] }));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "อัปโหลดรูปไม่สำเร็จ");
     } finally {
       setUploadingEvidence(false);
       if (evidenceInput.current) evidenceInput.current.value = "";
     }
+  }
+  function renderEvidencePicker(label: string) {
+    return <div
+      className={`evidence-dropzone ${draggingEvidence ? "dragging" : ""} ${uploadingEvidence ? "uploading" : ""}`}
+      role="button"
+      tabIndex={uploadingEvidence ? -1 : 0}
+      aria-disabled={uploadingEvidence}
+      onClick={() => !uploadingEvidence && evidenceInput.current?.click()}
+      onKeyDown={(event) => {
+        if (!uploadingEvidence && (event.key === "Enter" || event.key === " ")) {
+          event.preventDefault();
+          evidenceInput.current?.click();
+        }
+      }}
+      onDragEnter={(event) => { event.preventDefault(); if (!uploadingEvidence) setDraggingEvidence(true); }}
+      onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = uploadingEvidence ? "none" : "copy"; }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDraggingEvidence(false);
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDraggingEvidence(false);
+        if (!uploadingEvidence) void uploadEvidence(event.dataTransfer.files);
+      }}
+    >
+      <input ref={evidenceInput} type="file" accept="image/*" multiple hidden onChange={(event) => void uploadEvidence(event.target.files ?? undefined)} />
+      {uploadingEvidence ? <LoaderCircle className="spin" size={24} /> : <Upload size={24} />}
+      <div><strong>{uploadingEvidence ? "กำลังอัปโหลดไป Google Drive..." : "ลากรูปมาวางที่นี่"}</strong><small>{uploadingEvidence ? "กรุณารอสักครู่" : `หรือคลิกเพื่อเลือกรูปสำหรับ${label} · เลือกได้หลายรูป · ไม่เกิน 10 MB ต่อรูป`}</small></div>
+      <span>{draft.evidence.length} รูป</span>
+    </div>;
   }
   function renderResultFields(submitLabel: string, onCancel?: () => void) {
     return <>
@@ -456,8 +493,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
       <div className="result-evidence-entry">
         <span className="field-label">รูปหลักฐานของ Result นี้</span>
         {draft.evidence.length > 0 && <div className="drive-evidence-gallery">{draft.evidence.map((item) => <a href={`/api/google/evidence/${item.fileId}`} target="_blank" rel="noreferrer" key={item.fileId}><Image src={`/api/google/evidence/${item.fileId}`} alt={item.name} width={500} height={350} unoptimized /><span>{item.name}</span></a>)}</div>}
-        <button type="button" className="attachment-button" onClick={() => evidenceInput.current?.click()} disabled={uploadingEvidence}><Paperclip size={17} />{uploadingEvidence ? "กำลังอัปโหลดไป Google Drive..." : "เพิ่มรูปหลักฐานให้ Result นี้"}<span>{draft.evidence.length} รูป</span></button>
-        <input ref={evidenceInput} type="file" accept="image/*" hidden onChange={(event) => void uploadEvidence(event.target.files?.[0])} />
+        {renderEvidencePicker(" Result นี้")}
       </div>
       <div className="result-editor-actions">
         {onCancel && <button className="secondary-button" type="button" onClick={onCancel} disabled={savingResult}>ยกเลิกการแก้ไข</button>}
@@ -470,7 +506,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
       <label className="text-field"><span>ชื่อ Defect</span><input value={defectTitle} onChange={(event) => setDefectTitle(event.target.value)} placeholder="ชื่อหรือรายละเอียดย่อ" /></label>
       <label className="text-field"><span>ผลที่พบ / Actual result</span><textarea rows={3} value={defectResult} onChange={(event) => setDefectResult(event.target.value)} placeholder="รายละเอียดบั๊กที่พบใน Test case นี้" /></label>
       <div className="result-input-grid"><label className="text-field"><span>API response</span><textarea className="code-input" rows={7} value={apiResponse} onChange={(event) => setApiResponse(event.target.value)} placeholder="วาง response JSON หรือข้อความ" /></label><label className="text-field"><span>Log</span><textarea className="code-input" rows={7} value={log} onChange={(event) => setLog(event.target.value)} placeholder="วาง application log" /></label></div>
-      <div className="result-evidence-entry"><span className="field-label">รูปหลักฐานของ Defect นี้</span>{draft.evidence.length > 0 && <div className="drive-evidence-gallery">{draft.evidence.map((item) => <a href={`/api/google/evidence/${item.fileId}`} target="_blank" rel="noreferrer" key={item.fileId}><Image src={`/api/google/evidence/${item.fileId}`} alt={item.name} width={500} height={350} unoptimized /><span>{item.name}</span></a>)}</div>}<button type="button" className="attachment-button" onClick={() => evidenceInput.current?.click()} disabled={uploadingEvidence}><Paperclip size={17} />{uploadingEvidence ? "กำลังอัปโหลดไป Google Drive..." : "เพิ่มรูปหลักฐานให้ Defect นี้"}<span>{draft.evidence.length} รูป</span></button><input ref={evidenceInput} type="file" accept="image/*" hidden onChange={(event) => void uploadEvidence(event.target.files?.[0])} /></div>
+      <div className="result-evidence-entry"><span className="field-label">รูปหลักฐานของ Defect นี้</span>{draft.evidence.length > 0 && <div className="drive-evidence-gallery">{draft.evidence.map((item) => <a href={`/api/google/evidence/${item.fileId}`} target="_blank" rel="noreferrer" key={item.fileId}><Image src={`/api/google/evidence/${item.fileId}`} alt={item.name} width={500} height={350} unoptimized /><span>{item.name}</span></a>)}</div>}{renderEvidencePicker(" Defect นี้")}</div>
       <div className="two-column-fields"><label><span>สถานะ Defect</span><select value={defectStatus} onChange={(event) => setDefectStatus(event.target.value)}><option>Open</option><option>In Progress</option><option>Resolved</option><option>Closed</option></select></label><label><span>Jira card URL</span><input type="url" value={jiraUrl} onChange={(event) => setJiraUrl(event.target.value)} placeholder="https://...atlassian.net/browse/..." /></label></div>
       <div className="result-editor-actions">{onCancel && <button className="secondary-button" type="button" onClick={onCancel} disabled={savingResult}>ยกเลิกการแก้ไข</button>}<button className="primary-button add-result-button" type="button" onClick={() => void saveDefect()} disabled={savingResult}>{savingResult ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}{submitLabel}</button></div>
     </>;

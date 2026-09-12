@@ -270,16 +270,20 @@ function ResultSheetViewer({ source, sheet }: { source: WorkbookSource; sheet: W
 
 function CaseDrawer({ value, projectId, source, currentUserName, pageMode = false, onClose, onSave, onSaveResult }: { value: TestCase; projectId: string; source: WorkbookSource | null; currentUserName: string; pageMode?: boolean; onClose: () => void; onSave: (value: TestCase) => Promise<void>; onSaveResult: (value: TestCase) => Promise<TestCase> }) {
   const [draft, setDraft] = useState<TestCase>(() => {
-    let remembered: { platform?: string; environment?: string; device?: string; appVersion?: string; testData?: string } = {};
+    let remembered: { platform?: string; environment?: string; device?: string; appVersion?: string; executedBy?: string; testData?: string } = {};
     try { remembered = JSON.parse(window.localStorage.getItem(`qa-test-defaults:${projectId}`) ?? "{}"); } catch { /* ใช้ค่าเดิมเมื่อ localStorage ไม่พร้อม */ }
+    const hasSavedExecution = Boolean(value.persistedLocally || value.results?.length || value.defects?.length);
+    const projectDefault = (savedValue: string, rememberedValue?: string) => hasSavedExecution
+      ? savedValue || rememberedValue || ""
+      : rememberedValue || savedValue || "";
     return {
       ...value,
-      platform: value.platform || remembered.platform || "",
-      environment: value.environment || remembered.environment || "",
-      device: value.device || remembered.device || "",
-      appVersion: value.appVersion || remembered.appVersion || "",
-      testData: value.testData || remembered.testData || "",
-      executedBy: currentUserName,
+      platform: projectDefault(value.platform, remembered.platform),
+      environment: projectDefault(value.environment, remembered.environment),
+      device: projectDefault(value.device, remembered.device),
+      appVersion: projectDefault(value.appVersion, remembered.appVersion),
+      executedBy: projectDefault(value.executedBy, remembered.executedBy) || currentUserName,
+      testData: projectDefault(value.testData, remembered.testData),
     };
   });
   const [actualResult, setActualResult] = useState("");
@@ -303,7 +307,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
   const resultSheets = source?.sheets.filter((sheet) => sheet.testCaseIds.includes(value.id.toUpperCase())) ?? [];
   const evidenceCount = resultSheets.reduce((total, sheet) => total + sheet.imageCount, 0);
   const update = (field: keyof TestCase, next: string) => setDraft((current) => ({ ...current, [field]: next }));
-  const rememberDefaults = (testCase: TestCase) => window.localStorage.setItem(`qa-test-defaults:${projectId}`, JSON.stringify({ platform: testCase.platform, environment: testCase.environment, device: testCase.device, appVersion: testCase.appVersion, testData: testCase.testData }));
+  const rememberDefaults = (testCase: TestCase) => window.localStorage.setItem(`qa-test-defaults:${projectId}`, JSON.stringify({ platform: testCase.platform, environment: testCase.environment, device: testCase.device, appVersion: testCase.appVersion, executedBy: testCase.executedBy, testData: testCase.testData }));
   function resetResultForm() {
     setActualResult("");
     setApiResponse("");
@@ -335,7 +339,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
     };
     const next = withPassedTimestamp({
       ...draft,
-      executedBy: currentUserName.trim() || draft.executedBy,
+      executedBy: draft.executedBy.trim() || currentUserName.trim(),
       remark: actualResult.trim() || draft.remark,
       evidence: [],
       results: editingResultId
@@ -372,7 +376,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
       jiraUrl: jiraUrl.trim(), apiResponse: apiResponse.trim(), log: log.trim(), evidence: draft.evidence, createdAt: new Date().toISOString(),
     };
     const next = withPassedTimestamp({
-      ...draft, executedBy: currentUserName.trim() || draft.executedBy, evidence: [],
+      ...draft, executedBy: draft.executedBy.trim() || currentUserName.trim(), evidence: [],
       defects: editingDefectId
         ? (draft.defects ?? []).map((item) => item.id === editingDefectId ? { ...defect, id: item.id, createdAt: item.createdAt } : item)
         : [...(draft.defects ?? []), defect],
@@ -414,7 +418,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
     setSaving(true);
     setError("");
     try {
-      const next = withPassedTimestamp({ ...draft, executedBy: currentUserName.trim() || draft.executedBy });
+      const next = withPassedTimestamp({ ...draft, executedBy: draft.executedBy.trim() || currentUserName.trim() });
       rememberDefaults(next);
       await onSave(next);
     } catch (reason) {
@@ -533,7 +537,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
             <label><span>Device</span><select value={draft.device} onChange={(event) => update("device", event.target.value)}><option value="">เลือก Device</option><option value="iOS">iOS</option><option value="Android">Android</option><option value="iOS/Android">iOS/Android</option></select></label>
             <label><span>App version</span><input value={draft.appVersion} onChange={(event) => update("appVersion", event.target.value)} placeholder="Build number" /></label>
           </div>
-          <label className="text-field"><span>ผู้ทดสอบ</span><input value={draft.executedBy || currentUserName} readOnly aria-readonly="true" title="ใช้ชื่อจากบัญชี Google ที่ Login" /></label>
+          <label className="text-field"><span>ผู้ทดสอบ</span><input value={draft.executedBy} onChange={(event) => update("executedBy", event.target.value)} placeholder={currentUserName || "ชื่อผู้ทดสอบ"} /></label>
           <label className="text-field"><span>Test data</span><input value={draft.testData} onChange={(event) => update("testData", event.target.value)} /></label>
           <label className="text-field"><span>หมายเหตุ / Actual result</span><textarea rows={4} value={draft.remark} onChange={(event) => update("remark", event.target.value)} placeholder="บันทึกสิ่งที่พบระหว่างการทดสอบ..." /></label>
           {(draft.results?.length ?? 0) > 0 && <div className="result-preview-list">

@@ -282,6 +282,7 @@ export async function persistTestCaseResult(projectId: string, testCase: TestCas
       project_id: projectId,
       testcase_key: testCase.id,
       source_row: testCase.sourceRow || null,
+      sort_order: testCase.sourceRow || 0,
       platform: testCase.platform,
       condition_text: testCase.condition,
       scenario: testCase.scenario,
@@ -296,7 +297,15 @@ export async function persistTestCaseResult(projectId: string, testCase: TestCas
   const caseUpdate = await supabase
     .from("test_cases")
     .update({
+      testcase_key: testCase.id,
+      source_row: testCase.sourceRow || null,
+      sort_order: testCase.sourceRow || 0,
       platform: testCase.platform,
+      condition_text: testCase.condition,
+      scenario: testCase.scenario,
+      case_name: testCase.name,
+      steps: testCase.steps,
+      expected_result: testCase.expected,
       test_data: testCase.testData,
     })
     .eq("id", recordId)

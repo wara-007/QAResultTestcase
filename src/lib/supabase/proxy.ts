@@ -24,12 +24,14 @@ export async function updateSession(request: NextRequest) {
   const path = request.nextUrl.pathname;
   const protectedPage = path === "/groups" || path.startsWith("/groups/") || path.startsWith("/admin/");
   const protectedApi = path.startsWith("/api/projects/") || path.startsWith("/api/google/evidence/");
+  const approvalPage = path === "/approvals" || path.startsWith("/approvals/");
+  const approvalApi = path.startsWith("/api/approvals/");
 
-  if (!signedIn && protectedApi) {
+  if (!signedIn && (protectedApi || approvalApi)) {
     return NextResponse.json({ error: "กรุณาเข้าสู่ระบบ" }, { status: 401 });
   }
 
-  if (!signedIn && protectedPage) {
+  if (!signedIn && (protectedPage || approvalPage)) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = "/auth/login";
     loginUrl.search = "";
@@ -51,15 +53,6 @@ export async function updateSession(request: NextRequest) {
       if (email) deniedUrl.searchParams.set("email", email);
       return NextResponse.redirect(deniedUrl);
     }
-  }
-
-  if (signedIn && path === "/auth/login") {
-    const destination = request.nextUrl.clone();
-    destination.pathname = "/groups";
-    destination.search = "";
-    const redirect = NextResponse.redirect(destination);
-    response.cookies.getAll().forEach((cookie) => redirect.cookies.set(cookie));
-    return redirect;
   }
 
   return response;

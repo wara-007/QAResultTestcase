@@ -15,9 +15,11 @@ import {
   FolderKanban,
   LayoutDashboard,
   LoaderCircle,
+  Mail,
   Menu,
   MoreHorizontal,
   Search,
+  Send,
   Settings,
   ShieldCheck,
   RefreshCw,
@@ -31,9 +33,11 @@ import { ChangeEvent, useEffect, useMemo, useRef, useState, useTransition } from
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { createProject, deleteProject, updateProjectGoogleSheet } from "@/app/actions";
+import { createProject, createProjectApprovalRequest, deleteProject, getLatestProjectApproval, updateProjectGoogleSheet, type ProjectApprovalSummary } from "@/app/actions";
 import { signOut } from "@/app/auth/actions";
 import { exportTestCases, importTestCases, readWorkbookSheet } from "@/lib/excel-ooxml";
+import { evidenceImageUrl } from "@/lib/evidence";
+import { compressEvidenceImage } from "@/lib/image-compression";
 import { loadProjectWorkspace, persistImportedWorkbook, persistTestCaseResult } from "@/lib/project-data";
 import { TEST_STATUSES, type CurrentUser, type Project, type TestCase, type TestDefect, type TestResult, type TestStatus, type WorkbookSheet, type WorkbookSheetContent, type WorkbookSource } from "@/lib/types";
 
@@ -142,6 +146,90 @@ function UploadDialog({ onClose, onImported }: { onClose: () => void; onImported
   );
 }
 
+function CreateTestCaseDialog({ existingIds, nextSourceRow, defaultEnvironment, currentUserName, onClose, onCreated }: {
+  existingIds: string[];
+  nextSourceRow: number;
+  defaultEnvironment: string;
+  currentUserName: string;
+  onClose: () => void;
+  onCreated: (testCase: TestCase) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState({ id: "", scenario: "", name: "", steps: "", expected: "", platform: "", condition: "" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  function update(field: keyof typeof draft, value: string) {
+    setDraft((current) => ({ ...current, [field]: value }));
+  }
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const id = draft.id.trim();
+    if (!id || !draft.name.trim() || !draft.steps.trim() || !draft.expected.trim()) {
+      setError("กรุณากรอก Test Case ID, ชื่อ Test Case, Test Step และ Expected Result");
+      return;
+    }
+    if (existingIds.some((existingId) => existingId.toUpperCase() === id.toUpperCase())) {
+      setError(`มี Test Case ID ${id} อยู่แล้ว`);
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await onCreated({
+        id,
+        sourceRow: nextSourceRow,
+        platform: draft.platform.trim(),
+        condition: draft.condition.trim(),
+        scenario: draft.scenario.trim(),
+        name: draft.name.trim(),
+        steps: draft.steps.trim(),
+        expected: draft.expected.trim(),
+        status: "Not Start",
+        device: "",
+        testData: "",
+        appVersion: "",
+        environment: defaultEnvironment,
+        resultReference: "",
+        executedBy: currentUserName,
+        executedDate: "",
+        executedTime: "",
+        remark: "",
+        evidence: [],
+        results: [],
+        defects: [],
+      });
+      onClose();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "เพิ่ม Test Case ไม่สำเร็จ");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="upload-dialog testcase-create-dialog" role="dialog" aria-modal="true" aria-labelledby="create-testcase-title" onMouseDown={(event) => event.stopPropagation()}>
+        <button className="icon-button close-button" onClick={onClose} aria-label="ปิด"><X size={19} /></button>
+        <div className="dialog-heading"><div className="dialog-icon"><ClipboardCheck size={24} /></div><div><p className="eyebrow">NEW TEST CASE</p><h2 id="create-testcase-title">เพิ่ม Test Case</h2></div></div>
+        <form onSubmit={submit}>
+          <div className="two-column-fields">
+            <label><span>Test Case ID *</span><input value={draft.id} onChange={(event) => update("id", event.target.value)} placeholder="เช่น TC-21" autoFocus /></label>
+            <label><span>Platform</span><input value={draft.platform} onChange={(event) => update("platform", event.target.value)} placeholder="เช่น App หรือ Web" /></label>
+          </div>
+          <label className="text-field"><span>Test Scenario</span><textarea rows={2} value={draft.scenario} onChange={(event) => update("scenario", event.target.value)} /></label>
+          <label className="text-field"><span>Test Case Name *</span><input value={draft.name} onChange={(event) => update("name", event.target.value)} /></label>
+          <label className="text-field"><span>Condition</span><textarea rows={2} value={draft.condition} onChange={(event) => update("condition", event.target.value)} /></label>
+          <label className="text-field"><span>Test Step Description *</span><textarea rows={5} value={draft.steps} onChange={(event) => update("steps", event.target.value)} placeholder="ใส่แต่ละขั้นตอนแยกบรรทัด" /></label>
+          <label className="text-field"><span>Expected Result *</span><textarea rows={5} value={draft.expected} onChange={(event) => update("expected", event.target.value)} placeholder="ใส่ผลลัพธ์ที่คาดหวัง" /></label>
+          {error && <p className="form-error"><CircleAlert size={16} />{error}</p>}
+          <div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={busy}>ยกเลิก</button><button type="submit" className="primary-button" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}บันทึก Test Case</button></div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
 function SetupView() {
   return (
     <main className="auth-screen">
@@ -242,6 +330,95 @@ function ProjectsHome({ projects, error, onAdd, projectHref }: { projects: Proje
   );
 }
 
+function ProjectApprovalPanel({ project, cases, counts, testingFinished, loading, currentEnvironment, currentUser, onConnectSheet, flash }: {
+  project: Project;
+  cases: TestCase[];
+  counts: Record<TestStatus, number>;
+  testingFinished: boolean;
+  loading: boolean;
+  currentEnvironment?: string;
+  currentUser: CurrentUser | null;
+  onConnectSheet: () => void;
+  flash: (message: string) => void;
+}) {
+  const saved = useMemo(() => {
+    try { return JSON.parse(window.localStorage.getItem(`qa-approval-email:${project.id}`) ?? "{}") as { poEmail?: string; note?: string }; }
+    catch { return {}; }
+  }, [project.id]);
+  const [poEmail, setPoEmail] = useState(saved.poEmail ?? "");
+  const [approvalNote, setApprovalNote] = useState(saved.note ?? "");
+  const [showUntestedConfirmation, setShowUntestedConfirmation] = useState(false);
+  const [approval, setApproval] = useState<ProjectApprovalSummary | null>(null);
+  const [sendingApproval, setSendingApproval] = useState(false);
+  const untested = counts["Not Start"] + counts["In Progress"];
+
+  useEffect(() => {
+    let active = true;
+    const refresh = () => void getLatestProjectApproval(project.id).then((result) => {
+      if (!active || "error" in result) return;
+      setApproval(result.approval);
+    });
+    refresh();
+    const timer = window.setInterval(refresh, 30_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [project.id]);
+
+  function openApprovalEmail() {
+    if (loading) return;
+    const recipient = poEmail.trim();
+    if (!/^\S+@\S+\.\S+$/.test(recipient)) return flash("กรุณากรอกอีเมล PO ให้ถูกต้อง");
+    if (!project.googleSheetUrl) return flash("กรุณาเชื่อม Google Sheet ก่อนส่งขอ Approve");
+    if (!testingFinished) {
+      setShowUntestedConfirmation(true);
+      return;
+    }
+    void launchApprovalEmail();
+  }
+
+  async function launchApprovalEmail() {
+    const recipient = poEmail.trim();
+    setShowUntestedConfirmation(false);
+    setSendingApproval(true);
+    const created = await createProjectApprovalRequest({ projectId: project.id, recipientEmail: recipient });
+    setSendingApproval(false);
+    if (!("request" in created)) return flash(created.error ?? "สร้างลิงก์รีวิวไม่สำเร็จ");
+    const reviewUrl = `${window.location.origin}/approvals/${created.request.id}`;
+    setApproval({ ...created.request, reviewedAt: "", reviewerName: "", reviewerComment: "" });
+    window.localStorage.setItem(`qa-approval-email:${project.id}`, JSON.stringify({ poEmail: recipient, note: approvalNote.trim() }));
+    const subject = `[QA Approval] ${project.name}`;
+    const body = [
+      "เรียน PO,", "", `ขอส่งผลการทดสอบ Project: ${project.name}`,
+      `Environment: ${currentEnvironment || project.environment || "-"}`,
+      `Test cases ทั้งหมด: ${cases.length}`, `Pass: ${counts.Pass}`, `Failed: ${counts.Failed}`, `Skip: ${counts.Skip}`,
+      `Not Start: ${counts["Not Start"]}`, `Inprogress: ${counts["In Progress"]}`,
+      "", `PO Portal สำหรับรีวิวและกด Approved: ${reviewUrl}`,
+      `Google Sheets: ${project.googleSheetUrl}`,
+      approvalNote.trim() ? `\nหมายเหตุ:\n${approvalNote.trim()}` : "", "",
+      `กรุณา Login ด้วย Google Account ${recipient} เพื่อดูรายการที่ได้รับมอบหมาย ตรวจสอบ Test Case และ Result ทั้งหมด แล้วกด Approved หรือขอให้แก้ไข`, "",
+      `ผู้ส่ง: ${currentUser?.name || currentUser?.email || "QA Team"}`,
+    ].filter(Boolean).join("\n");
+    window.location.href = `mailto:${encodeURIComponent(recipient)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  }
+
+  const approvalLabel = approval?.status === "approved" ? "Approved" : approval?.status === "changes_requested" ? "ขอให้แก้ไข" : approval?.status === "pending" ? "รอ PO รีวิว" : "";
+  return <><section className="panel approval-panel">
+    <div className="approval-heading"><div className="approval-icon"><Mail size={23} /></div><div><h2>ส่งผลทดสอบให้ PO Approve</h2><p>ระบบจะเปิดโปรแกรมอีเมลพร้อมสรุปผลและลิงก์ Google Sheets จากนั้น QA ตรวจข้อความและกดส่งเอง</p></div><span className={`approval-readiness ${testingFinished ? "ready" : "pending"}`}>{loading ? "กำลังโหลด..." : testingFinished ? "พร้อมส่ง" : cases.length ? `ยังไม่ได้ทดสอบ ${untested} cases` : "ยังไม่มี Test Case"}</span></div>
+    <div className="approval-form"><label className="text-field"><span>อีเมล PO *</span><input type="email" value={poEmail} onChange={(event) => setPoEmail(event.target.value)} placeholder="po@company.com" /></label><label className="text-field approval-note"><span>ข้อความเพิ่มเติม</span><textarea rows={3} value={approvalNote} onChange={(event) => setApprovalNote(event.target.value)} placeholder="รายละเอียด release หรือสิ่งที่ต้องการให้ PO ตรวจสอบ" /></label></div>
+    {approval && <div className={`approval-status-card ${approval.status}`}><div><strong>{approvalLabel}</strong><span>ส่งให้ {approval.recipientEmail} เมื่อ {new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short" }).format(new Date(approval.requestedAt))}</span></div>{approval.reviewerName && <span>โดย {approval.reviewerName}</span>}{approval.reviewerComment && <p>{approval.reviewerComment}</p>}</div>}
+    <div className="approval-footer"><div>{project.googleSheetUrl ? <a href={project.googleSheetUrl} target="_blank" rel="noreferrer"><FileSpreadsheet size={16} />เปิด Google Sheets</a> : <button type="button" className="text-button" onClick={onConnectSheet}>เชื่อม Google Sheet ก่อนส่ง</button>}<small>{testingFinished ? "อีเมลจะมีลิงก์ให้ PO เปิดรีวิวและกด Approved" : "กดส่งได้ แต่ระบบจะแจ้งเตือนให้ยืนยันก่อน"}</small></div><button type="button" className="primary-button" onClick={openApprovalEmail} disabled={loading || sendingApproval || !project.googleSheetUrl}>{sendingApproval ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}{approval?.status === "pending" ? "ส่งลิงก์ใหม่" : "เปิดอีเมลขอ Approve"}</button></div>
+  </section>
+  {showUntestedConfirmation && <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowUntestedConfirmation(false)}><section className="approval-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="approval-confirm-title" onMouseDown={(event) => event.stopPropagation()}>
+    <button type="button" className="icon-button close-button" onClick={() => setShowUntestedConfirmation(false)} aria-label="ปิด"><X size={19} /></button>
+    <div className="approval-confirm-icon"><CircleAlert size={28} /></div>
+    <h2 id="approval-confirm-title">ยังมี Test Case ที่ยังไม่ได้ทดสอบ</h2>
+    <p>{cases.length ? `พบ Test Case ที่ยังดำเนินการไม่เสร็จ ${untested} รายการ` : "Project นี้ยังไม่มี Test Case"}</p>
+    {cases.length > 0 && <div className="approval-pending-summary"><div><span>Not Start</span><strong>{counts["Not Start"]}</strong></div><div><span>Inprogress</span><strong>{counts["In Progress"]}</strong></div></div>}
+    <div className="approval-confirm-note"><CircleAlert size={17} /><span>อีเมลจะระบุจำนวน Test Case ที่ยังไม่ได้ทดสอบให้ PO เห็นด้วย</span></div>
+    <div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setShowUntestedConfirmation(false)}>ยกเลิก</button><button type="button" className="primary-button" disabled={sendingApproval} onClick={() => void launchApprovalEmail()}>{sendingApproval ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}ยืนยันเปิดอีเมล</button></div>
+  </section></div>}
+  </>;
+}
+
 function PlusIcon() {
   return <span className="plus-icon" aria-hidden>+</span>;
 }
@@ -297,6 +474,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
   const [editingDefectId, setEditingDefectId] = useState<string | null>(null);
   const [showResultEntry, setShowResultEntry] = useState(false);
   const [showDefectEntry, setShowDefectEntry] = useState(false);
+  const [editingCaseDetails, setEditingCaseDetails] = useState(false);
   const [savingResult, setSavingResult] = useState(false);
   const [saving, setSaving] = useState(false);
   const [uploadingEvidence, setUploadingEvidence] = useState(false);
@@ -427,6 +605,27 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
       setSaving(false);
     }
   }
+  async function saveCaseDetails() {
+    if (!draft.id.trim() || !draft.name.trim() || !draft.steps.trim() || !draft.expected.trim()) {
+      setError("กรุณากรอก Test Case ID, ชื่อ Test Case, ขั้นตอนทดสอบ และ Expected Result");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const next = { ...draft, id: draft.id.trim(), name: draft.name.trim(), scenario: draft.scenario.trim(), condition: draft.condition.trim(), steps: draft.steps.trim(), expected: draft.expected.trim() };
+      await onSave(next);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "บันทึก Test Case ไม่สำเร็จ");
+    } finally {
+      setSaving(false);
+    }
+  }
+  function cancelCaseDetailsEdit() {
+    setDraft((current) => ({ ...current, id: value.id, name: value.name, scenario: value.scenario, condition: value.condition, steps: value.steps, expected: value.expected }));
+    setEditingCaseDetails(false);
+    setError("");
+  }
   async function uploadEvidence(files?: ArrayLike<File>) {
     const selectedFiles = Array.from(files ?? []);
     if (!selectedFiles.length) return;
@@ -439,8 +638,9 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
     setError("");
     try {
       for (const file of selectedFiles) {
+        const prepared = await compressEvidenceImage(file);
         const form = new FormData();
-        form.set("file", file);
+        form.set("file", prepared.file);
         form.set("testCaseId", draft.id);
         form.set("sourceRow", String(draft.sourceRow));
         const response = await fetch(`/api/projects/${projectId}/evidence`, { method: "POST", body: form });
@@ -485,7 +685,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
     >
       <input ref={evidenceInput} type="file" accept="image/*" multiple hidden onChange={(event) => void uploadEvidence(event.target.files ?? undefined)} />
       {uploadingEvidence ? <LoaderCircle className="spin" size={24} /> : <Upload size={24} />}
-      <div><strong>{uploadingEvidence ? "กำลังอัปโหลดไป Google Drive..." : "ลากรูปมาวางที่นี่"}</strong><small>{uploadingEvidence ? "กรุณารอสักครู่" : `หรือคลิกเพื่อเลือกรูปสำหรับ${label} · เลือกได้หลายรูป · ไม่เกิน 10 MB ต่อรูป`}</small></div>
+      <div><strong>{uploadingEvidence ? "กำลังบีบอัดและอัปโหลดไป Google Drive..." : "ลากรูปมาวางที่นี่"}</strong><small>{uploadingEvidence ? "ระบบกำลังลดขนาดรูป กรุณารอสักครู่" : `หรือคลิกเพื่อเลือกรูปสำหรับ${label} · บีบอัดอัตโนมัติ · เลือกได้หลายรูป · ไฟล์ต้นฉบับไม่เกิน 10 MB`}</small></div>
       <span>{draft.evidence.length} รูป</span>
     </div>;
   }
@@ -496,7 +696,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
       <label className="text-field"><span>Log</span><textarea className="code-input" rows={7} value={log} onChange={(event) => setLog(event.target.value)} placeholder="วาง application log" /></label></div>
       <div className="result-evidence-entry">
         <span className="field-label">รูปหลักฐานของ Result นี้</span>
-        {draft.evidence.length > 0 && <div className="drive-evidence-gallery">{draft.evidence.map((item) => <a href={`/api/google/evidence/${item.fileId}`} target="_blank" rel="noreferrer" key={item.fileId}><Image src={`/api/google/evidence/${item.fileId}`} alt={item.name} width={500} height={350} unoptimized /><span>{item.name}</span></a>)}</div>}
+        {draft.evidence.length > 0 && <div className="drive-evidence-gallery">{draft.evidence.map((item) => { const url = evidenceImageUrl(item); return <a href={url} target="_blank" rel="noreferrer" key={item.fileId}><Image src={url} alt={item.name} width={500} height={350} unoptimized /><span>{item.name}</span></a>; })}</div>}
         {renderEvidencePicker(" Result นี้")}
       </div>
       <div className="result-editor-actions">
@@ -510,7 +710,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
       <label className="text-field"><span>ชื่อ Defect</span><input value={defectTitle} onChange={(event) => setDefectTitle(event.target.value)} placeholder="ชื่อหรือรายละเอียดย่อ" /></label>
       <label className="text-field"><span>ผลที่พบ / Actual result</span><textarea rows={3} value={defectResult} onChange={(event) => setDefectResult(event.target.value)} placeholder="รายละเอียดบั๊กที่พบใน Test case นี้" /></label>
       <div className="result-input-grid"><label className="text-field"><span>API response</span><textarea className="code-input" rows={7} value={apiResponse} onChange={(event) => setApiResponse(event.target.value)} placeholder="วาง response JSON หรือข้อความ" /></label><label className="text-field"><span>Log</span><textarea className="code-input" rows={7} value={log} onChange={(event) => setLog(event.target.value)} placeholder="วาง application log" /></label></div>
-      <div className="result-evidence-entry"><span className="field-label">รูปหลักฐานของ Defect นี้</span>{draft.evidence.length > 0 && <div className="drive-evidence-gallery">{draft.evidence.map((item) => <a href={`/api/google/evidence/${item.fileId}`} target="_blank" rel="noreferrer" key={item.fileId}><Image src={`/api/google/evidence/${item.fileId}`} alt={item.name} width={500} height={350} unoptimized /><span>{item.name}</span></a>)}</div>}{renderEvidencePicker(" Defect นี้")}</div>
+      <div className="result-evidence-entry"><span className="field-label">รูปหลักฐานของ Defect นี้</span>{draft.evidence.length > 0 && <div className="drive-evidence-gallery">{draft.evidence.map((item) => { const url = evidenceImageUrl(item); return <a href={url} target="_blank" rel="noreferrer" key={item.fileId}><Image src={url} alt={item.name} width={500} height={350} unoptimized /><span>{item.name}</span></a>; })}</div>}{renderEvidencePicker(" Defect นี้")}</div>
       <div className="two-column-fields"><label><span>สถานะ Defect</span><select value={defectStatus} onChange={(event) => setDefectStatus(event.target.value)}><option>Open</option><option>In Progress</option><option>Resolved</option><option>Closed</option></select></label><label><span>Jira card URL</span><input type="url" value={jiraUrl} onChange={(event) => setJiraUrl(event.target.value)} placeholder="https://...atlassian.net/browse/..." /></label></div>
       <div className="result-editor-actions">{onCancel && <button className="secondary-button" type="button" onClick={onCancel} disabled={savingResult}>ยกเลิกการแก้ไข</button>}<button className="primary-button add-result-button" type="button" onClick={() => void saveDefect()} disabled={savingResult}>{savingResult ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}{submitLabel}</button></div>
     </>;
@@ -520,14 +720,25 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
       <aside className={`case-drawer ${pageMode ? "case-route-editor" : ""}`} role="dialog" aria-modal="true" aria-labelledby="case-title" onMouseDown={(event) => event.stopPropagation()}>
         <header className="drawer-header">
           <div><span className="case-id">{draft.id}</span><h2 id="case-title">{draft.name}</h2></div>
-          <button className="icon-button" onClick={onClose} aria-label="ปิด"><X size={20} /></button>
+          <div className="case-header-actions">{!editingCaseDetails && <button type="button" className="secondary-button" onClick={() => setEditingCaseDetails(true)}>แก้ไข Test Case</button>}<button className="icon-button" onClick={onClose} aria-label="ปิด"><X size={20} /></button></div>
         </header>
         <div className="drawer-body">
           <div className="case-context"><span>{draft.platform || "ไม่ระบุ Platform"}</span><span>{draft.environment || "ไม่ระบุ Env"}</span><span>{draft.appVersion || "ไม่ระบุ Build"}</span></div>
-          <section className="readonly-block"><p>Test Scenario</p><div className="multiline">{draft.scenario || "—"}</div></section>
-          <section className="readonly-block"><p>เงื่อนไข</p><div>{draft.condition || "—"}</div></section>
-          <section className="readonly-block"><p>ขั้นตอนทดสอบ</p><div className="multiline">{draft.steps || "—"}</div></section>
-          <section className="readonly-block expected"><p>ผลลัพธ์ที่คาดหวัง</p><div className="multiline">{draft.expected || "—"}</div></section>
+          {editingCaseDetails ? <section className="testcase-details-editor">
+            <div className="result-form-heading"><div><span>แก้ไข Test Case</span><small>การแก้ไขจะถูกบันทึกในระบบ และรอซิงค์กลับ Google Sheets</small></div></div>
+            <div className="two-column-fields"><label><span>Test Case ID *</span><input value={draft.id} onChange={(event) => update("id", event.target.value)} /></label><label><span>Platform</span><input value={draft.platform} onChange={(event) => update("platform", event.target.value)} /></label></div>
+            <label className="text-field"><span>Test Case Name *</span><input value={draft.name} onChange={(event) => update("name", event.target.value)} /></label>
+            <label className="text-field"><span>Test Scenario</span><textarea rows={3} value={draft.scenario} onChange={(event) => update("scenario", event.target.value)} /></label>
+            <label className="text-field"><span>Condition</span><textarea rows={2} value={draft.condition} onChange={(event) => update("condition", event.target.value)} /></label>
+            <label className="text-field"><span>Test Step Description *</span><textarea rows={6} value={draft.steps} onChange={(event) => update("steps", event.target.value)} /></label>
+            <label className="text-field"><span>Expected Result *</span><textarea rows={6} value={draft.expected} onChange={(event) => update("expected", event.target.value)} /></label>
+            <div className="result-editor-actions"><button type="button" className="secondary-button" onClick={cancelCaseDetailsEdit} disabled={saving}>ยกเลิกการแก้ไข</button><button type="button" className="primary-button" onClick={() => void saveCaseDetails()} disabled={saving}>{saving ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}บันทึก Test Case</button></div>
+          </section> : <>
+            <section className="readonly-block"><p>Test Scenario</p><div className="multiline">{draft.scenario || "—"}</div></section>
+            <section className="readonly-block"><p>เงื่อนไข</p><div>{draft.condition || "—"}</div></section>
+            <section className="readonly-block"><p>ขั้นตอนทดสอบ</p><div className="multiline">{draft.steps || "—"}</div></section>
+            <section className="readonly-block expected"><p>ผลลัพธ์ที่คาดหวัง</p><div className="multiline">{draft.expected || "—"}</div></section>
+          </>}
           <div className="form-section-title"><span>บันทึกผลการทดสอบ</span><span className="required-note">* จำเป็น</span></div>
           <div className="two-column-fields">
             <label><span>Platform</span><input value={draft.platform} onChange={(event) => update("platform", event.target.value)} placeholder="เช่น Mobile, Web, iOS/Android" /></label>
@@ -542,15 +753,15 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
           <label className="text-field"><span>หมายเหตุ / Actual result</span><textarea rows={4} value={draft.remark} onChange={(event) => update("remark", event.target.value)} placeholder="บันทึกสิ่งที่พบระหว่างการทดสอบ..." /></label>
           {(draft.results?.length ?? 0) > 0 && <div className="result-preview-list">
             <div className="result-sheet-heading"><span>Preview Results</span><strong>{draft.results?.length} รายการ</strong></div>
-            {draft.results?.map((result, index) => <article key={result.id} className={editingResultId === result.id ? "editing" : ""}><header><strong>ผลที่ {index + 1}</strong><StatusBadge status={result.status} /><time>{new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short" }).format(new Date(result.createdAt))}</time>{editingResultId !== result.id && <><button type="button" className="secondary-button result-edit-button" onClick={() => editResult(result)}>แก้ไข</button><button type="button" className="danger-button result-delete-button" disabled={savingResult} onClick={() => void deleteResult(result)}><Trash2 size={13} />ลบ</button></>}</header>{editingResultId === result.id ? <div className="result-entry-block inline-result-editor"><div className="result-form-heading"><div><span>{`แก้ไขผลที่ ${index + 1} ของ ${draft.id}`}</span><small>บันทึกแล้วจะแทนที่ Result รายการนี้</small></div></div>{renderResultFields("บันทึกการแก้ไข Result", resetResultForm)}</div> : <>{result.actualResult && <p>{result.actualResult}</p>}{result.apiResponse && <details><summary>API response</summary><pre>{result.apiResponse}</pre></details>}{result.log && <details><summary>Log</summary><pre>{result.log}</pre></details>}{result.evidence.length > 0 && <div className="drive-evidence-gallery result-evidence-gallery">{result.evidence.map((item) => <a href={`/api/google/evidence/${item.fileId}`} target="_blank" rel="noreferrer" key={item.fileId}><Image src={`/api/google/evidence/${item.fileId}`} alt={item.name} width={500} height={350} unoptimized /><span>{item.name}</span></a>)}</div>}</>}</article>)}
+            {draft.results?.map((result, index) => <article key={result.id} className={editingResultId === result.id ? "editing" : ""}><header><strong>ผลที่ {index + 1}</strong><StatusBadge status={result.status} /><time>{new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short" }).format(new Date(result.createdAt))}</time>{editingResultId !== result.id && <><button type="button" className="secondary-button result-edit-button" onClick={() => editResult(result)}>แก้ไข</button><button type="button" className="danger-button result-delete-button" disabled={savingResult} onClick={() => void deleteResult(result)}><Trash2 size={13} />ลบ</button></>}</header>{editingResultId === result.id ? <div className="result-entry-block inline-result-editor"><div className="result-form-heading"><div><span>{`แก้ไขผลที่ ${index + 1} ของ ${draft.id}`}</span><small>บันทึกแล้วจะแทนที่ Result รายการนี้</small></div></div>{renderResultFields("บันทึกการแก้ไข Result", resetResultForm)}</div> : <>{result.actualResult && <p>{result.actualResult}</p>}{result.apiResponse && <details><summary>API response</summary><pre>{result.apiResponse}</pre></details>}{result.log && <details><summary>Log</summary><pre>{result.log}</pre></details>}{result.evidence.length > 0 && <div className="drive-evidence-gallery result-evidence-gallery">{result.evidence.map((item) => { const url = evidenceImageUrl(item); return <a href={url} target="_blank" rel="noreferrer" key={item.fileId}><Image src={url} alt={item.name} width={500} height={350} unoptimized /><span>{item.name}</span></a>; })}</div>}</>}</article>)}
           </div>}
           {!showResultEntry && !editingResultId && !showDefectEntry && !editingDefectId && <div className="entry-type-actions"><button type="button" className="primary-button open-result-button" onClick={() => { resetResultForm(); setShowResultEntry(true); }}><PlusIcon />Add Result</button><button type="button" className="secondary-button add-defect-button" onClick={() => { resetResultForm(); setShowDefectEntry(true); }}><CircleAlert size={16} />Add Defect</button></div>}
-          {showResultEntry && <div className="result-entry-block">
+          {showResultEntry && <div className="result-entry-block result-entry-highlight">
             <div className="result-form-heading"><div><span>{`เพิ่ม Result ให้ ${draft.id}`}</span><small>Result ใหม่จะแสดงบนสุดของรายการ</small></div><strong>{draft.results?.length ?? 0} results</strong></div>
             {renderResultFields("บันทึก Result รายการนี้", resetResultForm)}
           </div>}
           {showDefectEntry && <div className="result-entry-block defect-entry"><div className="result-form-heading"><div><span>{`เพิ่ม Defect ให้ ${draft.id}`}</span><small>Defect นี้จะผูกกับ Test case โดยตรง</small></div><strong>{draft.defects?.length ?? 0} defects</strong></div>{renderDefectFields("บันทึก Defect รายการนี้", resetResultForm)}</div>}
-          {(draft.defects?.length ?? 0) > 0 && <div className="result-preview-list defect-preview-list"><div className="result-sheet-heading"><span>Defects ของ Test case</span><strong>{draft.defects?.length} รายการ</strong></div>{draft.defects?.map((defect, index) => <article key={defect.id} className={editingDefectId === defect.id ? "editing" : ""}><header><strong>Defect {index + 1}: {defect.title}</strong><span className="status-badge status-failed">{defect.status}</span><time>{new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short" }).format(new Date(defect.createdAt))}</time>{editingDefectId !== defect.id && <><button type="button" className="secondary-button result-edit-button" onClick={() => editDefect(defect)}>แก้ไข</button><button type="button" className="danger-button result-delete-button" disabled={savingResult} onClick={() => void deleteDefect(defect)}><Trash2 size={13} />ลบ</button></>}</header>{editingDefectId === defect.id ? <div className="result-entry-block inline-result-editor">{renderDefectFields("บันทึกการแก้ไข Defect", resetResultForm)}</div> : <>{defect.description && <p>{defect.description}</p>}{defect.apiResponse && <details><summary>API response</summary><pre>{defect.apiResponse}</pre></details>}{defect.log && <details><summary>Log</summary><pre>{defect.log}</pre></details>}{defect.evidence.length > 0 && <div className="drive-evidence-gallery result-evidence-gallery">{defect.evidence.map((item) => <a href={`/api/google/evidence/${item.fileId}`} target="_blank" rel="noreferrer" key={item.fileId}><Image src={`/api/google/evidence/${item.fileId}`} alt={item.name} width={500} height={350} unoptimized /><span>{item.name}</span></a>)}</div>}{defect.jiraUrl && <a className="secondary-button" href={defect.jiraUrl} target="_blank" rel="noreferrer">เปิด Jira</a>}</>}</article>)}</div>}
+          {(draft.defects?.length ?? 0) > 0 && <div className="result-preview-list defect-preview-list"><div className="result-sheet-heading"><span>Defects ของ Test case</span><strong>{draft.defects?.length} รายการ</strong></div>{draft.defects?.map((defect, index) => <article key={defect.id} className={editingDefectId === defect.id ? "editing" : ""}><header><strong>Defect {index + 1}: {defect.title}</strong><span className="status-badge status-failed">{defect.status}</span><time>{new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short" }).format(new Date(defect.createdAt))}</time>{editingDefectId !== defect.id && <><button type="button" className="secondary-button result-edit-button" onClick={() => editDefect(defect)}>แก้ไข</button><button type="button" className="danger-button result-delete-button" disabled={savingResult} onClick={() => void deleteDefect(defect)}><Trash2 size={13} />ลบ</button></>}</header>{editingDefectId === defect.id ? <div className="result-entry-block inline-result-editor">{renderDefectFields("บันทึกการแก้ไข Defect", resetResultForm)}</div> : <>{defect.description && <p>{defect.description}</p>}{defect.apiResponse && <details><summary>API response</summary><pre>{defect.apiResponse}</pre></details>}{defect.log && <details><summary>Log</summary><pre>{defect.log}</pre></details>}{defect.evidence.length > 0 && <div className="drive-evidence-gallery result-evidence-gallery">{defect.evidence.map((item) => { const url = evidenceImageUrl(item); return <a href={url} target="_blank" rel="noreferrer" key={item.fileId}><Image src={url} alt={item.name} width={500} height={350} unoptimized /><span>{item.name}</span></a>; })}</div>}{defect.jiraUrl && <a className="secondary-button" href={defect.jiraUrl} target="_blank" rel="noreferrer">เปิด Jira</a>}</>}</article>)}</div>}
           <div className="result-sheet-block">
             <div className="result-sheet-heading"><span>ผลและหลักฐานจาก Excel</span><strong>{resultSheets.length} sheets · {evidenceCount} รูป</strong></div>
             {resultSheets.length ? <div className="result-sheet-list">{resultSheets.map((sheet) => <button className={viewingSheet?.path === sheet.path ? "active" : ""} onClick={() => setViewingSheet(sheet)} key={sheet.path}><FileSpreadsheet size={16} /><span><strong>{sheet.name}</strong><small>{sheet.imageCount ? `${sheet.imageCount} รูปหลักฐาน` : "ไม่มีรูปในชีต"}</small></span><ChevronRight size={15} /></button>)}</div> : <p className="no-result-sheet">ไม่พบชีตผลลัพธ์ที่อ้างอิง {value.id}</p>}
@@ -602,6 +813,7 @@ export function QaWorkspace({
   const [statusFilter, setStatusFilter] = useState<TestStatus | "All">("All");
   const [selectedCase, setSelectedCase] = useState<TestCase | null>(null);
   const [showUpload, setShowUpload] = useState(false);
+  const [showCreateCase, setShowCreateCase] = useState(false);
   const [showProjectDialog, setShowProjectDialog] = useState(false);
   const [showGoogleSheetDialog, setShowGoogleSheetDialog] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
@@ -619,6 +831,7 @@ export function QaWorkspace({
   const counts = useMemo(() => Object.fromEntries(TEST_STATUSES.map((status) => [status, cases.filter((item) => item.status === status).length])) as Record<TestStatus, number>, [cases]);
   const completed = counts.Pass + counts.Failed + counts.Skip;
   const progress = cases.length ? Math.round((completed / cases.length) * 100) : 0;
+  const testingFinished = cases.length > 0 && completed === cases.length;
   const filteredCases = useMemo(() => cases.filter((item) => {
     const query = search.trim().toLowerCase();
     const matchesSearch = !query || `${item.id} ${item.name} ${item.scenario}`.toLowerCase().includes(query);
@@ -640,6 +853,10 @@ export function QaWorkspace({
     const googleRequest = selectedProject.googleSheetId
       ? fetch(`/api/projects/${selectedProject.id}/google-sheet`, { cache: "no-store" }).then(async (response) => {
           const data = await response.json();
+          if (response.status === 401 && data.authUrl) {
+            window.location.href = data.authUrl;
+            return null;
+          }
           if (!response.ok) throw new Error(data.error ?? "โหลด Google Sheet ไม่สำเร็จ");
           return data as { cases: TestCase[]; sheets: WorkbookSource["sheets"] };
         })
@@ -651,7 +868,7 @@ export function QaWorkspace({
         const workspace = workspaceResult.value;
         const googleWorkspace = googleResult.status === "fulfilled" ? googleResult.value : null;
         const storedById = new Map(workspace.cases.map((item) => [item.id.toUpperCase(), item]));
-        const mergedCases = googleWorkspace?.cases.map((item) => {
+        const googleCases = googleWorkspace?.cases.map((item) => {
           const stored = storedById.get(item.id.toUpperCase());
           const hasStoredResults = Boolean(stored?.results?.length);
           const hasStoredDefects = Boolean(stored?.defects?.length);
@@ -672,7 +889,10 @@ export function QaWorkspace({
             remark: useStoredFields ? stored.remark : item.remark,
             executedBy: useStoredFields ? (stored.executedBy || currentUser?.name || item.executedBy) : item.executedBy,
           } : item;
-        }) ?? workspace.cases;
+        });
+        const googleIds = new Set(googleCases?.map((item) => item.id.toUpperCase()) ?? []);
+        const localOnlyCases = workspace.cases.filter((item) => !googleIds.has(item.id.toUpperCase()));
+        const mergedCases = googleCases ? [...googleCases, ...localOnlyCases] : workspace.cases;
         setCases(mergedCases);
         setSource(workspace.source ? {
           ...workspace.source,
@@ -680,7 +900,7 @@ export function QaWorkspace({
             ? mergeGoogleSheetsWithSource(workspace.source.sheets, googleWorkspace.sheets)
             : workspace.source.sheets,
         } : workspace.source);
-        setHasUnsyncedChanges(false);
+        setHasUnsyncedChanges(Boolean(googleWorkspace && localOnlyCases.length));
         if (googleResult.status === "rejected") {
           const message = googleResult.reason instanceof Error ? googleResult.reason.message : "โหลด Google Sheet ไม่สำเร็จ";
           setWorkspaceError(`ยังโหลดข้อมูลเดิมได้ แต่ Google Sheets ยังไม่พร้อม: ${message}`);
@@ -696,10 +916,11 @@ export function QaWorkspace({
     return () => { active = false; };
   }, [selectedProject, currentUser?.name]);
 
+
   async function saveCase(next: TestCase) {
     if (!selectedProject) throw new Error("กรุณาเลือก Project");
     const saved = await persistTestCaseResult(selectedProject.id, next);
-    setCases((current) => current.map((item) => item.id === saved.id ? saved : item));
+    setCases((current) => current.map((item) => (saved.recordId && item.recordId === saved.recordId) || item.id === activeSelectedCase?.id ? saved : item));
     setSelectedCase(null);
     if (selectedProject.googleSheetId) {
       setHasUnsyncedChanges(true);
@@ -708,6 +929,20 @@ export function QaWorkspace({
       flash(`บันทึกผล ${saved.id} ลง Supabase แล้ว`);
     }
     if (testCaseId) router.push(`/groups/${groupId}/projects/${selectedProject.id}/test-cases`);
+  }
+
+  async function createTestCase(next: TestCase) {
+    if (!selectedProject) throw new Error("กรุณาเลือก Project");
+    const saved = await persistTestCaseResult(selectedProject.id, next);
+    setCases((current) => [...current, saved].sort((a, b) => a.sourceRow - b.sourceRow));
+    setSearch("");
+    setStatusFilter("All");
+    if (selectedProject.googleSheetId) {
+      setHasUnsyncedChanges(true);
+      flash(`เพิ่ม ${saved.id} แล้ว · กดซิงค์เพื่ออัปเดต Google Sheets`);
+    } else {
+      flash(`เพิ่ม ${saved.id} ลง Supabase แล้ว`);
+    }
   }
 
   async function saveResult(next: TestCase) {
@@ -730,9 +965,17 @@ export function QaWorkspace({
         fetch(`/api/projects/${selectedProject.id}/google-sheet/workbook`, { cache: "no-store" }),
       ]);
       const data = await response.json();
+      if (response.status === 401 && data.authUrl) {
+        window.location.href = data.authUrl;
+        return;
+      }
       if (!response.ok) throw new Error(data.error ?? "โหลด Google Sheet ไม่สำเร็จ");
       if (!workbookResponse.ok) {
         const workbookError = await workbookResponse.json().catch(() => null) as { error?: string } | null;
+        if (workbookResponse.status === 401 && workbookError && "authUrl" in workbookError && typeof workbookError.authUrl === "string") {
+          window.location.href = workbookError.authUrl;
+          return;
+        }
         throw new Error(workbookError?.error ?? "โหลดรูปจาก Google Sheets ไม่สำเร็จ");
       }
       const imported = importTestCases(await workbookResponse.arrayBuffer(), `${selectedProject.name}.xlsx`);
@@ -762,6 +1005,10 @@ export function QaWorkspace({
       if (changedCases.length) setCases(syncCases);
       const response = await fetch(`/api/projects/${selectedProject.id}/google-sheet`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cases: syncCases }) });
       const data = await response.json();
+      if (response.status === 401 && data.authUrl) {
+        window.location.href = data.authUrl;
+        return;
+      }
       if (!response.ok) throw new Error(data.error ?? "ซิงค์ Google Sheet ไม่สำเร็จ");
       setHasUnsyncedChanges(false);
       flash(`ซิงค์แล้ว ${data.updatedCells} cells · ${data.resultSheets ?? 0} result sheets · ${data.defects ?? 0} defects`);
@@ -871,6 +1118,7 @@ export function QaWorkspace({
             <article className="panel progress-panel"><div className="panel-heading"><div><h2>ความคืบหน้า</h2><p>สถานะรวมของ Testcase</p></div><button className="icon-button"><MoreHorizontal size={19} /></button></div><div className="progress-content"><div className="progress-ring" style={{ "--progress": `${progress * 3.6}deg` } as React.CSSProperties}><div><strong>{progress}%</strong><span>ดำเนินการแล้ว</span></div></div><div className="progress-legend">{TEST_STATUSES.filter((status) => status !== "In Progress").map((status) => <button key={status} onClick={() => setStatusFilter(status)}><span className={`legend-dot ${statusMeta[status].className}`} /><span>{statusMeta[status].label}</span><strong>{counts[status]}</strong></button>)}</div></div></article>
             <article className="panel activity-panel"><div className="panel-heading"><div><h2>กิจกรรมล่าสุด</h2><p>การเปลี่ยนแปลงจากข้อมูลจริง</p></div></div><div className="empty-state compact-empty"><Clock3 size={24} /><strong>ยังไม่มีกิจกรรม</strong><span>กิจกรรมจะแสดงเมื่อเชื่อมการบันทึกผลกับ Supabase</span></div></article>
           </section></>}
+          {!testCaseId && activePage === "overview" && <ProjectApprovalPanel key={selectedProject.id} project={selectedProject} cases={cases} counts={counts} testingFinished={testingFinished} loading={loadingWorkspace} currentEnvironment={currentEnvironment} currentUser={currentUser} onConnectSheet={() => setShowGoogleSheetDialog(true)} flash={flash} />}
 
           {!testCaseId && activePage === "files" && source && <section className="panel workbook-panel">
             <div className="panel-heading"><div><h2>Sheets ในไฟล์ต้นฉบับ</h2><p>ระบบอ่านทุกแท็บและผูก RC / Defect ตาม Test Case ID</p></div><span className="sheet-total">{source.sheets.length || 1} sheets</span></div>
@@ -878,7 +1126,7 @@ export function QaWorkspace({
           </section>}
 
           {!testCaseId && activePage === "test-cases" && <section className="panel cases-panel" id="cases">
-            <div className="cases-heading"><div><h2>Test cases</h2><span>{filteredCases.length} รายการ</span></div><div className="table-actions"><label className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="ค้นหา ID หรือชื่อ Testcase" /></label><label className="filter-select"><Filter size={16} /><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as TestStatus | "All")}><option value="All">ทุกสถานะ</option>{TEST_STATUSES.map((status) => <option key={status} value={status}>{statusMeta[status].label}</option>)}</select><ChevronDown size={15} /></label></div></div>
+            <div className="cases-heading"><div><h2>Test cases</h2><span>{filteredCases.length} รายการ</span></div><div className="table-actions"><button className="primary-button add-testcase-button" onClick={() => setShowCreateCase(true)}><PlusIcon />เพิ่ม Test Case</button><label className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="ค้นหา ID หรือชื่อ Testcase" /></label><label className="filter-select"><Filter size={16} /><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as TestStatus | "All")}><option value="All">ทุกสถานะ</option>{TEST_STATUSES.map((status) => <option key={status} value={status}>{statusMeta[status].label}</option>)}</select><ChevronDown size={15} /></label></div></div>
             <div className="table-wrap"><table><thead><tr><th>TESTCASE</th><th>SCENARIO</th><th>PLATFORM</th><th>DEVICE</th><th>STATUS</th><th>ผู้ทดสอบ</th><th aria-label="การทำงาน" /></tr></thead><tbody>{filteredCases.map((item) => <tr key={item.id} onClick={() => router.push(`/groups/${groupId}/projects/${selectedProject.id}/test-cases/${encodeURIComponent(item.id)}`)}><td><span className="table-id">{item.id}</span><strong>{item.name || "ไม่มีชื่อ Testcase"}</strong></td><td><span className="truncate-cell">{item.scenario || "—"}</span></td><td><span className="platform-chip">{item.platform || "—"}</span></td><td>{item.device || "—"}</td><td><StatusBadge status={item.status} /></td><td><span className="tester"><span>{item.executedBy ? item.executedBy.slice(0, 2).toUpperCase() : "—"}</span>{item.executedBy || "ยังไม่มอบหมาย"}</span></td><td><button className="icon-button" onClick={(event) => { event.stopPropagation(); router.push(`/groups/${groupId}/projects/${selectedProject.id}/test-cases/${encodeURIComponent(item.id)}`); }} aria-label={`เปิด ${item.id}`}><ChevronRight size={18} /></button></td></tr>)}</tbody></table>{!filteredCases.length && <div className="empty-state">{cases.length ? <Search size={26} /> : <FileSpreadsheet size={26} />}<strong>{cases.length ? "ไม่พบ Testcase" : "ยังไม่มี Testcase"}</strong><span>{cases.length ? "ลองเปลี่ยนคำค้นหาหรือตัวกรองสถานะ" : "ข้อมูลจะแสดงหลังจากอัปโหลดไฟล์ Excel"}</span>{!cases.length && <button className="secondary-button" onClick={() => setShowUpload(true)}><Upload size={16} />อัปโหลดไฟล์</button>}</div>}</div>
           </section>}
 
@@ -899,6 +1147,7 @@ export function QaWorkspace({
         setWorkspaceError("");
         flash(`บันทึก ${workspace.cases.length} Testcases ลง Supabase แล้ว`);
       }} />}
+      {showCreateCase && selectedProject && <CreateTestCaseDialog existingIds={cases.map((item) => item.id)} nextSourceRow={Math.max(1, ...cases.map((item) => item.sourceRow)) + 1} defaultEnvironment={selectedProject.environment} currentUserName={currentUser?.name ?? ""} onClose={() => setShowCreateCase(false)} onCreated={createTestCase} />}
       {showProjectDialog && <ProjectDialog groupId={groupId} onClose={() => setShowProjectDialog(false)} onCreated={(project) => { setProjects((current) => [project, ...current]); setShowProjectDialog(false); router.push(`/groups/${groupId}/projects/${project.id}/overview`); }} />}
       {showGoogleSheetDialog && selectedProject && <GoogleSheetDialog project={selectedProject} onClose={() => setShowGoogleSheetDialog(false)} onConnected={(project) => { setProjects((current) => current.map((item) => item.id === project.id ? project : item)); setShowGoogleSheetDialog(false); flash("เชื่อม Google Sheet แล้ว"); }} />}
       {toast && <div className="toast"><CheckCircle2 size={18} />{toast}</div>}

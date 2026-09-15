@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { appOrigin, GOOGLE_USER_SCOPES, safeReturnTo } from "@/lib/google-user-oauth";
+import { destinationForRole, resolveAppRole } from "@/lib/app-session";
+import { appOrigin, AUTH_RETURN_TO_COOKIE, safeReturnTo } from "@/lib/google-user-oauth";
 import { createClient } from "@/lib/supabase/server";
 
 export async function GET(request: Request) {
@@ -7,12 +8,19 @@ export async function GET(request: Request) {
   const origin = appOrigin(requestUrl);
   const next = safeReturnTo(requestUrl.searchParams.get("next"));
   const supabase = await createClient();
+
+  const { data: existingSession } = await supabase.auth.getClaims();
+  const existingEmail = typeof existingSession?.claims?.email === "string" ? existingSession.claims.email.toLowerCase() : "";
+  if (existingEmail) {
+    const role = await resolveAppRole(supabase, existingEmail);
+    if (role) return NextResponse.redirect(new URL(destinationForRole(role, next), origin));
+  }
+
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: "google",
     options: {
-      redirectTo: `${origin}/auth/callback?next=${encodeURIComponent(next)}`,
-      scopes: GOOGLE_USER_SCOPES.join(" "),
-      queryParams: { access_type: "offline", prompt: "consent" },
+      redirectTo: `${origin}/auth/callback`,
+      scopes: "email profile",
     },
   });
 
@@ -21,5 +29,13 @@ export async function GET(request: Request) {
     return NextResponse.redirect(new URL(`/auth/login?error=${encodeURIComponent(message)}`, origin));
   }
 
-  return NextResponse.redirect(data.url);
+  const response = NextResponse.redirect(data.url);
+  response.cookies.set(AUTH_RETURN_TO_COOKIE, next, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: requestUrl.protocol === "https:",
+    maxAge: 10 * 60,
+    path: "/",
+  });
+  return response;
 }

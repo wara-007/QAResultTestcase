@@ -2,6 +2,7 @@ import "server-only";
 
 import { google } from "googleapis";
 import type { googleOAuthClient } from "@/lib/google-user-oauth";
+import { evidenceSheetUrl } from "@/lib/evidence";
 import type { TestCase, TestDefect, TestEvidence, TestResult, TestStatus, WorkbookSheet } from "@/lib/types";
 
 const GOOGLE_SCOPES = [
@@ -229,7 +230,7 @@ export async function writeGoogleSheetResults(spreadsheetId: string, cases: Test
   const evidenceIds = [...new Set(resultCases.flatMap((testCase) => [
     ...(testCase.results ?? []).flatMap((result) => result.evidence),
     ...(testCase.defects ?? []).flatMap((defect) => defect.evidence),
-  ]).map((evidence) => evidence.fileId))];
+  ]).filter((evidence) => evidence.provider !== "cloudflare-r2").map((evidence) => evidence.fileId))];
   if (evidenceIds.length) {
     const drive = google.drive({ version: "v3", auth });
     await Promise.all(evidenceIds.map(async (fileId) => {
@@ -341,6 +342,7 @@ export async function writeGoogleSheetResults(spreadsheetId: string, cases: Test
 
 function resultSheetValues(testCase: TestCase, defectDisplayIds = new Map<string, string>()) {
   const MAX_CELL_LENGTH = 45_000;
+  const imageFormula = (evidence: TestEvidence) => `=IMAGE("${evidenceSheetUrl(evidence).replaceAll('"', '""')}",1)`;
   const chunks = (value: string) => {
     if (!value) return [""];
     const parts: string[] = [];
@@ -360,7 +362,7 @@ function resultSheetValues(testCase: TestCase, defectDisplayIds = new Map<string
       chunks(result.apiResponse),
       chunks(result.log),
       result.evidence.length
-        ? result.evidence.map((evidence) => `=IMAGE("https://drive.usercontent.google.com/download?id=${evidence.fileId}&export=view",1)`)
+        ? result.evidence.map(imageFormula)
         : [""],
       [""],
       [""],
@@ -379,7 +381,7 @@ function resultSheetValues(testCase: TestCase, defectDisplayIds = new Map<string
   if ((testCase.defects?.length ?? 0) > 0) {
     rows.push([], ["Defect ID", "Status", "Title", "Actual Result", "API Response", "Log", "Evidence", "Jira URL", "Created At"]);
     for (const defect of testCase.defects ?? []) {
-      const columns = [chunks(defect.description), chunks(defect.apiResponse), chunks(defect.log), defect.evidence.length ? defect.evidence.map((evidence) => `=IMAGE("https://drive.usercontent.google.com/download?id=${evidence.fileId}&export=view",1)`) : [""], chunks(defect.jiraUrl), chunks(defect.createdAt)];
+      const columns = [chunks(defect.description), chunks(defect.apiResponse), chunks(defect.log), defect.evidence.length ? defect.evidence.map(imageFormula) : [""], chunks(defect.jiraUrl), chunks(defect.createdAt)];
       const rowCount = Math.max(...columns.map((column) => column.length));
       for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) rows.push([rowIndex === 0 ? (defectDisplayIds.get(defect.id) ?? defect.id) : "", rowIndex === 0 ? defect.status : "", rowIndex === 0 ? defect.title : "", ...columns.map((column) => column[rowIndex] ?? "")]);
     }

@@ -6,6 +6,9 @@ export type TestEvidence = {
   fileId: string;
   name: string;
   mimeType: string;
+  provider?: "google-drive" | "cloudflare-r2";
+  objectKey?: string;
+  url?: string;
 };
 
 export type TestDefect = {
@@ -130,5 +133,6 @@ export type SystemUser = {
   displayName: string;
   isAuthorized: boolean;
   isSystemOwner: boolean;
+  appRole: "qa" | "po";
   lastSignInAt: string | null;
 };

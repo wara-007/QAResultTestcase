@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { readGoogleSheet, writeGoogleSheetResults } from "@/lib/google-sheets";
 import type { TestCase } from "@/lib/types";
-import { getGoogleUserAuth } from "@/lib/google-user-oauth";
+import { getGoogleUserAuth, GoogleConnectionRequiredError } from "@/lib/google-user-oauth";
 
 export const runtime = "nodejs";
 
@@ -13,12 +13,20 @@ async function spreadsheetIdForProject(projectId: string) {
   return data.google_sheet_id as string;
 }
 
-export async function GET(_request: Request, { params }: { params: Promise<{ projectId: string }> }) {
+function googleAuthError(reason: unknown, request: Request) {
+  if (!(reason instanceof GoogleConnectionRequiredError)) return null;
+  const current = new URL(request.url);
+  return Response.json({ error: reason.message, authUrl: `/api/google/auth/start?returnTo=${encodeURIComponent(current.pathname.replace(/\/api\/projects\/[^/]+\/google-sheet$/, "/groups"))}` }, { status: 401 });
+}
+
+export async function GET(request: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
     const result = await readGoogleSheet(await spreadsheetIdForProject(projectId), await getGoogleUserAuth());
     return Response.json(result, { headers: { "Cache-Control": "no-store" } });
   } catch (reason) {
+    const authError = googleAuthError(reason, request);
+    if (authError) return authError;
     return Response.json({ error: reason instanceof Error ? reason.message : "โหลด Google Sheet ไม่สำเร็จ" }, { status: 400 });
   }
 }
@@ -36,6 +44,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
     const result = await writeGoogleSheetResults(await spreadsheetIdForProject(projectId), body.cases, await getGoogleUserAuth());
     return Response.json(result);
   } catch (reason) {
+    const authError = googleAuthError(reason, request);
+    if (authError) return authError;
     return Response.json({ error: reason instanceof Error ? reason.message : "ซิงค์ Google Sheet ไม่สำเร็จ" }, { status: 400 });
   }
 }

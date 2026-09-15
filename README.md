@@ -6,7 +6,7 @@ MVP สำหรับนำเข้า Testcase จาก Excel, บันท�
 
 - Dashboard และรายการ Testcase พร้อมค้นหา/กรองสถานะ
 - หน้า Projects โหลดรายการที่ผู้ใช้มีสิทธิ์เห็นจาก Supabase และเพิ่ม Project ใหม่ได้
-- เข้าใช้งานได้โดยไม่ต้อง Login ในโหมดพัฒนา
+- Login ด้วย Supabase Email + Password และแยกหน้า QA/PO ตามสิทธิ์
 - เปิดรายละเอียดและแก้ Result, Device, Build, Test data และ Remark
 - อ่าน `.xlsx` ใน browser โดยค้นหาชีต `Testcase` และ header mapping อัตโนมัติ
 - ส่งออก `_result.xlsx` ด้วยการแก้เฉพาะ XML ของชีต Testcase เพื่อรักษาชีต รูป สูตร และ formatting ส่วนอื่น
@@ -24,7 +24,7 @@ cp .env.example .env.local
 npm run dev
 ```
 
-เปิด `http://localhost:3000` จากนั้นเพิ่ม/เลือก Project แล้วกด **อัปโหลด Testcase**
+เปิด `http://localhost:3000` จากนั้น Login เพิ่ม/เลือก Project แล้วกด **อัปโหลด Testcase**
 
 ทดสอบ import/export กับ workbook จริง:
 
@@ -37,9 +37,10 @@ npm run test:excel -- /absolute/path/to/source.xlsx
 1. สร้าง Supabase project
 2. ใส่ Project URL และ Publishable key ใน `.env.local`
 3. รัน migration ใน `supabase/migrations`
-4. Migration `allow_public_project_catalog` จะเปิดสิทธิ์ anonymous เฉพาะอ่านและเพิ่ม Project
+4. เปิด Email provider ใน **Authentication > Sign In / Providers**
+5. เพิ่ม `/auth/callback` ของ localhost และ production ใน **Authentication > URL Configuration**
 
-> โหมดไม่ Login ทำให้ทุกคนที่เข้าถึงแอปด้วย Supabase project เดียวกันมองเห็นรายการ Projects ทั้งหมด ควรนำ Auth กลับมาก่อนใช้งาน Production
+System Owner เพิ่มอีเมลและ role ที่หน้า `/admin/users` จากนั้นผู้ใช้เลือก Login ด้วย Google ครั้งแรกเพื่อยืนยันอีเมลและตั้งรหัสผ่าน หรือเปิด invitation ที่ได้รับ ผู้ใช้ที่ตั้งรหัสผ่านแล้วสามารถใช้ Email + Password ได้ตามปกติ
 
 ห้ามใส่ `service_role` หรือ secret key ในตัวแปรที่ขึ้นต้นด้วย `NEXT_PUBLIC_`
 
@@ -54,9 +55,16 @@ npm run test:excel -- /absolute/path/to/source.xlsx
 
 ห้าม commit `.env.local` หรือคัดลอก secret ลง `netlify.toml`
 
+## Cloudflare R2 สำหรับรูปหลักฐาน
+
+1. สร้าง R2 bucket และเปิด Public Development URL หรือผูก Custom Domain
+2. สร้าง R2 API token แบบ **Object Read & Write** และจำกัดสิทธิ์เฉพาะ bucket นี้
+3. ใส่ `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` และ `R2_PUBLIC_BASE_URL` ใน `.env.local` และ Environment Variables ของ hosting
+4. Restart dev server หรือ Deploy ใหม่
+
+เมื่อกำหนดค่าครบ รูปใหม่จะถูกบีบอัดก่อนอัปโหลดไป R2 และ Google Sheets จะแสดงด้วย `IMAGE()` ผ่าน Public URL ส่วนรูปเก่าใน Google Drive ยังใช้งานได้เหมือนเดิม หากยังไม่ตั้งค่า R2 ระบบจะ fallback ไปใช้ Google Drive ชั่วคราว
+
 ## ข้อจำกัด MVP
 
 - การแก้ไขจากไฟล์จริงยังอยู่ใน state ของ browser จนกว่าจะเชื่อม data actions กับ Supabase
-- หลักฐานไฟล์แนบเป็น UI placeholder และยังไม่ upload ไป R2
-- Export อัปเดตฟิลด์ผลทดสอบในชีต Testcase แต่ยังไม่สร้างชีต RC ใหม่
 - ควรตรวจไฟล์ export ด้วย Microsoft Excel ก่อนใช้กับ template รูปแบบใหม่

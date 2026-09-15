@@ -10,6 +10,7 @@ export function SystemUsers({ initialUsers, initialError }: { initialUsers: Syst
   const [users, setUsers] = useState(initialUsers);
   const [error, setError] = useState(initialError);
   const [email, setEmail] = useState("");
+  const [role, setRole] = useState<"qa" | "po">("qa");
   const [changingId, setChangingId] = useState("");
   const [pending, startTransition] = useTransition();
 
@@ -35,13 +36,14 @@ export function SystemUsers({ initialUsers, initialError }: { initialUsers: Syst
     setError("");
     setChangingId(normalizedEmail);
     startTransition(async () => {
-      const result = await setAppUserAccess({ email: normalizedEmail, enabled: true });
+      const result = await setAppUserAccess({ email: normalizedEmail, enabled: true, role });
       if (result.error) setError(result.error);
       else {
         setUsers((current) => current.some((user) => user.email === normalizedEmail)
-          ? current.map((user) => user.email === normalizedEmail ? { ...user, isAuthorized: true } : user)
-          : [...current, { id: null, email: normalizedEmail, displayName: normalizedEmail.split("@")[0], isAuthorized: true, isSystemOwner: false, lastSignInAt: null }]);
+          ? current.map((user) => user.email === normalizedEmail ? { ...user, isAuthorized: true, appRole: role } : user)
+          : [...current, { id: null, email: normalizedEmail, displayName: normalizedEmail.split("@")[0], isAuthorized: true, isSystemOwner: false, appRole: role, lastSignInAt: null }]);
         setEmail("");
+        if (result.inviteWarning) setError(`เพิ่มสิทธิ์แล้ว แต่ส่งอีเมลเชิญไม่สำเร็จ: ${result.inviteWarning}`);
       }
       setChangingId("");
     });
@@ -53,7 +55,7 @@ export function SystemUsers({ initialUsers, initialError }: { initialUsers: Syst
     setError("");
     setChangingId(user.email);
     startTransition(async () => {
-      const result = await setAppUserAccess({ email: user.email, enabled });
+      const result = await setAppUserAccess({ email: user.email, enabled, role: user.appRole });
       if (result.error) setError(result.error);
       else setUsers((current) => current.map((item) => item.email === user.email ? { ...item, isAuthorized: enabled } : item));
       setChangingId("");
@@ -69,8 +71,8 @@ export function SystemUsers({ initialUsers, initialError }: { initialUsers: Syst
       <div className="groups-heading"><div><p className="eyebrow">APPLICATION ACCESS</p><h1>ผู้ใช้งานทั้งหมด</h1><span>อนุมัติอีเมลก่อน Login และกำหนด System Owner สำหรับดูแลระบบ</span></div></div>
       {error && <div className="project-error"><div><strong>ดำเนินการไม่สำเร็จ</strong><span>{error}</span></div></div>}
       <form className="panel app-access-form" onSubmit={authorize}>
-        <div><MailPlus size={22} /><div><h2>อนุมัติผู้ใช้ใหม่</h2><p>เพิ่มอีเมล Google ก่อน ผู้ใช้จึงจะเข้า Workspace ได้หลัง Login</p></div></div>
-        <div className="app-access-fields"><input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="user@example.com" /><button className="primary-button" disabled={pending}>{changingId === email.trim().toLowerCase() ? <LoaderCircle className="spin" size={15} /> : <MailPlus size={15} />}อนุมัติอีเมล</button></div>
+        <div><MailPlus size={22} /><div><h2>อนุมัติผู้ใช้ใหม่</h2><p>ระบบจะเพิ่มสิทธิ์และส่งอีเมลให้ผู้ใช้ใหม่ตั้งรหัสผ่านก่อนเข้าใช้งาน</p></div></div>
+        <div className="app-access-fields"><input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="user@example.com" /><select value={role} onChange={(event) => setRole(event.target.value as "qa" | "po")}><option value="qa">QA Workspace</option><option value="po">PO Review</option></select><button className="primary-button" disabled={pending}>{changingId === email.trim().toLowerCase() ? <LoaderCircle className="spin" size={15} /> : <MailPlus size={15} />}อนุมัติอีเมล</button></div>
       </form>
       <section className="panel members-panel system-users-panel">
         <div className="panel-heading"><div><h2>สิทธิ์เข้าใช้งาน</h2><p>{users.filter((user) => user.isAuthorized).length} จาก {users.length} บัญชีได้รับอนุมัติ</p></div><Users size={21} /></div>
@@ -78,6 +80,7 @@ export function SystemUsers({ initialUsers, initialError }: { initialUsers: Syst
           <span className="avatar compact">{user.displayName.slice(0, 2).toUpperCase()}</span>
           <div><strong>{user.displayName}</strong><small>{user.email}{!user.id ? " · รอ Login ครั้งแรก" : ""}</small></div>
           <span className={user.isAuthorized ? "access-approved" : "access-blocked"}>{user.isAuthorized ? <Check size={12} /> : <ShieldOff size={12} />}{user.isAuthorized ? "เข้าใช้งานได้" : "ระงับสิทธิ์"}</span>
+          <span className="member-role">{user.appRole === "qa" ? "QA" : "PO"}</span>
           {user.isSystemOwner && <span className="system-owner-badge"><Crown size={13} />System Owner</span>}
           <button type="button" className={user.isAuthorized ? "danger-button" : "secondary-button"} disabled={pending || user.isSystemOwner} onClick={() => changeAccess(user)}>{changingId === user.email && <LoaderCircle className="spin" size={14} />}{user.isAuthorized ? "ระงับสิทธิ์" : "อนุมัติ"}</button>
           <button type="button" className={user.isSystemOwner ? "danger-button" : "secondary-button"} disabled={pending || !user.id} title={user.id ? undefined : "ให้ผู้ใช้ Login ครั้งแรกก่อนกำหนด System Owner"} onClick={() => changeOwner(user)}>

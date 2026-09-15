@@ -1,11 +1,83 @@
 "use server";
 
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { extractGoogleSheetId } from "@/lib/google-sheets";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { Project } from "@/lib/types";
+import { hashReviewToken, type ApprovalStatus } from "@/lib/project-review";
+
+export type ProjectApprovalSummary = {
+  id: string;
+  recipientEmail: string;
+  status: ApprovalStatus;
+  requestedAt: string;
+  expiresAt: string;
+  reviewedAt: string;
+  reviewerName: string;
+  reviewerComment: string;
+};
+
+async function getSignedInProject(projectId: string): Promise<{ userId: string; name: string } | { error: string }> {
+  const supabase = await createClient();
+  const { data: claimsData, error: claimsError } = await supabase.auth.getClaims();
+  const userId = claimsData?.claims?.sub;
+  if (claimsError || !claimsData || typeof userId !== "string") return { error: "กรุณาเข้าสู่ระบบอีกครั้ง" };
+  const project = await supabase.from("projects").select("id").eq("id", projectId).maybeSingle();
+  if (project.error || !project.data) return { error: "ไม่พบ Project หรือคุณไม่มีสิทธิ์เข้าถึง" };
+  const metadata = claimsData.claims.user_metadata as Record<string, unknown> | undefined;
+  const name = [metadata?.full_name, metadata?.name, claimsData.claims.email].find((value) => typeof value === "string" && value.trim()) as string | undefined;
+  return { userId, name: name ?? "QA Team" };
+}
+
+export async function getLatestProjectApproval(projectId: string): Promise<{ approval: ProjectApprovalSummary | null } | { error: string }> {
+  try {
+    const access = await getSignedInProject(projectId);
+    if ("error" in access) return access;
+    const result = await createAdminClient().from("project_approval_requests")
+      .select("id, recipient_email, status, requested_at, expires_at, reviewed_at, reviewer_name, reviewer_comment")
+      .eq("project_id", projectId).order("requested_at", { ascending: false }).limit(1).maybeSingle();
+    if (result.error) return { error: result.error.message };
+    if (!result.data) return { approval: null };
+    return { approval: {
+      id: result.data.id, recipientEmail: result.data.recipient_email, status: result.data.status as ApprovalStatus,
+      requestedAt: result.data.requested_at, expiresAt: result.data.expires_at,
+      reviewedAt: result.data.reviewed_at ?? "", reviewerName: result.data.reviewer_name,
+      reviewerComment: result.data.reviewer_comment,
+    } };
+  } catch (reason) {
+    return { error: reason instanceof Error ? reason.message : "โหลดสถานะ Approval ไม่สำเร็จ" };
+  }
+}
+
+type CreateApprovalResult = { request: { id: string; token: string; recipientEmail: string; status: "pending"; requestedAt: string; expiresAt: string } } | { error: string };
+
+export async function createProjectApprovalRequest(input: { projectId: string; recipientEmail: string }): Promise<CreateApprovalResult> {
+  const email = input.recipientEmail.trim().toLowerCase();
+  if (!/^\S+@\S+\.\S+$/.test(email)) return { error: "กรุณาใส่อีเมล PO ให้ถูกต้อง" };
+  try {
+    const access = await getSignedInProject(input.projectId);
+    if ("error" in access) return access;
+    const admin = createAdminClient();
+    const token = randomBytes(32).toString("base64url");
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    const revoke = await admin.from("project_approval_requests").update({ status: "revoked" }).eq("project_id", input.projectId).eq("status", "pending");
+    if (revoke.error) return { error: revoke.error.message };
+    const result = await admin.from("project_approval_requests").insert({
+      project_id: input.projectId,
+      recipient_email: email,
+      token_hash: hashReviewToken(token),
+      requested_by: access.userId,
+      requested_by_name: access.name,
+      expires_at: expiresAt,
+    }).select("id, requested_at").single();
+    if (result.error) return { error: result.error.message };
+    return { request: { id: result.data.id, token, recipientEmail: email, status: "pending" as const, requestedAt: result.data.requested_at, expiresAt } };
+  } catch (reason) {
+    return { error: reason instanceof Error ? reason.message : "สร้างลิงก์รีวิวไม่สำเร็จ" };
+  }
+}
 
 type CreateProjectInput = {
   groupId: string;
@@ -146,17 +218,38 @@ export async function setSystemOwner(input: { userId: string; enabled: boolean }
   return { success: true };
 }
 
-export async function setAppUserAccess(input: { email: string; enabled: boolean }) {
+export async function setAppUserAccess(input: { email: string; enabled: boolean; role: "qa" | "po" }) {
   const email = input.email.trim().toLowerCase();
   if (!/^\S+@\S+\.\S+$/.test(email)) return { error: "กรุณาใส่อีเมลให้ถูกต้อง" };
   const supabase = await createClient();
   const { error } = await supabase.rpc("set_app_user_access", {
     requested_email: email,
     requested_enabled: input.enabled,
+    requested_role: input.role,
   });
   if (error) return { error: error.message };
+  let inviteSent = false;
+  let inviteWarning = "";
+  if (input.enabled) {
+    try {
+      const admin = createAdminClient();
+      const existing = await admin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+      const alreadyRegistered = existing.data.users.some((user) => user.email?.toLowerCase() === email);
+      if (!alreadyRegistered) {
+        const siteUrl = process.env.NEXT_PUBLIC_SITE_URL?.trim().replace(/\/$/, "");
+        const invited = await admin.auth.admin.inviteUserByEmail(email, {
+          redirectTo: siteUrl ? `${siteUrl}/auth/callback?next=${encodeURIComponent("/auth/update-password")}` : undefined,
+          data: { app_role: input.role },
+        });
+        if (invited.error) inviteWarning = invited.error.message;
+        else inviteSent = true;
+      }
+    } catch (reason) {
+      inviteWarning = reason instanceof Error ? reason.message : "ส่งอีเมลเชิญไม่สำเร็จ";
+    }
+  }
   revalidatePath("/admin/users");
-  return { success: true };
+  return { success: true, inviteSent, inviteWarning };
 }
 
 export async function updateProjectGoogleSheet(projectId: string, googleSheetUrl: string) {

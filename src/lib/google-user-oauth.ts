@@ -6,16 +6,31 @@ import { cookies } from "next/headers";
 
 export const GOOGLE_USER_COOKIE = "qa_google_oauth";
 export const GOOGLE_OAUTH_STATE_COOKIE = "qa_google_oauth_state";
+export const AUTH_RETURN_TO_COOKIE = "qa_auth_return_to";
 export const GOOGLE_USER_SCOPES = [
   "https://www.googleapis.com/auth/drive.file",
   "https://www.googleapis.com/auth/spreadsheets",
   "https://www.googleapis.com/auth/userinfo.email",
 ];
 
+export class GoogleConnectionRequiredError extends Error {
+  constructor() {
+    super("กรุณาเชื่อม Google Drive และ Google Sheets");
+    this.name = "GoogleConnectionRequiredError";
+  }
+}
+
 export function appOrigin(requestUrl: string | URL) {
+  const requestOrigin = new URL(requestUrl);
+  const isLocalhost = ["localhost", "127.0.0.1", "::1"].includes(requestOrigin.hostname);
+
+  // Local development must return to the same host and port that started OAuth.
+  // NEXT_PUBLIC_SITE_URL is the production fallback and must not override localhost.
+  if (isLocalhost) return requestOrigin.origin;
+
   const configured = process.env.NEXT_PUBLIC_SITE_URL?.trim().replace(/\/$/, "");
   if (configured) return configured.startsWith("http") ? configured : `https://${configured}`;
-  return new URL(requestUrl).origin;
+  return requestOrigin.origin;
 }
 
 function cookieKey() {
@@ -48,7 +63,7 @@ export function openGoogleToken(value: string) {
 
 export async function getGoogleUserAuth() {
   const tokenCookie = (await cookies()).get(GOOGLE_USER_COOKIE)?.value;
-  if (!tokenCookie) throw new Error("กรุณาออกจากระบบแล้ว Login Google ใหม่เพื่ออนุญาต Google Sheets");
+  if (!tokenCookie) throw new GoogleConnectionRequiredError();
   const oauth = googleOAuthClient();
   oauth.setCredentials(openGoogleToken(tokenCookie));
   return oauth;

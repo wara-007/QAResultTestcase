@@ -1,10 +1,10 @@
 import { createClient } from "@/lib/supabase/server";
 import { exportGoogleSheetWorkbook } from "@/lib/google-sheets";
-import { getGoogleUserAuth } from "@/lib/google-user-oauth";
+import { getGoogleUserAuth, GoogleConnectionRequiredError } from "@/lib/google-user-oauth";
 
 export const runtime = "nodejs";
 
-export async function GET(_request: Request, { params }: { params: Promise<{ projectId: string }> }) {
+export async function GET(request: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
     const supabase = await createClient();
@@ -26,6 +26,9 @@ export async function GET(_request: Request, { params }: { params: Promise<{ pro
       },
     });
   } catch (reason) {
+    if (reason instanceof GoogleConnectionRequiredError) {
+      return Response.json({ error: reason.message, authUrl: `/api/google/auth/start?returnTo=${encodeURIComponent(new URL(request.url).pathname.replace(/\/api\/projects\/[^/]+\/google-sheet\/workbook$/, "/groups"))}` }, { status: 401 });
+    }
     return Response.json({ error: reason instanceof Error ? reason.message : "โหลด workbook จาก Google Sheets ไม่สำเร็จ" }, { status: 400 });
   }
 }

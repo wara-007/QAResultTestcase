@@ -9,6 +9,7 @@ type SystemUserRow = {
   display_name: string;
   is_authorized: boolean;
   is_system_owner: boolean;
+  app_role: "qa" | "po";
   last_sign_in_at: string | null;
 };
 
@@ -29,6 +30,7 @@ export async function loadSystemUsers(): Promise<{ users: SystemUser[]; error: s
       displayName: user.display_name,
       isAuthorized: user.is_authorized ?? true,
       isSystemOwner: user.is_system_owner,
+      appRole: user.app_role ?? "qa",
       lastSignInAt: user.last_sign_in_at,
     })),
   };

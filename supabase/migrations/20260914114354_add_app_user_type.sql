@@ -48,16 +48,16 @@ as $$
     when (select private.is_system_owner()) then 'qa'
     when exists (
       select 1 from private.app_authorizations access_entry
-      join current_user_email current_user on current_user.email = access_entry.email
+      join current_user_email current_identity on current_identity.email = access_entry.email
       where access_entry.enabled and access_entry.user_type = 'qa'
     ) then 'qa'
     when exists (
       select 1 from private.app_authorizations access_entry
-      join current_user_email current_user on current_user.email = access_entry.email
+      join current_user_email current_identity on current_identity.email = access_entry.email
       where access_entry.enabled and access_entry.user_type = 'po'
     ) or exists (
       select 1 from public.project_approval_requests approval_request
-      join current_user_email current_user on current_user.email = approval_request.recipient_email
+      join current_user_email current_identity on current_identity.email = approval_request.recipient_email
       where approval_request.status <> 'revoked'
     ) then 'po'
     else null
@@ -114,6 +114,7 @@ as $$
 $$;
 
 drop function if exists public.set_app_user_access(text, boolean);
+drop function if exists public.set_app_user_access(text, boolean, text);
 create function public.set_app_user_access(requested_email text, requested_enabled boolean, requested_role text default 'qa')
 returns void
 language plpgsql
@@ -157,3 +158,5 @@ revoke all on function public.set_app_user_access(text, boolean, text) from publ
 grant execute on function public.get_my_app_role() to authenticated;
 grant execute on function public.list_system_users() to authenticated;
 grant execute on function public.set_app_user_access(text, boolean, text) to authenticated;
+
+notify pgrst, 'reload schema';

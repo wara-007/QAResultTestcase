@@ -35,11 +35,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createProject, createProjectApprovalRequest, deleteProject, getLatestProjectApproval, updateProjectGoogleSheet, type ProjectApprovalSummary } from "@/app/actions";
 import { signOut } from "@/app/auth/actions";
-import { exportTestCases, importTestCases, readWorkbookSheet } from "@/lib/excel-ooxml";
+import { exportTestCases, importTestCases, readWorkbookFreeformResults, readWorkbookResultImages, readWorkbookSheet } from "@/lib/excel-ooxml";
 import { evidenceImageUrl } from "@/lib/evidence";
+import { formatFlexibleDate } from "@/lib/date-format";
 import { compressEvidenceImage } from "@/lib/image-compression";
 import { loadProjectWorkspace, persistImportedWorkbook, persistTestCaseResult } from "@/lib/project-data";
-import { TEST_STATUSES, type CurrentUser, type Project, type TestCase, type TestDefect, type TestResult, type TestStatus, type WorkbookSheet, type WorkbookSheetContent, type WorkbookSource } from "@/lib/types";
+import { TEST_STATUSES, type CurrentUser, type Project, type TestCase, type TestCaseCustomField, type TestCaseResultField, type TestDefect, type TestResult, type TestStatus, type WorkbookSheet, type WorkbookSheetContent, type WorkbookSource } from "@/lib/types";
 
 const statusMeta: Record<TestStatus, { label: string; className: string }> = {
   "Not Start": { label: "Not Start", className: "status-not-start" },
@@ -62,6 +63,12 @@ export type ProjectPageName = (typeof PROJECT_PAGES)[number];
 
 type WorkspacePage = "projects" | ProjectPageName;
 
+function continueGoogleAuthorization(authUrl: string) {
+  const target = new URL(authUrl, window.location.origin);
+  target.searchParams.set("returnTo", `${window.location.pathname}${window.location.search}${window.location.hash}`);
+  window.location.assign(target.toString());
+}
+
 function mergeGoogleSheetsWithSource(sourceSheets: WorkbookSheet[], googleSheets: WorkbookSheet[]) {
   const sourceByName = new Map(sourceSheets.map((sheet) => [sheet.name.trim().toLowerCase(), sheet]));
   return googleSheets.map((googleSheet) => {
@@ -73,6 +80,14 @@ function mergeGoogleSheetsWithSource(sourceSheets: WorkbookSheet[], googleSheets
       imageCount: sourceSheet.imageCount,
     };
   });
+}
+
+function mergeCustomFields(sheetFields: TestCaseCustomField[] = [], storedFields: TestCaseCustomField[] = []) {
+  const identity = (field: TestCaseCustomField) => `${field.source}:${field.label.trim().toLowerCase()}`;
+  const stored = new Map(storedFields.map((field) => [identity(field), field]));
+  const merged = sheetFields.map((field) => ({ ...field, value: stored.get(identity(field))?.value ?? field.value }));
+  const sheetKeys = new Set(sheetFields.map(identity));
+  return [...merged, ...storedFields.filter((field) => !sheetKeys.has(identity(field)))];
 }
 
 function StatusBadge({ status }: { status: TestStatus }) {
@@ -325,7 +340,7 @@ function ProjectsHome({ projects, error, onAdd, projectHref }: { projects: Proje
   return (
     <div className="projects-home" id="projects">
       <section className="projects-heading"><div><p className="eyebrow">WORKSPACE</p><h1>Projects</h1><span>เลือก Project เพื่อดู Testcase หรือสร้าง Project ใหม่</span></div><button className="primary-button" onClick={onAdd}><PlusIcon />เพิ่ม Project</button></section>
-      {error ? <section className="project-error"><CircleAlert size={20} /><div><strong>โหลด Projects ไม่สำเร็จ</strong><span>{error}</span></div></section> : projects.length ? <section className="project-grid">{projects.map((project) => <Link className="project-card" key={project.id} href={projectHref(project)}><div className="project-card-icon"><FolderKanban size={22} /></div><div className="project-card-title"><h2>{project.name}</h2><ChevronRight size={18} /></div><p>{project.description || "ไม่มีรายละเอียด"}</p><div className="project-card-meta"><span>{project.environment}</span>{project.sprintNo && <span>{project.sprintNo}</span>}</div><small>สร้างเมื่อ {new Intl.DateTimeFormat("th-TH", { dateStyle: "medium" }).format(new Date(project.createdAt))}</small></Link>)}</section> : <section className="panel project-zero"><FolderKanban size={34} /><h2>ยังไม่มี Project</h2><p>สร้าง Project แรกเพื่ออัปโหลด Testcase และเริ่มบันทึกผล</p><button className="primary-button" onClick={onAdd}><PlusIcon />เพิ่ม Project</button></section>}
+      {error ? <section className="project-error"><CircleAlert size={20} /><div><strong>โหลด Projects ไม่สำเร็จ</strong><span>{error}</span></div></section> : projects.length ? <section className="project-grid">{projects.map((project) => <Link className="project-card" key={project.id} href={projectHref(project)}><div className="project-card-icon"><FolderKanban size={22} /></div><div className="project-card-title"><h2>{project.name}</h2><ChevronRight size={18} /></div><p>{project.description || "ไม่มีรายละเอียด"}</p><div className="project-card-meta"><span>{project.environment}</span>{project.sprintNo && <span>{project.sprintNo}</span>}</div><small>สร้างเมื่อ {formatFlexibleDate(project.createdAt, false)}</small></Link>)}</section> : <section className="panel project-zero"><FolderKanban size={34} /><h2>ยังไม่มี Project</h2><p>สร้าง Project แรกเพื่ออัปโหลด Testcase และเริ่มบันทึกผล</p><button className="primary-button" onClick={onAdd}><PlusIcon />เพิ่ม Project</button></section>}
     </div>
   );
 }
@@ -404,7 +419,7 @@ function ProjectApprovalPanel({ project, cases, counts, testingFinished, loading
   return <><section className="panel approval-panel">
     <div className="approval-heading"><div className="approval-icon"><Mail size={23} /></div><div><h2>ส่งผลทดสอบให้ PO Approve</h2><p>ระบบจะเปิดโปรแกรมอีเมลพร้อมสรุปผลและลิงก์ Google Sheets จากนั้น QA ตรวจข้อความและกดส่งเอง</p></div><span className={`approval-readiness ${testingFinished ? "ready" : "pending"}`}>{loading ? "กำลังโหลด..." : testingFinished ? "พร้อมส่ง" : cases.length ? `ยังไม่ได้ทดสอบ ${untested} cases` : "ยังไม่มี Test Case"}</span></div>
     <div className="approval-form"><label className="text-field"><span>อีเมล PO *</span><input type="email" value={poEmail} onChange={(event) => setPoEmail(event.target.value)} placeholder="po@company.com" /></label><label className="text-field approval-note"><span>ข้อความเพิ่มเติม</span><textarea rows={3} value={approvalNote} onChange={(event) => setApprovalNote(event.target.value)} placeholder="รายละเอียด release หรือสิ่งที่ต้องการให้ PO ตรวจสอบ" /></label></div>
-    {approval && <div className={`approval-status-card ${approval.status}`}><div><strong>{approvalLabel}</strong><span>ส่งให้ {approval.recipientEmail} เมื่อ {new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short" }).format(new Date(approval.requestedAt))}</span></div>{approval.reviewerName && <span>โดย {approval.reviewerName}</span>}{approval.reviewerComment && <p>{approval.reviewerComment}</p>}</div>}
+    {approval && <div className={`approval-status-card ${approval.status}`}><div><strong>{approvalLabel}</strong><span>ส่งให้ {approval.recipientEmail} เมื่อ {formatFlexibleDate(approval.requestedAt)}</span></div>{approval.reviewerName && <span>โดย {approval.reviewerName}</span>}{approval.reviewerComment && <p>{approval.reviewerComment}</p>}</div>}
     <div className="approval-footer"><div>{project.googleSheetUrl ? <a href={project.googleSheetUrl} target="_blank" rel="noreferrer"><FileSpreadsheet size={16} />เปิด Google Sheets</a> : <button type="button" className="text-button" onClick={onConnectSheet}>เชื่อม Google Sheet ก่อนส่ง</button>}<small>{testingFinished ? "อีเมลจะมีลิงก์ให้ PO เปิดรีวิวและกด Approved" : "กดส่งได้ แต่ระบบจะแจ้งเตือนให้ยืนยันก่อน"}</small></div><button type="button" className="primary-button" onClick={openApprovalEmail} disabled={loading || sendingApproval || !project.googleSheetUrl}>{sendingApproval ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}{approval?.status === "pending" ? "ส่งลิงก์ใหม่" : "เปิดอีเมลขอ Approve"}</button></div>
   </section>
   {showUntestedConfirmation && <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowUntestedConfirmation(false)}><section className="approval-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="approval-confirm-title" onMouseDown={(event) => event.stopPropagation()}>
@@ -466,6 +481,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
   const [actualResult, setActualResult] = useState("");
   const [apiResponse, setApiResponse] = useState("");
   const [log, setLog] = useState("");
+  const [resultCustomFields, setResultCustomFields] = useState<TestCaseResultField[]>(() => (value.resultFieldDefinitions ?? []).map((field) => ({ ...field, value: "" })));
   const [defectTitle, setDefectTitle] = useState("");
   const [defectResult, setDefectResult] = useState("");
   const [defectStatus, setDefectStatus] = useState("Open");
@@ -485,11 +501,16 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
   const resultSheets = source?.sheets.filter((sheet) => sheet.testCaseIds.includes(value.id.toUpperCase())) ?? [];
   const evidenceCount = resultSheets.reduce((total, sheet) => total + sheet.imageCount, 0);
   const update = (field: keyof TestCase, next: string) => setDraft((current) => ({ ...current, [field]: next }));
+  const updateCustomField = (key: string, value: string) => setDraft((current) => ({
+    ...current,
+    customFields: (current.customFields ?? []).map((field) => field.key === key ? { ...field, value } : field),
+  }));
   const rememberDefaults = (testCase: TestCase) => window.localStorage.setItem(`qa-test-defaults:${projectId}`, JSON.stringify({ platform: testCase.platform, environment: testCase.environment, device: testCase.device, appVersion: testCase.appVersion, executedBy: testCase.executedBy, testData: testCase.testData }));
   function resetResultForm() {
     setActualResult("");
     setApiResponse("");
     setLog("");
+    setResultCustomFields((draft.resultFieldDefinitions ?? []).map((field) => ({ ...field, value: "" })));
     setDefectTitle("");
     setDefectResult("");
     setDefectStatus("Open");
@@ -501,7 +522,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
     setDraft((current) => ({ ...current, evidence: [] }));
   }
   async function saveResult() {
-    if (!actualResult.trim() && !apiResponse.trim() && !log.trim() && !draft.evidence.length) {
+    if (!actualResult.trim() && !apiResponse.trim() && !log.trim() && !draft.evidence.length && !resultCustomFields.some((field) => field.value.trim())) {
       setError("กรุณาใส่ผลทดสอบ รูป API response หรือ log อย่างน้อยหนึ่งรายการ");
       return;
     }
@@ -513,6 +534,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
       apiResponse: apiResponse.trim(),
       log: log.trim(),
       evidence: draft.evidence,
+      customFields: resultCustomFields,
       createdAt,
     };
     const next = withPassedTimestamp({
@@ -544,6 +566,10 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
     setActualResult(result.actualResult);
     setApiResponse(result.apiResponse);
     setLog(result.log);
+    setResultCustomFields((draft.resultFieldDefinitions ?? result.customFields ?? []).map((definition) => ({
+      ...definition,
+      value: result.customFields?.find((field) => field.key === definition.key || field.label.trim().toLowerCase() === definition.label.trim().toLowerCase())?.value ?? definition.value ?? "",
+    })));
     setDraft((current) => ({ ...current, evidence: result.evidence }));
   }
   async function saveDefect() {
@@ -646,7 +672,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
         const response = await fetch(`/api/projects/${projectId}/evidence`, { method: "POST", body: form });
         const data = await response.json();
         if (response.status === 401 && data.authUrl) {
-          window.location.href = data.authUrl;
+          continueGoogleAuthorization(data.authUrl);
           return;
         }
         if (!response.ok) throw new Error(data.error ?? `อัปโหลด ${file.name} ไม่สำเร็จ`);
@@ -694,6 +720,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
       <label className="text-field"><span>ผลที่พบ / Actual result</span><textarea rows={3} value={actualResult} onChange={(event) => setActualResult(event.target.value)} placeholder="รายละเอียดผลทดสอบรอบนี้" /></label>
       <div className="result-input-grid"><label className="text-field"><span>API response</span><textarea className="code-input" rows={7} value={apiResponse} onChange={(event) => setApiResponse(event.target.value)} placeholder="วาง response JSON หรือข้อความ" /></label>
       <label className="text-field"><span>Log</span><textarea className="code-input" rows={7} value={log} onChange={(event) => setLog(event.target.value)} placeholder="วาง application log" /></label></div>
+      {resultCustomFields.length > 0 && <div className="result-custom-fields"><div className="result-form-heading"><div><span>ฟิลด์ Result จาก tab {draft.id}</span><small>ดึงจากหัวตาราง Result ของชีตนี้</small></div><strong>{resultCustomFields.length} fields</strong></div><div className="dynamic-field-grid">{resultCustomFields.map((field) => <label className="text-field" key={field.key}><span>{field.label}</span>{field.value.includes("\n") || field.value.length > 100 ? <textarea rows={3} value={field.value} onChange={(event) => setResultCustomFields((current) => current.map((item) => item.key === field.key ? { ...item, value: event.target.value } : item))} /> : <input value={field.value} onChange={(event) => setResultCustomFields((current) => current.map((item) => item.key === field.key ? { ...item, value: event.target.value } : item))} />}</label>)}</div></div>}
       <div className="result-evidence-entry">
         <span className="field-label">รูปหลักฐานของ Result นี้</span>
         {draft.evidence.length > 0 && <div className="drive-evidence-gallery">{draft.evidence.map((item) => { const url = evidenceImageUrl(item); return <a href={url} target="_blank" rel="noreferrer" key={item.fileId}><Image src={url} alt={item.name} width={500} height={350} unoptimized /><span>{item.name}</span></a>; })}</div>}
@@ -739,6 +766,14 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
             <section className="readonly-block"><p>ขั้นตอนทดสอบ</p><div className="multiline">{draft.steps || "—"}</div></section>
             <section className="readonly-block expected"><p>ผลลัพธ์ที่คาดหวัง</p><div className="multiline">{draft.expected || "—"}</div></section>
           </>}
+          {(draft.customFields?.length ?? 0) > 0 && <section className="dynamic-sheet-fields">
+            <div className="result-form-heading"><div><span>ข้อมูลเพิ่มเติมจาก Google Sheets</span><small>แก้ไขได้ และระบบจะซิงค์กลับไปยังตำแหน่งเดิมในชีต</small></div><strong>{draft.customFields?.length} fields</strong></div>
+            {(["testcase", "detail"] as const).map((sourceType) => {
+              const fields = (draft.customFields ?? []).filter((field) => field.source === sourceType);
+              if (!fields.length) return null;
+              return <div className="dynamic-field-group" key={sourceType}><h3>{sourceType === "testcase" ? "จาก tab Testcase" : `จาก tab ${draft.id}`}</h3><div className="dynamic-field-grid">{fields.map((field) => <label className="text-field" key={field.key}><span>{field.label}</span>{field.value.includes("\n") || field.value.length > 100 ? <textarea rows={3} value={field.value} onChange={(event) => updateCustomField(field.key, event.target.value)} /> : <input value={field.value} onChange={(event) => updateCustomField(field.key, event.target.value)} />}</label>)}</div></div>;
+            })}
+          </section>}
           <div className="form-section-title"><span>บันทึกผลการทดสอบ</span><span className="required-note">* จำเป็น</span></div>
           <div className="two-column-fields">
             <label><span>Platform</span><input value={draft.platform} onChange={(event) => update("platform", event.target.value)} placeholder="เช่น Mobile, Web, iOS/Android" /></label>
@@ -753,7 +788,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
           <label className="text-field"><span>หมายเหตุ / Actual result</span><textarea rows={4} value={draft.remark} onChange={(event) => update("remark", event.target.value)} placeholder="บันทึกสิ่งที่พบระหว่างการทดสอบ..." /></label>
           {(draft.results?.length ?? 0) > 0 && <div className="result-preview-list">
             <div className="result-sheet-heading"><span>Preview Results</span><strong>{draft.results?.length} รายการ</strong></div>
-            {draft.results?.map((result, index) => <article key={result.id} className={editingResultId === result.id ? "editing" : ""}><header><strong>ผลที่ {index + 1}</strong><StatusBadge status={result.status} /><time>{new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short" }).format(new Date(result.createdAt))}</time>{editingResultId !== result.id && <><button type="button" className="secondary-button result-edit-button" onClick={() => editResult(result)}>แก้ไข</button><button type="button" className="danger-button result-delete-button" disabled={savingResult} onClick={() => void deleteResult(result)}><Trash2 size={13} />ลบ</button></>}</header>{editingResultId === result.id ? <div className="result-entry-block inline-result-editor"><div className="result-form-heading"><div><span>{`แก้ไขผลที่ ${index + 1} ของ ${draft.id}`}</span><small>บันทึกแล้วจะแทนที่ Result รายการนี้</small></div></div>{renderResultFields("บันทึกการแก้ไข Result", resetResultForm)}</div> : <>{result.actualResult && <p>{result.actualResult}</p>}{result.apiResponse && <details><summary>API response</summary><pre>{result.apiResponse}</pre></details>}{result.log && <details><summary>Log</summary><pre>{result.log}</pre></details>}{result.evidence.length > 0 && <div className="drive-evidence-gallery result-evidence-gallery">{result.evidence.map((item) => { const url = evidenceImageUrl(item); return <a href={url} target="_blank" rel="noreferrer" key={item.fileId}><Image src={url} alt={item.name} width={500} height={350} unoptimized /><span>{item.name}</span></a>; })}</div>}</>}</article>)}
+            {draft.results?.map((result, index) => <article key={result.id} className={editingResultId === result.id ? "editing" : ""}><header><strong>ผลที่ {index + 1}</strong><StatusBadge status={result.status} /><time>{formatFlexibleDate(result.createdAt)}</time>{editingResultId !== result.id && <><button type="button" className="secondary-button result-edit-button" onClick={() => editResult(result)}>แก้ไข</button><button type="button" className="danger-button result-delete-button" disabled={savingResult} onClick={() => void deleteResult(result)}><Trash2 size={13} />ลบ</button></>}</header>{editingResultId === result.id ? <div className="result-entry-block inline-result-editor"><div className="result-form-heading"><div><span>{`แก้ไขผลที่ ${index + 1} ของ ${draft.id}`}</span><small>บันทึกแล้วจะแทนที่ Result รายการนี้</small></div></div>{renderResultFields("บันทึกการแก้ไข Result", resetResultForm)}</div> : <>{result.actualResult && <p>{result.actualResult}</p>}{(result.customFields?.length ?? 0) > 0 && <dl className="result-custom-preview">{result.customFields?.map((field) => <div key={field.key}><dt>{field.label}</dt><dd>{field.value || "—"}</dd></div>)}</dl>}{result.apiResponse && <details><summary>API response</summary><pre>{result.apiResponse}</pre></details>}{result.log && <details><summary>Log</summary><pre>{result.log}</pre></details>}{result.evidence.length > 0 && <div className="drive-evidence-gallery result-evidence-gallery">{result.evidence.map((item) => { const url = evidenceImageUrl(item); return <a href={url} target="_blank" rel="noreferrer" key={item.fileId}><Image src={url} alt={item.name} width={500} height={350} unoptimized /><span>{item.name}</span></a>; })}</div>}</>}</article>)}
           </div>}
           {!showResultEntry && !editingResultId && !showDefectEntry && !editingDefectId && <div className="entry-type-actions"><button type="button" className="primary-button open-result-button" onClick={() => { resetResultForm(); setShowResultEntry(true); }}><PlusIcon />Add Result</button><button type="button" className="secondary-button add-defect-button" onClick={() => { resetResultForm(); setShowDefectEntry(true); }}><CircleAlert size={16} />Add Defect</button></div>}
           {showResultEntry && <div className="result-entry-block result-entry-highlight">
@@ -761,7 +796,7 @@ function CaseDrawer({ value, projectId, source, currentUserName, pageMode = fals
             {renderResultFields("บันทึก Result รายการนี้", resetResultForm)}
           </div>}
           {showDefectEntry && <div className="result-entry-block defect-entry"><div className="result-form-heading"><div><span>{`เพิ่ม Defect ให้ ${draft.id}`}</span><small>Defect นี้จะผูกกับ Test case โดยตรง</small></div><strong>{draft.defects?.length ?? 0} defects</strong></div>{renderDefectFields("บันทึก Defect รายการนี้", resetResultForm)}</div>}
-          {(draft.defects?.length ?? 0) > 0 && <div className="result-preview-list defect-preview-list"><div className="result-sheet-heading"><span>Defects ของ Test case</span><strong>{draft.defects?.length} รายการ</strong></div>{draft.defects?.map((defect, index) => <article key={defect.id} className={editingDefectId === defect.id ? "editing" : ""}><header><strong>Defect {index + 1}: {defect.title}</strong><span className="status-badge status-failed">{defect.status}</span><time>{new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short" }).format(new Date(defect.createdAt))}</time>{editingDefectId !== defect.id && <><button type="button" className="secondary-button result-edit-button" onClick={() => editDefect(defect)}>แก้ไข</button><button type="button" className="danger-button result-delete-button" disabled={savingResult} onClick={() => void deleteDefect(defect)}><Trash2 size={13} />ลบ</button></>}</header>{editingDefectId === defect.id ? <div className="result-entry-block inline-result-editor">{renderDefectFields("บันทึกการแก้ไข Defect", resetResultForm)}</div> : <>{defect.description && <p>{defect.description}</p>}{defect.apiResponse && <details><summary>API response</summary><pre>{defect.apiResponse}</pre></details>}{defect.log && <details><summary>Log</summary><pre>{defect.log}</pre></details>}{defect.evidence.length > 0 && <div className="drive-evidence-gallery result-evidence-gallery">{defect.evidence.map((item) => { const url = evidenceImageUrl(item); return <a href={url} target="_blank" rel="noreferrer" key={item.fileId}><Image src={url} alt={item.name} width={500} height={350} unoptimized /><span>{item.name}</span></a>; })}</div>}{defect.jiraUrl && <a className="secondary-button" href={defect.jiraUrl} target="_blank" rel="noreferrer">เปิด Jira</a>}</>}</article>)}</div>}
+          {(draft.defects?.length ?? 0) > 0 && <div className="result-preview-list defect-preview-list"><div className="result-sheet-heading"><span>Defects ของ Test case</span><strong>{draft.defects?.length} รายการ</strong></div>{draft.defects?.map((defect, index) => <article key={defect.id} className={editingDefectId === defect.id ? "editing" : ""}><header><strong>Defect {index + 1}: {defect.title}</strong><span className="status-badge status-failed">{defect.status}</span><time>{formatFlexibleDate(defect.createdAt)}</time>{editingDefectId !== defect.id && <><button type="button" className="secondary-button result-edit-button" onClick={() => editDefect(defect)}>แก้ไข</button><button type="button" className="danger-button result-delete-button" disabled={savingResult} onClick={() => void deleteDefect(defect)}><Trash2 size={13} />ลบ</button></>}</header>{editingDefectId === defect.id ? <div className="result-entry-block inline-result-editor">{renderDefectFields("บันทึกการแก้ไข Defect", resetResultForm)}</div> : <>{defect.description && <p>{defect.description}</p>}{defect.apiResponse && <details><summary>API response</summary><pre>{defect.apiResponse}</pre></details>}{defect.log && <details><summary>Log</summary><pre>{defect.log}</pre></details>}{defect.evidence.length > 0 && <div className="drive-evidence-gallery result-evidence-gallery">{defect.evidence.map((item) => { const url = evidenceImageUrl(item); return <a href={url} target="_blank" rel="noreferrer" key={item.fileId}><Image src={url} alt={item.name} width={500} height={350} unoptimized /><span>{item.name}</span></a>; })}</div>}{defect.jiraUrl && <a className="secondary-button" href={defect.jiraUrl} target="_blank" rel="noreferrer">เปิด Jira</a>}</>}</article>)}</div>}
           <div className="result-sheet-block">
             <div className="result-sheet-heading"><span>ผลและหลักฐานจาก Excel</span><strong>{resultSheets.length} sheets · {evidenceCount} รูป</strong></div>
             {resultSheets.length ? <div className="result-sheet-list">{resultSheets.map((sheet) => <button className={viewingSheet?.path === sheet.path ? "active" : ""} onClick={() => setViewingSheet(sheet)} key={sheet.path}><FileSpreadsheet size={16} /><span><strong>{sheet.name}</strong><small>{sheet.imageCount ? `${sheet.imageCount} รูปหลักฐาน` : "ไม่มีรูปในชีต"}</small></span><ChevronRight size={15} /></button>)}</div> : <p className="no-result-sheet">ไม่พบชีตผลลัพธ์ที่อ้างอิง {value.id}</p>}
@@ -854,7 +889,7 @@ export function QaWorkspace({
       ? fetch(`/api/projects/${selectedProject.id}/google-sheet`, { cache: "no-store" }).then(async (response) => {
           const data = await response.json();
           if (response.status === 401 && data.authUrl) {
-            window.location.href = data.authUrl;
+            continueGoogleAuthorization(data.authUrl);
             return null;
           }
           if (!response.ok) throw new Error(data.error ?? "โหลด Google Sheet ไม่สำเร็จ");
@@ -880,6 +915,8 @@ export function QaWorkspace({
             persistedLocally: stored.persistedLocally,
             results: hasStoredResults ? stored.results : item.results,
             defects: hasStoredDefects ? stored.defects : item.defects,
+            customFields: mergeCustomFields(item.customFields, stored.customFields),
+            resultFieldDefinitions: item.resultFieldDefinitions?.length ? item.resultFieldDefinitions : stored.resultFieldDefinitions,
             evidence: stored.evidence,
             platform: useStoredFields ? stored.platform : item.platform,
             status: useStoredFields ? stored.status : item.status,
@@ -966,27 +1003,129 @@ export function QaWorkspace({
       ]);
       const data = await response.json();
       if (response.status === 401 && data.authUrl) {
-        window.location.href = data.authUrl;
+        continueGoogleAuthorization(data.authUrl);
         return;
       }
       if (!response.ok) throw new Error(data.error ?? "โหลด Google Sheet ไม่สำเร็จ");
       if (!workbookResponse.ok) {
         const workbookError = await workbookResponse.json().catch(() => null) as { error?: string } | null;
         if (workbookResponse.status === 401 && workbookError && "authUrl" in workbookError && typeof workbookError.authUrl === "string") {
-          window.location.href = workbookError.authUrl;
+          continueGoogleAuthorization(workbookError.authUrl);
           return;
         }
         throw new Error(workbookError?.error ?? "โหลดรูปจาก Google Sheets ไม่สำเร็จ");
       }
-      const imported = importTestCases(await workbookResponse.arrayBuffer(), `${selectedProject.name}.xlsx`);
-      setCases(data.cases);
-      setSource({
-        ...imported.source,
-        sheets: mergeGoogleSheetsWithSource(imported.source.sheets, data.sheets),
-      });
+      const workbookBuffer = await workbookResponse.arrayBuffer();
+      const imported = importTestCases(workbookBuffer, `${selectedProject.name}.xlsx`);
+      const importedImages = readWorkbookResultImages(imported.source);
+      const freeformResults = readWorkbookFreeformResults(imported.source);
+      const storedCases = new Map(cases.map((testCase) => [testCase.id.toUpperCase(), testCase]));
+      const importedCases: TestCase[] = (data.cases as TestCase[]).map((testCase) => ({
+        ...testCase,
+        results: [...new Map([
+          ...(testCase.results ?? []),
+          ...(storedCases.get(testCase.id.toUpperCase())?.results ?? []),
+        ].map((result) => [result.id, { ...result, evidence: [...result.evidence] }])).values()],
+        defects: storedCases.get(testCase.id.toUpperCase())?.defects ?? testCase.defects,
+      }));
+      const changedCaseIds = new Set<string>();
+      let attachedImageCount = 0;
+      let skippedImageCount = 0;
+      let failedImageCount = 0;
+      for (const importedResult of freeformResults) {
+        const testCase = importedCases.find((item) => item.id.toLowerCase() === importedResult.testCaseId.toLowerCase());
+        if (!testCase) continue;
+        const existing = testCase.results?.find((result) => result.id === importedResult.resultId);
+        if (existing) {
+          existing.actualResult = importedResult.actualResult || existing.actualResult;
+          existing.apiResponse = importedResult.apiResponse || existing.apiResponse;
+          existing.log = importedResult.log || existing.log;
+        } else {
+          testCase.results = [...(testCase.results ?? []), {
+            id: importedResult.resultId,
+            status: testCase.status,
+            actualResult: importedResult.actualResult,
+            apiResponse: importedResult.apiResponse,
+            log: importedResult.log,
+            evidence: [],
+            createdAt: new Date().toISOString(),
+          }];
+        }
+        changedCaseIds.add(testCase.id);
+      }
+
+      // Persist freeform text first. A failed evidence upload must not make the whole Result disappear.
+      if (changedCaseIds.size) {
+        const textOnlySavedCases = new Map((await Promise.all(importedCases
+          .filter((testCase) => changedCaseIds.has(testCase.id))
+          .map((testCase) => persistTestCaseResult(selectedProject.id, testCase))))
+          .map((testCase) => [testCase.id, testCase]));
+        importedCases.forEach((testCase, index) => {
+          importedCases[index] = textOnlySavedCases.get(testCase.id) ?? testCase;
+        });
+      }
+      setCases([...importedCases]);
+      const mergedSheets = mergeGoogleSheetsWithSource(imported.source.sheets, data.sheets);
+      setSource({ ...imported.source, sheets: mergedSheets });
+      void persistImportedWorkbook(selectedProject.id, importedCases, { ...imported.source, sheets: mergedSheets }, false).catch(() => undefined);
+
+      for (const image of importedImages) {
+        const testCase = importedCases.find((item) => item.id.toLowerCase() === image.testCaseId.toLowerCase());
+        if (!testCase || !image.mimeType.startsWith("image/")) {
+          skippedImageCount += 1;
+          continue;
+        }
+        let result = testCase.results?.find((item) => item.id.trim() === image.resultId.trim());
+        if (!result && image.resultId.startsWith("SHEET-IMPORT-")) {
+          result = {
+            id: image.resultId,
+            status: testCase.status,
+            actualResult: `นำเข้าจาก Google Sheets · ${image.sheetName}`,
+            apiResponse: "",
+            log: "",
+            evidence: [],
+            createdAt: new Date().toISOString(),
+          };
+          testCase.results = [...(testCase.results ?? []), result];
+        }
+        if (!result) {
+          skippedImageCount += 1;
+          continue;
+        }
+        const importKey = `sheet-${image.sheetName}-${image.row}-${image.column}`.replace(/[^a-zA-Z0-9._-]+/g, "_");
+        if (result.evidence.some((evidence) => evidence.name.startsWith(importKey))) continue;
+        const originalFile = new File([new Uint8Array(image.bytes)], `${importKey}-${image.name}`, { type: image.mimeType });
+        try {
+          const prepared = await compressEvidenceImage(originalFile);
+          const form = new FormData();
+          form.set("file", prepared.file);
+          form.set("testCaseId", testCase.id);
+          form.set("sourceRow", String(testCase.sourceRow));
+          const uploadResponse = await fetch(`/api/projects/${selectedProject.id}/evidence`, { method: "POST", body: form });
+          const uploadData = await uploadResponse.json();
+          if (uploadResponse.status === 401 && uploadData.authUrl) {
+            continueGoogleAuthorization(uploadData.authUrl);
+            return;
+          }
+          if (!uploadResponse.ok) throw new Error(uploadData.error ?? `นำเข้ารูปของ ${testCase.id} ไม่สำเร็จ`);
+          result.evidence.push(uploadData.evidence);
+          changedCaseIds.add(testCase.id);
+          attachedImageCount += 1;
+        } catch {
+          failedImageCount += 1;
+        }
+      }
+      const savedCases = new Map((await Promise.all(importedCases
+        .filter((testCase) => changedCaseIds.has(testCase.id))
+        .map((testCase) => persistTestCaseResult(selectedProject.id, testCase))))
+        .map((testCase) => [testCase.id, testCase]));
+      const nextCases = importedCases.map((testCase) => savedCases.get(testCase.id) ?? testCase);
+      setCases(nextCases);
       setHasUnsyncedChanges(false);
       const imageCount = imported.source.sheets.reduce((total, sheet) => total + sheet.imageCount, 0);
-      flash(`โหลด ${data.cases.length} Testcases และ ${imageCount} รูปจาก Google Sheets แล้ว`);
+      const skippedMessage = skippedImageCount ? ` · ข้าม ${skippedImageCount} รูปที่จับคู่ Result ไม่ได้` : "";
+      const failedMessage = failedImageCount ? ` · รูปไม่สำเร็จ ${failedImageCount}` : "";
+      flash(`โหลด ${nextCases.length} Testcases · Freeform ${freeformResults.length} Result · แนบรูปใหม่ ${attachedImageCount}/${imageCount} รูป${skippedMessage}${failedMessage}`);
     } catch (reason) {
       flash(reason instanceof Error ? reason.message : "โหลด Google Sheet ไม่สำเร็จ");
     } finally {
@@ -1006,7 +1145,7 @@ export function QaWorkspace({
       const response = await fetch(`/api/projects/${selectedProject.id}/google-sheet`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cases: syncCases }) });
       const data = await response.json();
       if (response.status === 401 && data.authUrl) {
-        window.location.href = data.authUrl;
+        continueGoogleAuthorization(data.authUrl);
         return;
       }
       if (!response.ok) throw new Error(data.error ?? "ซิงค์ Google Sheet ไม่สำเร็จ");
@@ -1105,7 +1244,17 @@ export function QaWorkspace({
           {workspaceError && <section className="project-error"><CircleAlert size={20} /><div><strong>โหลดข้อมูล Project ไม่สำเร็จ</strong><span>{workspaceError}</span></div></section>}
           {!loadingWorkspace && source && (activePage === "test-cases" || activePage === "files") && <div className="source-banner"><FileArchive size={18} /><div><strong>{source.fileName}</strong><span>อ่านแล้ว {source.sheets.length || 1} sheets · {cases.length} cases · {workbookStats.results} result sheets · {workbookStats.images} รูป</span></div><CheckCircle2 size={18} /></div>}
 
-          {testCaseId && activeSelectedCase && <CaseDrawer value={activeSelectedCase} projectId={selectedProject.id} source={source} currentUserName={currentUser?.name ?? ""} pageMode onClose={() => router.push(`/groups/${groupId}/projects/${selectedProject.id}/test-cases`)} onSave={saveCase} onSaveResult={saveResult} />}
+          {testCaseId && activeSelectedCase && <CaseDrawer
+            key={`${activeSelectedCase.id}:${(activeSelectedCase.results ?? []).map((result) => `${result.id}-${result.evidence.length}`).join(",")}:${source?.sheets.length ?? 0}`}
+            value={activeSelectedCase}
+            projectId={selectedProject.id}
+            source={source}
+            currentUserName={currentUser?.name ?? ""}
+            pageMode
+            onClose={() => router.push(`/groups/${groupId}/projects/${selectedProject.id}/test-cases`)}
+            onSave={saveCase}
+            onSaveResult={saveResult}
+          />}
 
           {!testCaseId && activePage === "overview" && <><section className="stats-grid">
             <StatCard icon={<ClipboardCheck size={21} />} label="Test cases ทั้งหมด" value={cases.length} detail="ในรอบทดสอบนี้" tone="blue" />

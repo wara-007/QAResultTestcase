@@ -4,7 +4,7 @@ import { unzipSync } from "fflate";
 
 async function main() {
   Object.assign(globalThis, { DOMParser, XMLSerializer });
-  const { importTestCases, exportTestCases } = await import("../src/lib/excel-ooxml");
+  const { importTestCases, exportTestCases, readWorkbookFreeformResults, readWorkbookResultImages } = await import("../src/lib/excel-ooxml");
   const sourcePath = process.argv[2];
   if (!sourcePath) throw new Error("Usage: pnpm test:excel -- /absolute/path/to/source.xlsx");
   const originalBytes = await fs.readFile(sourcePath);
@@ -16,7 +16,10 @@ async function main() {
   if (importedStatusCounts.Pass !== 28 || importedStatusCounts.Skip !== 4) throw new Error(`Unexpected imported statuses: ${JSON.stringify(importedStatusCounts)}`);
   if (imported.source.sheets.length !== 40) throw new Error(`Expected 40 sheets, found ${imported.source.sheets.length}`);
   const indexedImages = imported.source.sheets.reduce((total, sheet) => total + sheet.imageCount, 0);
+  const mappedResultImages = readWorkbookResultImages(imported.source);
+  const freeformResults = readWorkbookFreeformResults(imported.source);
   if (indexedImages !== 98) throw new Error(`Expected 98 indexed images, found ${indexedImages}`);
+  if (mappedResultImages.length !== 86) throw new Error(`Expected 86 result images, found ${mappedResultImages.length}`);
   const tc01Sheets = imported.source.sheets.filter((sheet) => sheet.testCaseIds.includes("TC-01"));
   if (!tc01Sheets.length) throw new Error("TC-01 result sheet was not linked");
   const changedCases = imported.cases.map((testCase, index) =>
@@ -38,7 +41,7 @@ async function main() {
   const outputSheets = Object.keys(outputArchive).filter((path) => /^xl\/worksheets\/sheet\d+\.xml$/.test(path)).length;
   if (originalMedia !== outputMedia || originalSheets !== outputSheets) throw new Error("Workbook structure changed during export");
 
-  console.log(JSON.stringify({ cases: verified.cases.length, sheets: outputSheets, resultSheets: verified.source.sheets.filter((sheet) => sheet.kind === "result").length, media: outputMedia, indexedImages, importedStatusCounts, firstStatus: firstCase.status }));
+  console.log(JSON.stringify({ cases: verified.cases.length, sheets: outputSheets, resultSheets: verified.source.sheets.filter((sheet) => sheet.kind === "result").length, media: outputMedia, indexedImages, mappedResultImages: mappedResultImages.length, freeformResults: freeformResults.length, freeformWithApi: freeformResults.filter((result) => result.apiResponse).length, freeformWithLog: freeformResults.filter((result) => result.log).length, importedStatusCounts, firstStatus: firstCase.status }));
 }
 
 void main();

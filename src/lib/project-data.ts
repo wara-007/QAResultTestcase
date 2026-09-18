@@ -1,5 +1,5 @@
 import { createClient } from "@/lib/supabase/client";
-import type { TestCase, TestDefect, TestResult, TestStatus, WorkbookSheet, WorkbookSource } from "@/lib/types";
+import type { TestCase, TestCaseCustomField, TestDefect, TestResult, TestStatus, WorkbookSheet, WorkbookSource } from "@/lib/types";
 
 const SOURCE_BUCKET = "testcase-source-files";
 const SOURCE_CHUNK_SIZE = 8 * 1024 * 1024;
@@ -42,10 +42,12 @@ type CaseRow = {
 };
 
 type StoredResultPayload = {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   resultReference: string;
   results: TestResult[];
   defects?: TestDefect[];
+  customFields?: TestCaseCustomField[];
+  resultFieldDefinitions?: TestCase["resultFieldDefinitions"];
 };
 
 function normalizeDefect(defect: Partial<TestDefect>, fallbackId: string): TestDefect {
@@ -63,7 +65,7 @@ function normalizeDefect(defect: Partial<TestDefect>, fallbackId: string): TestD
 }
 
 function parseStoredResults(value: string | undefined) {
-  if (!value?.startsWith("qa-results:")) return { resultReference: value ?? "", results: [] as TestResult[], defects: [] as TestDefect[], persistedLocally: false };
+  if (!value?.startsWith("qa-results:")) return { resultReference: value ?? "", results: [] as TestResult[], defects: [] as TestDefect[], customFields: [] as TestCaseCustomField[], resultFieldDefinitions: [], persistedLocally: false };
   try {
     const payload = JSON.parse(value.slice("qa-results:".length)) as StoredResultPayload;
     const results = Array.isArray(payload.results) ? payload.results : [];
@@ -76,15 +78,17 @@ function parseStoredResults(value: string | undefined) {
         return normalized;
       }),
       defects: Array.isArray(payload.defects) ? payload.defects.map((defect, index) => normalizeDefect(defect, `defect-${index + 1}`)) : migratedDefects,
+      customFields: Array.isArray(payload.customFields) ? payload.customFields : [],
+      resultFieldDefinitions: Array.isArray(payload.resultFieldDefinitions) ? payload.resultFieldDefinitions : [],
       persistedLocally: true,
     };
   } catch {
-    return { resultReference: "", results: [] as TestResult[], defects: [] as TestDefect[], persistedLocally: false };
+    return { resultReference: "", results: [] as TestResult[], defects: [] as TestDefect[], customFields: [] as TestCaseCustomField[], resultFieldDefinitions: [], persistedLocally: false };
   }
 }
 
 function serializeStoredResults(testCase: TestCase) {
-  const payload: StoredResultPayload = { version: 2, resultReference: testCase.resultReference, results: testCase.results ?? [], defects: testCase.defects ?? [] };
+  const payload: StoredResultPayload = { version: 3, resultReference: testCase.resultReference, results: testCase.results ?? [], defects: testCase.defects ?? [], customFields: testCase.customFields ?? [], resultFieldDefinitions: testCase.resultFieldDefinitions ?? [] };
   return `qa-results:${JSON.stringify(payload)}`;
 }
 
@@ -180,6 +184,8 @@ export async function loadProjectWorkspace(projectId: string): Promise<ProjectWo
       executedTime: execution?.executed_time ?? "",
       remark: execution?.remark ?? "",
       evidence: [],
+      customFields: stored.customFields,
+      resultFieldDefinitions: stored.resultFieldDefinitions,
       results: stored.results,
       defects: stored.defects,
     };
@@ -263,7 +269,7 @@ export async function persistImportedWorkbook(projectId: string, cases: TestCase
       app_version: testCase.appVersion,
       environment: testCase.environment,
       remark: testCase.remark,
-      result_reference: testCase.resultReference,
+      result_reference: serializeStoredResults(testCase),
       executed_by_name: testCase.executedBy,
       executed_date: testCase.executedDate,
       executed_time: testCase.executedTime,

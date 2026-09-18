@@ -6,7 +6,7 @@ export type TestEvidence = {
   fileId: string;
   name: string;
   mimeType: string;
-  provider?: "google-drive" | "cloudflare-r2";
+  provider?: "google-drive" | "cloudflare-r2" | "external-url";
   objectKey?: string;
   url?: string;
 };
@@ -30,9 +30,27 @@ export type TestResult = {
   apiResponse: string;
   log: string;
   evidence: TestEvidence[];
+  customFields?: TestCaseResultField[];
   /** @deprecated Defects now belong to the TestCase. Kept for old saved payloads. */
   defects?: TestDefect[];
   createdAt: string;
+};
+
+export type TestCaseResultField = {
+  key: string;
+  label: string;
+  value: string;
+  column: number;
+};
+
+export type TestCaseCustomField = {
+  key: string;
+  label: string;
+  value: string;
+  source: "testcase" | "detail";
+  sheetName: string;
+  row: number;
+  column: number;
 };
 
 export type TestCase = {
@@ -58,6 +76,8 @@ export type TestCase = {
   executedTime: string;
   remark: string;
   evidence: TestEvidence[];
+  customFields?: TestCaseCustomField[];
+  resultFieldDefinitions?: TestCaseResultField[];
   results?: TestResult[];
   defects?: TestDefect[];
 };
@@ -87,7 +107,22 @@ export type WorkbookSheet = {
 export type WorkbookSheetContent = {
   cells: Array<{ ref: string; value: string }>;
   truncatedCellCount: number;
-  images: Array<{ name: string; mimeType: string; bytes: Uint8Array }>;
+  images: Array<{ name: string; mimeType: string; bytes: Uint8Array; row: number; column: number }>;
+};
+
+export type WorkbookResultImage = WorkbookSheetContent["images"][number] & {
+  sheetName: string;
+  testCaseId: string;
+  resultId: string;
+};
+
+export type WorkbookFreeformResult = {
+  sheetName: string;
+  testCaseId: string;
+  resultId: string;
+  actualResult: string;
+  apiResponse: string;
+  log: string;
 };
 
 export type Project = {

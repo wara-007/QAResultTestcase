@@ -1,5 +1,5 @@
 import { strFromU8, strToU8, unzipSync, zipSync, type Unzipped } from "fflate";
-import type { TestCase, TestStatus, WorkbookSheet, WorkbookSheetContent, WorkbookSheetKind, WorkbookSource } from "./types";
+import type { TestCase, TestStatus, WorkbookFreeformResult, WorkbookResultImage, WorkbookSheet, WorkbookSheetContent, WorkbookSheetKind, WorkbookSource } from "./types";
 
 const fieldAliases: Record<string, string[]> = {
   id: ["testcase id", "test case id", "case id"],
@@ -241,6 +241,39 @@ const mimeTypes: Record<string, string> = {
   bmp: "image/bmp",
 };
 
+function elementsByLocalName(parent: Document | Element, name: string) {
+  return Array.from(parent.getElementsByTagName("*")).filter((element) => element.localName === name);
+}
+
+function drawingImages(files: Unzipped, sheetPath: string) {
+  const sheetFile = files[sheetPath];
+  if (!sheetFile) return [];
+  const sheetDocument = parseXml(sheetFile);
+  const placements: WorkbookSheetContent["images"] = [];
+  for (const drawing of Array.from(sheetDocument.getElementsByTagName("drawing"))) {
+    const drawingPath = relatedPart(files, sheetPath, relationshipId(drawing));
+    const drawingFile = files[drawingPath];
+    if (!drawingFile) continue;
+    const drawingDocument = parseXml(drawingFile);
+    const anchors = elementsByLocalName(drawingDocument, "twoCellAnchor").concat(elementsByLocalName(drawingDocument, "oneCellAnchor"));
+    for (const anchor of anchors) {
+      const from = elementsByLocalName(anchor, "from")[0];
+      const blip = elementsByLocalName(anchor, "blip")[0];
+      if (!from || !blip) continue;
+      const embedId = blip.getAttribute("r:embed") ?? blip.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "embed");
+      const imagePath = relatedPart(files, drawingPath, embedId);
+      const bytes = files[imagePath];
+      if (!bytes) continue;
+      const name = imagePath.split("/").pop() ?? "evidence";
+      const extension = name.split(".").pop()?.toLowerCase() ?? "";
+      const row = Number(elementsByLocalName(from, "row")[0]?.textContent ?? 0) + 1;
+      const column = Number(elementsByLocalName(from, "col")[0]?.textContent ?? 0);
+      placements.push({ name, mimeType: mimeTypes[extension] ?? "application/octet-stream", bytes, row, column });
+    }
+  }
+  return placements;
+}
+
 export function readWorkbookSheet(source: WorkbookSource, sheet: WorkbookSheet): WorkbookSheetContent {
   const files = unzipSync(new Uint8Array(source.buffer));
   const sharedStrings = readSharedStrings(files);
@@ -250,25 +283,106 @@ export function readWorkbookSheet(source: WorkbookSource, sheet: WorkbookSheet):
     .filter((cell) => cell.value);
   const cells = allCells.slice(0, 200).map((cell) => ({ ...cell, value: cell.value.length > 2_000 ? `${cell.value.slice(0, 2_000)}…` : cell.value }));
 
-  const imagePaths = new Set<string>();
-  for (const drawing of Array.from(document.getElementsByTagName("drawing"))) {
-    const drawingPath = relatedPart(files, sheet.path, relationshipId(drawing));
-    const drawingFile = files[drawingPath];
-    if (!drawingFile) continue;
-    const drawingDocument = parseXml(drawingFile);
-    for (const blip of Array.from(drawingDocument.getElementsByTagName("a:blip"))) {
-      const imagePath = relatedPart(files, drawingPath, blip.getAttribute("r:embed") ?? blip.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "embed"));
-      if (imagePath) imagePaths.add(imagePath);
+  const images = drawingImages(files, sheet.path);
+  return { cells, truncatedCellCount: Math.max(0, allCells.length - cells.length), images };
+}
+
+export function readWorkbookResultImages(source: WorkbookSource): WorkbookResultImage[] {
+  const files = unzipSync(new Uint8Array(source.buffer));
+  const sharedStrings = readSharedStrings(files);
+  const imported: WorkbookResultImage[] = [];
+  for (const sheet of source.sheets.filter((item) => item.kind === "result" && item.testCaseIds.some((id) => id.startsWith("TC-")))) {
+    const document = parseXml(files[sheet.path]);
+    const rows = Array.from(document.getElementsByTagName("row"));
+    let headerRow = -1;
+    let resultIdColumn = "";
+    let defectHeaderRow = Number.POSITIVE_INFINITY;
+    for (const row of rows) {
+      const rowNumber = Number(row.getAttribute("r") ?? 0);
+      for (const cell of Array.from(row.getElementsByTagName("c"))) {
+        const value = normalize(cellValue(cell, sharedStrings));
+        if (value === "result id" && headerRow < 0) {
+          headerRow = rowNumber;
+          resultIdColumn = columnFromRef(cell.getAttribute("r") ?? "");
+        }
+        if (value === "defect id") defectHeaderRow = Math.min(defectHeaderRow, rowNumber);
+      }
+    }
+    const testCaseId = sheet.testCaseIds.find((id) => id.startsWith("TC-")) ?? sheet.name;
+    if (headerRow < 0 || !resultIdColumn) {
+      const fallbackResultId = `SHEET-IMPORT-${sheet.name}`;
+      drawingImages(files, sheet.path).forEach((image) => {
+        imported.push({ ...image, sheetName: sheet.name, testCaseId, resultId: fallbackResultId });
+      });
+      continue;
+    }
+    const resultRows = rows.flatMap((row) => {
+      const rowNumber = Number(row.getAttribute("r") ?? 0);
+      if (rowNumber <= headerRow || rowNumber >= defectHeaderRow) return [];
+      const idCell = Array.from(row.getElementsByTagName("c")).find((cell) => columnFromRef(cell.getAttribute("r") ?? "") === resultIdColumn);
+      const resultId = idCell ? cellValue(idCell, sharedStrings).trim() : "";
+      return resultId ? [{ row: rowNumber, resultId }] : [];
+    });
+    if (!resultRows.length) continue;
+    for (const image of drawingImages(files, sheet.path)) {
+      const owner = resultRows.filter((result) => result.row <= image.row).at(-1);
+      if (!owner || image.row >= defectHeaderRow) continue;
+      imported.push({ ...image, sheetName: sheet.name, testCaseId, resultId: owner.resultId });
     }
   }
-  const images = Array.from(imagePaths).flatMap((path) => {
-    const bytes = files[path];
-    if (!bytes) return [];
-    const name = path.split("/").pop() ?? "evidence";
-    const extension = name.split(".").pop()?.toLowerCase() ?? "";
-    return [{ name, mimeType: mimeTypes[extension] ?? "application/octet-stream", bytes }];
-  });
-  return { cells, truncatedCellCount: Math.max(0, allCells.length - cells.length), images };
+  return imported;
+}
+
+export function readWorkbookFreeformResults(source: WorkbookSource): WorkbookFreeformResult[] {
+  const files = unzipSync(new Uint8Array(source.buffer));
+  const sharedStrings = readSharedStrings(files);
+  const results: WorkbookFreeformResult[] = [];
+  const unique = (values: string[]) => values.filter((value, index) => value && values.indexOf(value) === index).join("\n\n");
+  const apiPattern = /(?:^|\n)\s*(?:endpoint|request|response|http status|server|method)\s*:|http inspector|["'](?:status|statusType|errorCode|errorMessage|data|transactionId)["']\s*:/i;
+  const logPattern = /kubectl\s+logs|^\s*\$\s+.*\blogs\b|(?:^|\n)\d{4}-\d{2}-\d{2}T[^\n]*\|\s*(?:INFO|ERROR|WARN|DEBUG)\b/i;
+
+  for (const sheet of source.sheets.filter((item) => item.kind === "result" && item.testCaseIds.some((id) => id.startsWith("TC-")))) {
+    const document = parseXml(files[sheet.path]);
+    const allCells = Array.from(document.getElementsByTagName("c")).map((cell) => ({
+      row: rowFromRef(cell.getAttribute("r") ?? "0"),
+      column: columnFromRef(cell.getAttribute("r") ?? ""),
+      value: cellValue(cell, sharedStrings).trim(),
+    })).filter((cell) => cell.value);
+    if (allCells.some((cell) => normalize(cell.value) === "result id")) continue;
+
+    const testCaseId = sheet.testCaseIds.find((id) => id.startsWith("TC-")) ?? sheet.name;
+    const metadataHeaderRow = allCells.find((cell) => ["testcase id", "test case id"].includes(normalize(cell.value)))?.row ?? 0;
+    const contentCells = allCells.filter((cell) => cell.row > metadataHeaderRow + 1 && cell.value !== testCaseId);
+    const logLabels = contentCells.filter((cell) => ["log", "logs"].includes(normalize(cell.value)));
+    const actual: string[] = [];
+    const api: string[] = [];
+    const logs: string[] = [];
+
+    for (const cell of contentCells) {
+      const normalized = normalize(cell.value);
+      if (["log", "logs"].includes(normalized)) continue;
+      const belongsToLogSection = logLabels.some((label) => cell.row > label.row && cell.column === label.column);
+      if (logPattern.test(cell.value) || belongsToLogSection) {
+        logs.push(cell.value);
+      } else if (apiPattern.test(cell.value) || (/^[\[{]/.test(cell.value) && /["']\w+["']\s*:/.test(cell.value))) {
+        api.push(cell.value);
+      } else if (/^(?:case|result|actual result|ผล(?:การ)?ทดสอบ)\b/i.test(cell.value)) {
+        actual.push(cell.value);
+      }
+    }
+
+    const images = drawingImages(files, sheet.path);
+    if (!actual.length && !api.length && !logs.length && !images.length) continue;
+    results.push({
+      sheetName: sheet.name,
+      testCaseId,
+      resultId: `SHEET-IMPORT-${sheet.name}`,
+      actualResult: unique(actual) || `นำเข้าจาก Google Sheets · ${sheet.name}`,
+      apiResponse: unique(api),
+      log: unique(logs),
+    });
+  }
+  return results;
 }
 
 function setInlineString(document: Document, ref: string, value: string) {

@@ -3,6 +3,7 @@ import "server-only";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { google, type Auth } from "googleapis";
 import { cookies } from "next/headers";
+import { createClient } from "@/lib/supabase/server";
 
 export const GOOGLE_USER_COOKIE = "qa_google_oauth";
 export const GOOGLE_OAUTH_STATE_COOKIE = "qa_google_oauth_state";
@@ -61,11 +62,39 @@ export function openGoogleToken(value: string) {
   return JSON.parse(Buffer.concat([decipher.update(payload.subarray(28)), decipher.final()]).toString("utf8")) as Auth.Credentials;
 }
 
+export async function loadSavedGoogleCredentials() {
+  const supabase = await createClient();
+  const { data: claimsData, error: claimsError } = await supabase.auth.getClaims();
+  const userId = typeof claimsData?.claims?.sub === "string" ? claimsData.claims.sub : "";
+  if (claimsError || !userId) return null;
+  const { data, error } = await supabase
+    .from("google_oauth_connections")
+    .select("token_ciphertext")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) throw new Error(`โหลดสิทธิ์ Google ที่บันทึกไว้ไม่สำเร็จ: ${error.message}`);
+  return data?.token_ciphertext ? openGoogleToken(data.token_ciphertext) : null;
+}
+
+export async function saveGoogleCredentials(credentials: Auth.Credentials) {
+  const supabase = await createClient();
+  const { data: claimsData, error: claimsError } = await supabase.auth.getClaims();
+  const userId = typeof claimsData?.claims?.sub === "string" ? claimsData.claims.sub : "";
+  if (claimsError || !userId) throw new Error("กรุณาเข้าสู่ระบบก่อนเชื่อม Google Drive และ Sheets");
+  const { error } = await supabase.from("google_oauth_connections").upsert({
+    user_id: userId,
+    token_ciphertext: sealGoogleToken(credentials),
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "user_id" });
+  if (error) throw new Error(`บันทึกสิทธิ์ Google ไม่สำเร็จ: ${error.message}`);
+}
+
 export async function getGoogleUserAuth() {
   const tokenCookie = (await cookies()).get(GOOGLE_USER_COOKIE)?.value;
-  if (!tokenCookie) throw new GoogleConnectionRequiredError();
+  const credentials = await loadSavedGoogleCredentials() ?? (tokenCookie ? openGoogleToken(tokenCookie) : null);
+  if (!credentials) throw new GoogleConnectionRequiredError();
   const oauth = googleOAuthClient();
-  oauth.setCredentials(openGoogleToken(tokenCookie));
+  oauth.setCredentials(credentials);
   return oauth;
 }
 

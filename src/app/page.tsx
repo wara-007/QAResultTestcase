@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowRight, Bug, CheckCircle2, ClipboardCheck, FileSpreadsheet, ImagePlus, ShieldCheck } from "lucide-react";
+import { getCurrentAppSession } from "@/lib/app-session";
+
+export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "QA Result Workspace | Test execution and evidence",
@@ -14,18 +17,23 @@ const features = [
   { icon: Bug, title: "Defect tracking", description: "บันทึก Defect สถานะ รายละเอียด และเชื่อมโยง Jira กับ Test case" },
 ];
 
-export default function HomePage() {
+export default async function HomePage() {
+  const session = await getCurrentAppSession().catch(() => null);
+  const workspaceHref = session?.role === "po" ? "/approvals" : session?.role === "qa" ? "/groups" : "/auth/access-denied";
+  const accountAction = session
+    ? <Link className="primary-button" href={workspaceHref}>ไปหน้าของฉัน<ArrowRight size={15} /></Link>
+    : <Link className="primary-button" href="/auth/login">เข้าสู่ระบบ<ArrowRight size={15} /></Link>;
   return <main className="public-home">
     <header className="public-nav">
       <Link className="public-brand" href="/"><span><ClipboardCheck size={21} /></span><div><strong>QA Result Workspace</strong><small>Test execution & evidence</small></div></Link>
-      <nav><Link href="/privacy">Privacy</Link><Link href="/terms">Terms</Link><Link className="primary-button" href="/auth/login">เข้าสู่ระบบ<ArrowRight size={15} /></Link></nav>
+      <nav><Link href="/privacy">Privacy</Link><Link href="/terms">Terms</Link>{accountAction}</nav>
     </header>
     <section className="public-hero">
       <div className="public-hero-copy">
         <p className="eyebrow">QUALITY ASSURANCE WORKSPACE</p>
         <h1>จัดการ Test case ผลทดสอบ และหลักฐานในที่เดียว</h1>
         <p>พื้นที่ทำงานสำหรับทีม QA ที่ได้รับอนุญาต เพื่อบริหาร Project บันทึก Result และ Defect พร้อมเชื่อมต่อ Google Sheets และ Google Drive</p>
-        <div className="public-actions"><Link className="primary-button" href="/auth/login">เข้าสู่ระบบด้วย Google<ArrowRight size={16} /></Link><a className="secondary-button" href="#features">ดูความสามารถ</a></div>
+        <div className="public-actions">{session ? <Link className="primary-button" href={workspaceHref}>กลับไปยัง Workspace<ArrowRight size={16} /></Link> : <Link className="primary-button" href="/auth/login">เข้าสู่ระบบ<ArrowRight size={16} /></Link>}<a className="secondary-button" href="#features">ดูความสามารถ</a></div>
         <div className="public-trust"><ShieldCheck size={17} /><span>ระบบอนุญาตเฉพาะอีเมลที่ System Owner เพิ่มไว้ และขอสิทธิ์เฉพาะเพื่อให้บริการฟังก์ชันที่ผู้ใช้สั่งงาน</span></div>
       </div>
       <div className="public-preview" aria-label="ตัวอย่างขั้นตอนการทำงาน">

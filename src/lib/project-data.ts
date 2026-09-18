@@ -196,6 +196,8 @@ export async function loadProjectWorkspace(projectId: string): Promise<ProjectWo
 
 export async function persistImportedWorkbook(projectId: string, cases: TestCase[], source: WorkbookSource, persistCases = true) {
   const supabase = createClient();
+  const { data: userResult, error: userError } = await supabase.auth.getUser();
+  if (userError || !userResult.user) throw new Error("กรุณาเข้าสู่ระบบอีกครั้งก่อนอัปโหลดไฟล์");
   const sourceId = crypto.randomUUID();
   const safeName = source.fileName.replace(/[^a-zA-Z0-9._-]+/g, "_");
   const storageKey = `${projectId}/${sourceId}/${safeName}`;
@@ -232,7 +234,7 @@ export async function persistImportedWorkbook(projectId: string, cases: TestCase
     sheet_name: source.sheetName,
     column_mapping: { ...source.columns, sheetPath: source.sheetPath, chunkCount, sheets: source.sheets },
     version_no: (versionResult.data?.version_no ?? 0) + 1,
-    uploaded_by: null,
+    uploaded_by: userResult.user.id,
   });
   if (sourceInsert.error) throw new Error(sourceInsert.error.message);
 

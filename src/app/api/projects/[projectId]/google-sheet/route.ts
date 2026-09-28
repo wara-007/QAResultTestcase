@@ -2,6 +2,9 @@ import { createClient } from "@/lib/supabase/server";
 import { readGoogleSheet, writeGoogleSheetResults } from "@/lib/google-sheets";
 import type { TestCase } from "@/lib/types";
 import { getGoogleUserAuth, GoogleConnectionRequiredError } from "@/lib/google-user-oauth";
+import { canonicalizeCases } from "@/lib/sync/canonical";
+import { loadBaselines, replaceBaselines } from "@/lib/sync/store";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
 
@@ -22,8 +25,10 @@ function googleAuthError(reason: unknown, request: Request) {
 export async function GET(request: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
-    const result = await readGoogleSheet(await spreadsheetIdForProject(projectId), await getGoogleUserAuth());
-    return Response.json(result, { headers: { "Cache-Control": "no-store" } });
+    const summary = new URL(request.url).searchParams.get("summary") === "1";
+    const result = await readGoogleSheet(await spreadsheetIdForProject(projectId), await getGoogleUserAuth(), { summary });
+    const baseline = await loadBaselines(createAdminClient(), projectId);
+    return Response.json({ ...result, baseline }, { headers: { "Cache-Control": "no-store" } });
   } catch (reason) {
     const authError = googleAuthError(reason, request);
     if (authError) return authError;
@@ -42,6 +47,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
     const body = await request.json() as { cases?: TestCase[] };
     if (!Array.isArray(body.cases) || body.cases.length > 2_000) throw new Error("ข้อมูล Testcase ไม่ถูกต้อง");
     const result = await writeGoogleSheetResults(await spreadsheetIdForProject(projectId), body.cases, await getGoogleUserAuth());
+    await replaceBaselines(createAdminClient(), projectId, canonicalizeCases(body.cases), String(claimsData.claims.sub));
     return Response.json(result);
   } catch (reason) {
     const authError = googleAuthError(reason, request);

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { destinationForRole, resolveAppRole } from "@/lib/app-session";
+import { resolveAppRole } from "@/lib/app-session";
+import { authorizedDestination, pendingAccessDestination } from "@/lib/access-flow";
 import { appOrigin, AUTH_RETURN_TO_COOKIE, safeReturnTo } from "@/lib/google-user-oauth";
 import { createClient } from "@/lib/supabase/server";
 
@@ -13,7 +14,10 @@ export async function GET(request: Request) {
   const existingEmail = typeof existingSession?.claims?.email === "string" ? existingSession.claims.email.toLowerCase() : "";
   if (existingEmail) {
     const role = await resolveAppRole(supabase, existingEmail);
-    if (role) return NextResponse.redirect(new URL(destinationForRole(role, next), origin));
+    const metadata = existingSession?.claims?.user_metadata;
+    const passwordConfigured = Boolean(metadata && typeof metadata === "object" && "password_configured" in metadata && metadata.password_configured === true);
+    if (role) return NextResponse.redirect(new URL(authorizedDestination(role, next, passwordConfigured), origin));
+    return NextResponse.redirect(new URL(pendingAccessDestination(existingEmail, next), origin));
   }
 
   const { data, error } = await supabase.auth.signInWithOAuth({

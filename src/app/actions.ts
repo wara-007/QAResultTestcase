@@ -7,6 +7,8 @@ import { extractGoogleSheetId } from "@/lib/google-sheets";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { Project } from "@/lib/types";
 import { hashReviewToken, type ApprovalStatus } from "@/lib/project-review";
+import { deleteR2ObjectsByPrefix } from "@/lib/r2";
+import { headers } from "next/headers";
 
 export type ProjectApprovalSummary = {
   id: string;
@@ -17,6 +19,7 @@ export type ProjectApprovalSummary = {
   reviewedAt: string;
   reviewerName: string;
   reviewerComment: string;
+  emailSentAt: string;
 };
 
 async function getSignedInProject(projectId: string): Promise<{ userId: string; name: string } | { error: string }> {
@@ -36,7 +39,7 @@ export async function getLatestProjectApproval(projectId: string): Promise<{ app
     const access = await getSignedInProject(projectId);
     if ("error" in access) return access;
     const result = await createAdminClient().from("project_approval_requests")
-      .select("id, recipient_email, status, requested_at, expires_at, reviewed_at, reviewer_name, reviewer_comment")
+      .select("id, recipient_email, status, requested_at, expires_at, reviewed_at, reviewer_name, reviewer_comment, email_sent_at")
       .eq("project_id", projectId).order("requested_at", { ascending: false }).limit(1).maybeSingle();
     if (result.error) return { error: result.error.message };
     if (!result.data) return { approval: null };
@@ -44,36 +47,89 @@ export async function getLatestProjectApproval(projectId: string): Promise<{ app
       id: result.data.id, recipientEmail: result.data.recipient_email, status: result.data.status as ApprovalStatus,
       requestedAt: result.data.requested_at, expiresAt: result.data.expires_at,
       reviewedAt: result.data.reviewed_at ?? "", reviewerName: result.data.reviewer_name,
-      reviewerComment: result.data.reviewer_comment,
+      reviewerComment: result.data.reviewer_comment, emailSentAt: result.data.email_sent_at ?? "",
     } };
   } catch (reason) {
     return { error: reason instanceof Error ? reason.message : "โหลดสถานะ Approval ไม่สำเร็จ" };
   }
 }
 
-type CreateApprovalResult = { request: { id: string; token: string; recipientEmail: string; status: "pending"; requestedAt: string; expiresAt: string } } | { error: string };
+type CreateApprovalInput = {
+  projectId: string;
+  senderEmail: string;
+  recipientEmail: string;
+  cc: string;
+  subject: string;
+  body: string;
+  note: string;
+  environment: string;
+  counts: { total: number; pass: number; failed: number; skip: number; notStart: number; inProgress: number };
+};
 
-export async function createProjectApprovalRequest(input: { projectId: string; recipientEmail: string }): Promise<CreateApprovalResult> {
+type CreateApprovalResult = { request: { id: string; recipientEmail: string; status: "pending"; requestedAt: string; expiresAt: string; emailSentAt: string }; mailtoUrl: string } | { error: string };
+
+export async function createProjectApprovalRequest(input: CreateApprovalInput): Promise<CreateApprovalResult> {
   const email = input.recipientEmail.trim().toLowerCase();
   if (!/^\S+@\S+\.\S+$/.test(email)) return { error: "กรุณาใส่อีเมล PO ให้ถูกต้อง" };
   try {
     const access = await getSignedInProject(input.projectId);
     if ("error" in access) return access;
     const admin = createAdminClient();
+    const projectResult = await admin.from("projects").select("id, name, environment, google_sheet_url, owner_id").eq("id", input.projectId).maybeSingle();
+    if (projectResult.error) return { error: projectResult.error.message };
+    if (!projectResult.data) return { error: "ไม่พบ Project" };
+    if (!projectResult.data.google_sheet_url) return { error: "กรุณาเชื่อม Google Sheet ก่อนส่งขอ Approve" };
+
+    const existingResult = await admin.from("project_approval_requests")
+      .select("id, status, email_sent_at")
+      .eq("project_id", input.projectId).eq("recipient_email", email)
+      .maybeSingle();
+    if (existingResult.error) return { error: existingResult.error.message };
+    if (existingResult.data?.status === "approved") return { error: `Project นี้ได้รับการ Approve จาก ${email} แล้ว` };
+    if (existingResult.data?.status === "pending" && existingResult.data.email_sent_at) return { error: `เคยส่ง Project นี้ให้ ${email} แล้ว และกำลังรอ Approve` };
+
     const token = randomBytes(32).toString("base64url");
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-    const revoke = await admin.from("project_approval_requests").update({ status: "revoked" }).eq("project_id", input.projectId).eq("status", "pending");
-    if (revoke.error) return { error: revoke.error.message };
-    const result = await admin.from("project_approval_requests").insert({
+    const requestId = existingResult.data?.id ?? randomUUID();
+    const requestData = {
+      id: requestId,
       project_id: input.projectId,
       recipient_email: email,
       token_hash: hashReviewToken(token),
+      status: "pending",
       requested_by: access.userId,
       requested_by_name: access.name,
+      requested_at: new Date().toISOString(),
       expires_at: expiresAt,
-    }).select("id, requested_at").single();
+      reviewed_at: null,
+      reviewer_name: "",
+      reviewer_comment: "",
+      email_sent_at: null,
+      email_id: "",
+      email_error: "",
+    };
+    const result = existingResult.data
+      ? await admin.from("project_approval_requests").update(requestData).eq("id", requestId).select("id, requested_at").single()
+      : await admin.from("project_approval_requests").insert(requestData).select("id, requested_at").single();
     if (result.error) return { error: result.error.message };
-    return { request: { id: result.data.id, token, recipientEmail: email, status: "pending" as const, requestedAt: result.data.requested_at, expiresAt } };
+
+    const headerStore = await headers();
+    const requestOrigin = headerStore.get("origin")?.replace(/\/$/, "") ?? "";
+    const configuredOrigin = process.env.NEXT_PUBLIC_SITE_URL?.trim().replace(/\/$/, "") ?? "";
+    const baseUrl = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(requestOrigin) ? requestOrigin : configuredOrigin;
+    if (!baseUrl) {
+      await admin.from("project_approval_requests").delete().eq("id", requestId);
+      return { error: "ยังไม่ได้ตั้งค่า NEXT_PUBLIC_SITE_URL สำหรับสร้างลิงก์ Approval" };
+    }
+
+    const emailSentAt = new Date().toISOString();
+    const marked = await admin.from("project_approval_requests").update({ email_sent_at: emailSentAt, email_id: "mailto", email_error: "" }).eq("id", requestId);
+    if (marked.error) return { error: marked.error.message };
+    const subject = input.subject.trim() || `[QA Approval] ${projectResult.data.name}`;
+    const body = [input.body.trim(), "", `เปิดหน้า Review และ Approve: ${baseUrl}/approvals/${requestId}`, `Google Sheets: ${projectResult.data.google_sheet_url}`].filter(Boolean).join("\n");
+    const mailtoUrl = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(subject)}${input.cc.trim() ? `&cc=${encodeURIComponent(input.cc.trim())}` : ""}&body=${encodeURIComponent(body)}`;
+    revalidatePath("/approvals");
+    return { request: { id: result.data.id, recipientEmail: email, status: "pending" as const, requestedAt: result.data.requested_at, expiresAt, emailSentAt }, mailtoUrl };
   } catch (reason) {
     return { error: reason instanceof Error ? reason.message : "สร้างลิงก์รีวิวไม่สำเร็จ" };
   }
@@ -142,6 +198,7 @@ export async function createProject(input: CreateProjectInput): Promise<CreatePr
         googleSheetId: data.google_sheet_id ?? "",
         googleSheetUrl: data.google_sheet_url ?? "",
         createdAt: data.created_at,
+        canDelete: true,
       },
     };
   } catch (reason) {
@@ -268,10 +325,40 @@ export async function updateProjectGoogleSheet(projectId: string, googleSheetUrl
 export async function deleteProject(projectId: string) {
   try {
     const supabase = await createClient();
-    const sources = await supabase.from("source_files").select("storage_key, column_mapping").eq("project_id", projectId);
+    const { data: claimsData, error: claimsError } = await supabase.auth.getClaims();
+    const userId = claimsData?.claims?.sub;
+    if (claimsError || typeof userId !== "string") return { error: "กรุณาเข้าสู่ระบบอีกครั้ง" };
+
+    const admin = createAdminClient();
+    const [project, sources, executions, ownerCheck] = await Promise.all([
+      admin.from("projects").select("id, group_id, owner_id").eq("id", projectId).maybeSingle(),
+      admin.from("source_files").select("storage_key, column_mapping").eq("project_id", projectId),
+      admin.from("test_executions").select("result_reference").eq("project_id", projectId),
+      supabase.rpc("is_system_owner"),
+    ]);
+    if (project.error) return { error: project.error.message };
+    if (!project.data) return { error: "ไม่พบ Project" };
+    if (ownerCheck.error) return { error: ownerCheck.error.message };
+    if (project.data.owner_id !== userId && ownerCheck.data !== true) {
+      return { error: "ลบ Project ได้เฉพาะผู้สร้าง Project หรือ System Owner เท่านั้น" };
+    }
     if (sources.error) return { error: sources.error.message };
-    const { error } = await supabase.from("projects").delete().eq("id", projectId);
-    if (error) return { error: error.message };
+    if (executions.error) return { error: executions.error.message };
+
+    const hasR2Evidence = (executions.data ?? []).some(({ result_reference }) =>
+      typeof result_reference === "string" && (result_reference.includes("cloudflare-r2") || result_reference.includes(`projects/${projectId}/`)),
+    );
+    const deletedR2Images = await deleteR2ObjectsByPrefix(`projects/${projectId}/`);
+    if (deletedR2Images === null && hasR2Evidence) {
+      return { error: "ยังไม่ได้ตั้งค่า Cloudflare R2 จึงไม่สามารถลบรูปหลักฐานของ Project ได้" };
+    }
+
+    // Approval requests and all project-owned database rows are removed by
+    // their ON DELETE CASCADE constraints. Google Sheets are intentionally
+    // external references and are never deleted here.
+    const deleted = await admin.from("projects").delete().eq("id", projectId).select("id").maybeSingle();
+    if (deleted.error) return { error: deleted.error.message };
+    if (!deleted.data) return { error: "ลบ Project ไม่สำเร็จ" };
 
     const storagePaths = (sources.data ?? []).flatMap((source) => {
       const chunkCount = typeof source.column_mapping?.chunkCount === "number" ? source.column_mapping.chunkCount : 0;
@@ -279,9 +366,11 @@ export async function deleteProject(projectId: string) {
         ? Array.from({ length: chunkCount }, (_, index) => `${source.storage_key}/part-${String(index).padStart(3, "0")}`)
         : [source.storage_key];
     });
-    if (storagePaths.length) await createAdminClient().storage.from("testcase-source-files").remove(storagePaths);
+    if (storagePaths.length) await admin.storage.from("testcase-source-files").remove(storagePaths);
     revalidatePath("/");
-    return { success: true };
+    revalidatePath("/approvals");
+    revalidatePath(`/groups/${project.data.group_id}/projects`);
+    return { success: true, deletedR2Images: deletedR2Images ?? 0 };
   } catch (reason) {
     return { error: reason instanceof Error ? reason.message : "ลบ Project ไม่สำเร็จ" };
   }

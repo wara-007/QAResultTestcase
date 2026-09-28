@@ -21,6 +21,7 @@ export type TestDefect = {
   log: string;
   evidence: TestEvidence[];
   createdAt: string;
+  sourceSheetName?: string;
 };
 
 export type TestResult = {
@@ -34,6 +35,7 @@ export type TestResult = {
   /** @deprecated Defects now belong to the TestCase. Kept for old saved payloads. */
   defects?: TestDefect[];
   createdAt: string;
+  sourceSheetName?: string;
 };
 
 export type TestCaseResultField = {
@@ -55,6 +57,7 @@ export type TestCaseCustomField = {
 
 export type TestCase = {
   id: string;
+  sourceSheetName?: string;
   recordId?: string;
   executionId?: string;
   persistedLocally?: boolean;
@@ -86,6 +89,7 @@ export type WorkbookSource = {
   id?: string;
   fileName: string;
   buffer: ArrayBuffer;
+  bufferLoaded: boolean;
   sheetName: string;
   sheetPath: string;
   columns: Record<string, string>;
@@ -134,6 +138,7 @@ export type Project = {
   googleSheetId: string;
   googleSheetUrl: string;
   createdAt: string;
+  canDelete: boolean;
 };
 
 export type Group = {

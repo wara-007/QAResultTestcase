@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { destinationForRole, resolveAppRole } from "@/lib/app-session";
+import { resolveAppRole } from "@/lib/app-session";
+import { authorizedDestination, pendingAccessDestination } from "@/lib/access-flow";
 import { appOrigin, AUTH_RETURN_TO_COOKIE, GOOGLE_USER_COOKIE, safeReturnTo } from "@/lib/google-user-oauth";
 import { createClient } from "@/lib/supabase/server";
 
@@ -30,16 +31,14 @@ export async function GET(request: Request) {
   const email = data.user.email?.toLowerCase() ?? "";
   const role = email ? await resolveAppRole(supabase, email) : null;
   if (!role) {
-    await supabase.auth.signOut();
-    const denied = NextResponse.redirect(new URL(`/auth/access-denied?email=${encodeURIComponent(email)}`, origin));
+    const denied = NextResponse.redirect(new URL(pendingAccessDestination(email, next), origin));
     denied.cookies.delete(GOOGLE_USER_COOKIE);
     denied.cookies.delete(AUTH_RETURN_TO_COOKIE);
     return denied;
   }
 
   const metadata = data.user.user_metadata as Record<string, unknown> | undefined;
-  const mustSetPassword = next === "/auth/update-password" || metadata?.password_configured !== true;
-  const destination = mustSetPassword ? "/auth/update-password" : destinationForRole(role, next);
+  const destination = authorizedDestination(role, next, metadata?.password_configured === true);
   const response = NextResponse.redirect(new URL(destination, origin));
   response.cookies.delete(AUTH_RETURN_TO_COOKIE);
   return response;

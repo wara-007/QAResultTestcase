@@ -28,7 +28,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
     const testCaseId = String(form.get("testCaseId") ?? "").trim();
     if (!(file instanceof File) || !file.type.startsWith("image/")) throw new Error("กรุณาเลือกไฟล์รูปภาพ");
     if (file.size > 10 * 1024 * 1024) throw new Error("รูปต้องมีขนาดไม่เกิน 10 MB");
-    if (!/^[A-Za-z]+[-_ ]?\d+$/.test(testCaseId)) throw new Error("Testcase ID ไม่ถูกต้อง");
+    // Result tabs are not always named TC-xx (for example RC DEF-04).
+    // Keep validation focused on safe storage input; safeName() handles the
+    // folder/object-key representation below.
+    if (!testCaseId || testCaseId.length > 160 || /[\u0000-\u001f\u007f]/.test(testCaseId)) {
+      throw new Error("Testcase ID ไม่ถูกต้อง");
+    }
 
     const { projectId } = await params;
     const supabase = await createClient();

@@ -11,7 +11,8 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test:excel": "tsx scripts/verify-excel.ts"
+    "test:excel": "tsx scripts/verify-excel.ts",
+    "test:workspace-cache": "tsx scripts/verify-workspace-navigation-cache.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1131.0",

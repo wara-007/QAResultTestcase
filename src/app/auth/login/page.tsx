@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { ClipboardCheck, LockKeyhole, LogIn, Mail, ShieldCheck } from "lucide-react";
-import { destinationForRole, getCurrentAppSession } from "@/lib/app-session";
+import { getCurrentAppSession } from "@/lib/app-session";
+import { authorizedDestination, pendingAccessDestination } from "@/lib/access-flow";
 import { safeReturnTo } from "@/lib/google-user-oauth";
 import { hasValidSupabasePublicConfig } from "@/lib/supabase/config";
 
@@ -13,7 +14,8 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
 
   if (hasValidSupabasePublicConfig()) {
     const session = await getCurrentAppSession();
-    if (session?.role) redirect(destinationForRole(session.role, next));
+    if (session?.role) redirect(authorizedDestination(session.role, next, session.passwordConfigured));
+    if (session) redirect(pendingAccessDestination(session.email, next));
   }
 
   return (

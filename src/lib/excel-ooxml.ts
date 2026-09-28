@@ -95,6 +95,35 @@ function idsFromSheetName(name: string) {
     .filter((value, index, values) => values.indexOf(value) === index);
 }
 
+function testCaseIdsFromSheetContent(files: Unzipped, sheetPath: string, sharedStrings: string[]) {
+  const sheetFile = files[sheetPath];
+  if (!sheetFile) return [];
+  const document = parseXml(sheetFile);
+  const values = Array.from(document.getElementsByTagName("c"))
+    .slice(0, 300)
+    .map((cell) => cellValue(cell, sharedStrings));
+  return values.flatMap((value) => Array.from(
+    value.matchAll(/\b(?:TC|TEST\s*CASE|TESTCASE|CASE)[\s:_-]*(\d+)\b/gi),
+    (match) => `TC-${match[1].padStart(2, "0")}`,
+  )).filter((value, index, all) => all.indexOf(value) === index);
+}
+
+function enrichResultSheets(files: Unzipped, sheets: WorkbookSheet[], sharedStrings: string[]) {
+  return sheets.map((sheet) => {
+    if (sheet.kind === "testcase") return sheet;
+    const contentIds = testCaseIdsFromSheetContent(files, sheet.path, sharedStrings);
+    const nameIds = idsFromSheetName(sheet.name).filter((id) => id.startsWith("TC-"));
+    const testCaseIds = (nameIds.length ? nameIds : [...sheet.testCaseIds, ...contentIds])
+      .filter((value, index, all) => all.indexOf(value) === index);
+    const hasTestCase = testCaseIds.some((id) => id.startsWith("TC-"));
+    return {
+      ...sheet,
+      testCaseIds,
+      kind: sheet.kind === "other" && hasTestCase && sheet.imageCount > 0 ? "result" as const : sheet.kind,
+    };
+  });
+}
+
 function imageCountForSheet(files: Unzipped, sheetPath: string) {
   const sheetFile = files[sheetPath];
   if (!sheetFile) return 0;
@@ -161,10 +190,10 @@ const excelDate = (value: string) => {
 
 export function importTestCases(buffer: ArrayBuffer, fileName: string) {
   const files = unzipSync(new Uint8Array(buffer));
-  const sheets = resolveSheets(files);
+  const sharedStrings = readSharedStrings(files);
+  const sheets = enrichResultSheets(files, resolveSheets(files), sharedStrings);
   const sheet = sheets.find((item) => normalize(item.name) === "testcase") ?? sheets.find((item) => normalize(item.name).includes("testcase"));
   if (!sheet) throw new Error("ไม่พบชีตชื่อ Testcase");
-  const sharedStrings = readSharedStrings(files);
   const document = parseXml(files[sheet.path]);
   const cells = Array.from(document.getElementsByTagName("c"));
   const values = new Map(cells.map((cell) => [cell.getAttribute("r") ?? "", cellValue(cell, sharedStrings)]));
@@ -228,7 +257,7 @@ export function importTestCases(buffer: ArrayBuffer, fileName: string) {
   }
 
   if (!cases.length) throw new Error("ไม่พบ Testcase ID ในชีต Testcase");
-  const source: WorkbookSource = { fileName, buffer, sheetName: sheet.name, sheetPath: sheet.path, columns, sheets };
+  const source: WorkbookSource = { fileName, buffer, bufferLoaded: true, sheetName: sheet.name, sheetPath: sheet.path, columns, sheets };
   return { cases, source };
 }
 
@@ -291,7 +320,7 @@ export function readWorkbookResultImages(source: WorkbookSource): WorkbookResult
   const files = unzipSync(new Uint8Array(source.buffer));
   const sharedStrings = readSharedStrings(files);
   const imported: WorkbookResultImage[] = [];
-  for (const sheet of source.sheets.filter((item) => item.kind === "result" && item.testCaseIds.some((id) => id.startsWith("TC-")))) {
+  for (const sheet of source.sheets.filter((item) => item.kind !== "testcase")) {
     const document = parseXml(files[sheet.path]);
     const rows = Array.from(document.getElementsByTagName("row"));
     let headerRow = -1;
@@ -341,7 +370,7 @@ export function readWorkbookFreeformResults(source: WorkbookSource): WorkbookFre
   const apiPattern = /(?:^|\n)\s*(?:endpoint|request|response|http status|server|method)\s*:|http inspector|["'](?:status|statusType|errorCode|errorMessage|data|transactionId)["']\s*:/i;
   const logPattern = /kubectl\s+logs|^\s*\$\s+.*\blogs\b|(?:^|\n)\d{4}-\d{2}-\d{2}T[^\n]*\|\s*(?:INFO|ERROR|WARN|DEBUG)\b/i;
 
-  for (const sheet of source.sheets.filter((item) => item.kind === "result" && item.testCaseIds.some((id) => id.startsWith("TC-")))) {
+  for (const sheet of source.sheets.filter((item) => item.kind !== "testcase")) {
     const document = parseXml(files[sheet.path]);
     const allCells = Array.from(document.getElementsByTagName("c")).map((cell) => ({
       row: rowFromRef(cell.getAttribute("r") ?? "0"),

@@ -39,7 +39,9 @@ export async function loadApprovalInbox(email: string): Promise<ApprovalInboxIte
     : { data: [], error: null };
   if (projects.error) throw new Error(projects.error.message);
   const projectById = new Map((projects.data ?? []).map((project) => [project.id, project]));
-  return (requests.data ?? []).map((request) => {
+  const latestByProject = new Map<string, (typeof requests.data)[number]>();
+  for (const request of requests.data ?? []) if (!latestByProject.has(request.project_id)) latestByProject.set(request.project_id, request);
+  return [...latestByProject.values()].map((request) => {
     const project = projectById.get(request.project_id);
     return {
       id: request.id,

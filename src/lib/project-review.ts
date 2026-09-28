@@ -3,7 +3,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { readGoogleSheet } from "@/lib/google-sheets";
-import type { TestCase, TestCaseCustomField, TestDefect, TestResult, TestStatus } from "@/lib/types";
+import type { TestCase, TestCaseCustomField, TestDefect, TestResult, TestStatus, WorkbookSheet } from "@/lib/types";
 
 export type ApprovalStatus = "pending" | "approved" | "changes_requested" | "revoked";
 
@@ -115,12 +115,14 @@ async function buildProjectReview(approval: ApprovalRow): Promise<ProjectReview>
     }
   };
 
-  const [projectResult, caseRows, executionRows] = await Promise.all([
+  const [projectResult, caseRows, executionRows, sourceResult] = await Promise.all([
     admin.from("projects").select("id, name, description, sprint_no, environment, google_sheet_id, google_sheet_url").eq("id", approval.project_id).single(),
     fetchAllCases(),
     fetchAllExecutions(),
+    admin.from("source_files").select("column_mapping").eq("project_id", approval.project_id).order("version_no", { ascending: false }).limit(1).maybeSingle(),
   ]);
   if (projectResult.error) throw new Error(projectResult.error.message);
+  if (sourceResult.error) throw new Error(sourceResult.error.message);
 
   const executions = new Map<string, ReviewExecutionRow>();
   for (const execution of executionRows) if (!executions.has(execution.test_case_id)) executions.set(execution.test_case_id, execution);
@@ -176,7 +178,22 @@ async function buildProjectReview(approval: ApprovalRow): Promise<ProjectReview>
         error instanceof Error ? error.message : "Unknown Google Sheets error",
       );
     }
+    if (!googleWorkspace) {
+      const mapping = sourceResult.data?.column_mapping as { sheets?: WorkbookSheet[] } | null;
+      const persistedSheets = Array.isArray(mapping?.sheets) ? mapping.sheets : [];
+      if (persistedSheets.length) googleWorkspace = { title: project.name, cases: storedCases, sheets: persistedSheets };
+    }
     if (googleWorkspace) {
+    const normalizedSource = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
+    const evidenceSourceKey = (value: string) => `sheet-${value}`.replace(/[^a-zA-Z0-9._-]+/g, "_");
+    const restoreResultSource = (result: TestResult) => {
+      if (result.sourceSheetName) return result;
+      const importedSource = result.id.startsWith("SHEET-IMPORT-") ? result.id.slice("SHEET-IMPORT-".length) : "";
+      const matchedSheet = googleWorkspace.sheets.find((sheet) =>
+        (importedSource && normalizedSource(sheet.name) === normalizedSource(importedSource))
+        || (result.evidence ?? []).some((evidence) => evidence.name.includes(evidenceSourceKey(sheet.name))));
+      return matchedSheet ? { ...result, sourceSheetName: matchedSheet.name } : result;
+    };
     const storedById = new Map(storedCases.map((testCase) => [testCase.id.trim().toUpperCase(), testCase]));
     const googleCases = googleWorkspace.cases.map((testCase) => {
       const stored = storedById.get(testCase.id.trim().toUpperCase());
@@ -189,8 +206,10 @@ async function buildProjectReview(approval: ApprovalRow): Promise<ProjectReview>
         recordId: stored.recordId,
         executionId: stored.executionId,
         persistedLocally: stored.persistedLocally,
-        results: hasStoredResults ? stored.results : testCase.results,
-        defects: hasStoredDefects ? stored.defects : testCase.defects,
+        results: [...new Map([...(testCase.results ?? []), ...(stored.results ?? [])]
+          .map(restoreResultSource)
+          .map((result) => [`${result.id}:${result.sourceSheetName ?? "web"}`, result])).values()],
+        defects: [...new Map([...(testCase.defects ?? []), ...(stored.defects ?? [])].map((defect) => [`${defect.id}:${defect.sourceSheetName ?? "web"}`, defect])).values()],
         customFields: (() => {
           const identity = (field: TestCaseCustomField) => `${field.source}:${field.label.trim().toLowerCase()}`;
           const storedFields = new Map((stored.customFields ?? []).map((field) => [identity(field), field]));
@@ -217,6 +236,43 @@ async function buildProjectReview(approval: ApprovalRow): Promise<ProjectReview>
     });
     const googleIds = new Set(googleCases.map((testCase) => testCase.id.trim().toUpperCase()));
     cases = [...googleCases, ...storedCases.filter((testCase) => !googleIds.has(testCase.id.trim().toUpperCase()))];
+
+    const caseIdentity = (value: string) => {
+      const match = value.trim().match(/^(?:TC|TEST\s*CASE|TESTCASE|CASE)[\s:_-]*(\d+)$/i);
+      return match ? `TC-${Number(match[1])}` : value.trim().toUpperCase();
+    };
+    const sheetCaseIds = (sheet: WorkbookSheet) => {
+      const ids = Array.from(sheet.name.matchAll(/\b(?:TC|TEST\s*CASE|TESTCASE|CASE)[\s:_-]*(\d+)/gi), (match) => `TC-${Number(match[1])}`);
+      return ids.length ? [...new Set(ids)] : sheet.testCaseIds;
+    };
+    cases = cases.flatMap((testCase) => {
+      const linkedSheets = googleWorkspace.sheets.filter((sheet) => sheet.name.trim().toLowerCase() !== "testcase"
+        && sheet.name.trim().toUpperCase() !== testCase.id.trim().toUpperCase()
+        && sheetCaseIds(sheet).some((id) => caseIdentity(id) === caseIdentity(testCase.id)));
+      if (!linkedSheets.length) return [{ ...testCase, sourceSheetName: testCase.sourceSheetName || "Testcase" }];
+      return linkedSheets.map((sheet, sheetIndex) => ({
+        ...testCase,
+        sourceSheetName: sheet.name,
+        results: (testCase.results ?? []).filter((result) => result.sourceSheetName === sheet.name || (!result.sourceSheetName && sheetIndex === 0)),
+        defects: (testCase.defects ?? []).filter((defect) => defect.sourceSheetName === sheet.name || (!defect.sourceSheetName && sheetIndex === 0)),
+      }));
+    });
+    const representedSources = new Set(cases.map((testCase) => testCase.sourceSheetName));
+    const knownCaseIds = new Set(cases.map((testCase) => caseIdentity(testCase.id)));
+    const unlinkedSheetCases: TestCase[] = googleWorkspace.sheets
+      .filter((sheet) => sheet.name.trim().toLowerCase() !== "testcase"
+        && !representedSources.has(sheet.name)
+        && !sheetCaseIds(sheet).some((id) => knownCaseIds.has(caseIdentity(id))))
+      .map((sheet) => ({
+        id: sheet.name,
+        sourceSheetName: sheet.name,
+        sourceRow: sheet.order + 1,
+        platform: "", condition: "", scenario: "", name: sheet.name, steps: "", expected: "",
+        status: "Not Start", device: "", testData: "", appVersion: "", environment: project.environment,
+        resultReference: sheet.name, executedBy: "", executedDate: "", executedTime: "",
+        remark: `นำเข้าจาก tab ${sheet.name}`, evidence: [], results: [], defects: [],
+      }));
+    cases = [...cases, ...unlinkedSheetCases];
     }
   }
   return {

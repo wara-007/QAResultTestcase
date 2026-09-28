@@ -2,8 +2,9 @@ import "server-only";
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import type { AppRole } from "@/lib/access-flow";
 
-export type AppRole = "qa" | "po";
+export { destinationForRole } from "@/lib/access-flow";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
@@ -20,17 +21,13 @@ export async function resolveAppRole(supabase: SupabaseServerClient, email: stri
   return poRequest.data ? "po" : null;
 }
 
-export function destinationForRole(role: AppRole, requestedPath: string) {
-  if (requestedPath === "/auth/update-password") return requestedPath;
-  if (role === "po") return requestedPath === "/approvals" || requestedPath.startsWith("/approvals/") ? requestedPath : "/approvals";
-  return requestedPath === "/groups" || requestedPath.startsWith("/groups/") || requestedPath.startsWith("/admin/") ? requestedPath : "/groups";
-}
-
 export async function getCurrentAppSession() {
   const supabase = await createClient();
   const { data, error } = await supabase.auth.getClaims();
   const email = typeof data?.claims?.email === "string" ? data.claims.email.toLowerCase() : "";
   const userId = typeof data?.claims?.sub === "string" ? data.claims.sub : "";
   if (error || !email || !userId) return null;
-  return { userId, email, role: await resolveAppRole(supabase, email) };
+  const metadata = data?.claims?.user_metadata;
+  const passwordConfigured = Boolean(metadata && typeof metadata === "object" && "password_configured" in metadata && metadata.password_configured === true);
+  return { userId, email, passwordConfigured, role: await resolveAppRole(supabase, email) };
 }

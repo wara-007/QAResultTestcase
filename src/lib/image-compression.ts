@@ -1,6 +1,6 @@
-const MAX_IMAGE_DIMENSION = 1920;
-const TARGET_IMAGE_BYTES = 1024 * 1024;
-const WEBP_QUALITY_STEPS = [0.84, 0.78, 0.72, 0.66, 0.6];
+const MAX_IMAGE_DIMENSION = 1600;
+const TARGET_IMAGE_BYTES = 600 * 1024;
+const WEBP_QUALITY_STEPS = [0.8, 0.74, 0.68, 0.62, 0.56];
 
 const replaceExtension = (name: string, extension: string) => {
   const base = name.replace(/\.[^.]+$/, "") || "evidence";

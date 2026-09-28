@@ -1,6 +1,6 @@
 import "server-only";
 
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 
 type R2Config = {
   bucket: string;
@@ -43,4 +43,33 @@ export async function downloadR2Object(key: string) {
   const config = getR2Config();
   if (!config) throw new Error("ยังไม่ได้ตั้งค่า Cloudflare R2");
   return config.client.send(new GetObjectCommand({ Bucket: config.bucket, Key: key }));
+}
+
+export async function deleteR2ObjectsByPrefix(prefix: string) {
+  const config = getR2Config();
+  if (!config) return null;
+
+  let continuationToken: string | undefined;
+  let deleted = 0;
+  do {
+    const listed = await config.client.send(new ListObjectsV2Command({
+      Bucket: config.bucket,
+      Prefix: prefix,
+      ContinuationToken: continuationToken,
+    }));
+    const objects = (listed.Contents ?? []).flatMap(({ Key }) => Key ? [{ Key }] : []);
+    if (objects.length) {
+      const result = await config.client.send(new DeleteObjectsCommand({
+        Bucket: config.bucket,
+        Delete: { Objects: objects, Quiet: true },
+      }));
+      if (result.Errors?.length) {
+        throw new Error(`ลบรูปจาก Cloudflare R2 ไม่ครบ: ${result.Errors.map((item) => item.Key ?? item.Code ?? "unknown").join(", ")}`);
+      }
+      deleted += objects.length;
+    }
+    continuationToken = listed.IsTruncated ? listed.NextContinuationToken : undefined;
+  } while (continuationToken);
+
+  return deleted;
 }

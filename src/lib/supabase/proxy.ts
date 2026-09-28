@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { pendingAccessDestination } from "@/lib/access-flow";
 
 export async function updateSession(request: NextRequest) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -47,10 +48,10 @@ export async function updateSession(request: NextRequest) {
     if (!accessError && authorized !== true) {
       if (protectedApi) return NextResponse.json({ error: "บัญชีนี้ยังไม่ได้รับอนุมัติให้ใช้งาน" }, { status: 403 });
       const deniedUrl = request.nextUrl.clone();
-      deniedUrl.pathname = "/auth/access-denied";
-      deniedUrl.search = "";
       const email = typeof data?.claims?.email === "string" ? data.claims.email : "";
-      if (email) deniedUrl.searchParams.set("email", email);
+      const pendingPath = pendingAccessDestination(email, `${path}${request.nextUrl.search}`);
+      deniedUrl.pathname = pendingPath.split("?")[0];
+      deniedUrl.search = pendingPath.includes("?") ? `?${pendingPath.split("?")[1]}` : "";
       return NextResponse.redirect(deniedUrl);
     }
   }

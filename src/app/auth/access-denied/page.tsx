@@ -1,16 +1,32 @@
 import Link from "next/link";
-import { LockKeyhole, LogIn } from "lucide-react";
+import { redirect } from "next/navigation";
+import { Clock3, LogIn, RefreshCw, ShieldCheck } from "lucide-react";
 import { signOut } from "@/app/auth/actions";
+import { authorizedDestination, pendingAccessDestination } from "@/lib/access-flow";
+import { getCurrentAppSession } from "@/lib/app-session";
+import { safeReturnTo } from "@/lib/google-user-oauth";
 
-export default async function AccessDeniedPage({ searchParams }: { searchParams: Promise<{ email?: string }> }) {
-  const { email = "" } = await searchParams;
+export default async function AccessDeniedPage({ searchParams }: { searchParams: Promise<{ email?: string; next?: string }> }) {
+  const query = await searchParams;
+  const next = safeReturnTo(query.next ?? null);
+  const session = await getCurrentAppSession();
+
+  if (session?.role) redirect(authorizedDestination(session.role, next, session.passwordConfigured));
+
+  const email = session?.email ?? query.email?.trim().toLowerCase() ?? "";
+  const refreshPath = pendingAccessDestination(email, next);
+
   return <main className="auth-screen">
-    <section className="auth-card access-denied-card">
-      <div className="auth-icon denied"><LockKeyhole size={24} /></div>
-      <p className="eyebrow">ACCESS REQUIRED</p>
-      <h1>บัญชีนี้ยังไม่ได้รับอนุมัติ</h1>
-      <p>{email ? <>กรุณาให้ System Owner เพิ่มอีเมล <strong>{email}</strong> ในหน้าจัดการสิทธิ์ก่อนเข้าใช้งาน</> : "กรุณาติดต่อ System Owner เพื่อขอสิทธิ์เข้าใช้งาน QA Result Workspace"}</p>
-      <form action={signOut}><button className="primary-button" type="submit"><LogIn size={16} />Login ด้วยบัญชีอื่น</button></form>
+    <section className="auth-card access-pending-card">
+      <div className="auth-icon pending"><Clock3 size={25} /></div>
+      <p className="eyebrow">WAITING FOR ACCESS</p>
+      <h1>กำลังรอการยืนยันสิทธิ์</h1>
+      <p>{email ? <>บัญชี <strong>{email}</strong> เข้าสู่ระบบสำเร็จแล้ว แต่ System Owner ยังไม่ได้เพิ่มสิทธิ์เข้าใช้งาน</> : "Session หมดอายุ กรุณาเข้าสู่ระบบอีกครั้งเพื่อตรวจสอบสิทธิ์"}</p>
+      {session ? <>
+        <div className="access-pending-note"><ShieldCheck size={17} /><span>เมื่อได้รับสิทธิ์แล้ว กดตรวจสอบอีกครั้งหรือรีเฟรชหน้านี้ ระบบจะพาเข้าสู่ Workspace อัตโนมัติ</span></div>
+        <a className="primary-button access-refresh-button" href={refreshPath}><RefreshCw size={16} />ตรวจสอบสิทธิ์อีกครั้ง</a>
+        <form action={signOut}><button className="secondary-button access-other-account" type="submit"><LogIn size={16} />ใช้บัญชีอื่น</button></form>
+      </> : <Link className="primary-button access-refresh-button" href="/auth/login"><LogIn size={16} />กลับไปหน้า Login</Link>}
       <nav className="login-legal"><Link href="/privacy">Privacy Policy</Link><Link href="/terms">Terms of Service</Link></nav>
     </section>
   </main>;

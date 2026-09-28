@@ -17,6 +17,7 @@ export async function GET(request: Request) {
     const response = NextResponse.redirect(oauth.generateAuthUrl({
       access_type: "offline",
       prompt: "consent",
+      include_granted_scopes: true,
       scope: GOOGLE_USER_SCOPES,
       state,
     }));

@@ -97,7 +97,57 @@ export type ProjectWorkspace = {
   source: WorkbookSource | null;
 };
 
-export async function loadProjectWorkspace(projectId: string): Promise<ProjectWorkspace> {
+export async function assembleWorkbookBytes({ chunkCount, storageKey, download, includeWorkbook }: {
+  chunkCount: number;
+  storageKey: string;
+  download: (path: string) => Promise<Uint8Array>;
+  includeWorkbook: boolean;
+}) {
+  if (!includeWorkbook) return new ArrayBuffer(0);
+  const parts = chunkCount > 0
+    ? await Promise.all(Array.from({ length: chunkCount }, (_, index) => download(`${storageKey}/part-${String(index).padStart(3, "0")}`)))
+    : [await download(storageKey)];
+  const length = parts.reduce((total, part) => total + part.byteLength, 0);
+  const combined = new Uint8Array(length);
+  let offset = 0;
+  for (const part of parts) {
+    combined.set(part, offset);
+    offset += part.byteLength;
+  }
+  return combined.buffer;
+}
+
+async function downloadSourceWorkbook(sourceRow: SourceRow, includeWorkbook: boolean) {
+  const supabase = createClient();
+  const mapping = sourceRow.column_mapping ?? {};
+  const chunkCount = typeof mapping.chunkCount === "number" ? mapping.chunkCount : 0;
+  return assembleWorkbookBytes({
+    chunkCount,
+    storageKey: sourceRow.storage_key,
+    includeWorkbook,
+    download: async (path) => {
+      const result = await supabase.storage.from(SOURCE_BUCKET).download(path);
+      if (result.error) throw new Error(`โหลดไฟล์ต้นฉบับไม่สำเร็จ: ${result.error.message}`);
+      return new Uint8Array(await result.data.arrayBuffer());
+    },
+  });
+}
+
+export async function loadProjectWorkbook(projectId: string) {
+  const supabase = createClient();
+  const result = await supabase
+    .from("source_files")
+    .select("id, original_name, storage_key, sheet_name, column_mapping")
+    .eq("project_id", projectId)
+    .order("version_no", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (result.error) throw new Error(result.error.message);
+  if (!result.data) throw new Error("ไม่พบไฟล์ต้นฉบับของ Project");
+  return downloadSourceWorkbook(result.data as SourceRow, true);
+}
+
+export async function loadProjectWorkspace(projectId: string, options: { includeWorkbook?: boolean } = {}): Promise<ProjectWorkspace> {
   const supabase = createClient();
   const [sourceResult, casesResult] = await Promise.all([
     supabase
@@ -122,20 +172,8 @@ export async function loadProjectWorkspace(projectId: string): Promise<ProjectWo
   const sourceRow = sourceResult.data as SourceRow | null;
   if (sourceRow) {
     const mapping = sourceRow.column_mapping ?? {};
-    const chunkCount = typeof mapping.chunkCount === "number" ? mapping.chunkCount : 0;
-    let buffer: ArrayBuffer;
-    if (chunkCount > 0) {
-      const downloads = await Promise.all(Array.from({ length: chunkCount }, (_, index) =>
-        supabase.storage.from(SOURCE_BUCKET).download(`${sourceRow.storage_key}/part-${String(index).padStart(3, "0")}`),
-      ));
-      const failed = downloads.find((download) => download.error);
-      if (failed?.error) throw new Error(`โหลดไฟล์ต้นฉบับไม่สำเร็จ: ${failed.error.message}`);
-      buffer = await new Blob(downloads.map((download) => download.data as Blob)).arrayBuffer();
-    } else {
-      const download = await supabase.storage.from(SOURCE_BUCKET).download(sourceRow.storage_key);
-      if (download.error) throw new Error(`โหลดไฟล์ต้นฉบับไม่สำเร็จ: ${download.error.message}`);
-      buffer = await download.data.arrayBuffer();
-    }
+    const includeWorkbook = options.includeWorkbook ?? false;
+    const buffer = await downloadSourceWorkbook(sourceRow, includeWorkbook);
     const sheetPath = typeof mapping.sheetPath === "string" ? mapping.sheetPath : "";
     const sheets = Array.isArray(mapping.sheets) ? mapping.sheets as WorkbookSheet[] : [];
     const columns = Object.fromEntries(Object.entries(mapping).filter(([key, value]) =>
@@ -145,6 +183,7 @@ export async function loadProjectWorkspace(projectId: string): Promise<ProjectWo
       id: sourceRow.id,
       fileName: sourceRow.original_name,
       buffer,
+      bufferLoaded: includeWorkbook,
       sheetName: sourceRow.sheet_name,
       sheetPath,
       columns,

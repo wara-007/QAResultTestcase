@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { destinationForRole, resolveAppRole } from "@/lib/app-session";
+import { resolveAppRole } from "@/lib/app-session";
+import { destinationForRole, pendingAccessDestination } from "@/lib/access-flow";
 import { appOrigin, safeReturnTo } from "@/lib/google-user-oauth";
 import { createClient } from "@/lib/supabase/server";
 
@@ -30,8 +31,7 @@ export async function POST(request: Request) {
 
   const role = await resolveAppRole(supabase, email);
   if (!role) {
-    await supabase.auth.signOut();
-    return NextResponse.redirect(new URL(`/auth/access-denied?email=${encodeURIComponent(email)}`, origin), 303);
+    return NextResponse.redirect(new URL(pendingAccessDestination(email, next), origin), 303);
   }
   return NextResponse.redirect(new URL(destinationForRole(role, next), origin), 303);
 }

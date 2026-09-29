@@ -41,6 +41,7 @@ import { SyncConflictDialog } from "@/components/sync-conflict-dialog";
 import { formatFlexibleDate } from "@/lib/date-format";
 import { compressEvidenceImage } from "@/lib/image-compression";
 import { loadProjectWorkbook, loadProjectWorkspace, persistImportedWorkbook, persistTestCaseResult } from "@/lib/project-data";
+import { filterProjects } from "@/lib/project-search";
 import { getProjectWorkbook } from "@/lib/workbook-cache";
 import { detectBootstrapCaseConflicts, detectThreeWayCaseConflicts, mergeCaseChoices, type CaseChoice, type CaseConflict } from "@/lib/sync/client-conflicts";
 import type { CanonicalProjectSnapshot } from "@/lib/sync/types";
@@ -386,10 +387,14 @@ function GoogleSheetDialog({ project, onClose, onConnected }: { project: Project
 }
 
 function ProjectsHome({ projects, error, onAdd, projectHref }: { projects: Project[]; error: string; onAdd: () => void; projectHref: (project: Project) => string }) {
+  const [projectSearch, setProjectSearch] = useState("");
+  const visibleProjects = useMemo(() => filterProjects(projects, projectSearch), [projectSearch, projects]);
+  const hasQuery = Boolean(projectSearch.trim());
   return (
     <div className="projects-home" id="projects">
       <section className="projects-heading"><div><p className="eyebrow">WORKSPACE</p><h1>Projects</h1><span>เลือก Project เพื่อดู Testcase หรือสร้าง Project ใหม่</span></div><button className="primary-button" onClick={onAdd}><PlusIcon />เพิ่ม Project</button></section>
-      {error ? <section className="project-error"><CircleAlert size={20} /><div><strong>โหลด Projects ไม่สำเร็จ</strong><span>{error}</span></div></section> : projects.length ? <section className="project-grid">{projects.map((project) => <Link className="project-card" key={project.id} href={projectHref(project)}><div className="project-card-icon"><FolderKanban size={22} /></div><div className="project-card-title"><h2>{project.name}</h2><ChevronRight size={18} /></div><p>{project.description || "ไม่มีรายละเอียด"}</p><div className="project-card-meta"><span>{project.environment}</span>{project.sprintNo && <span>{project.sprintNo}</span>}</div><small>สร้างเมื่อ {formatFlexibleDate(project.createdAt, false)}</small></Link>)}</section> : <section className="panel project-zero"><FolderKanban size={34} /><h2>ยังไม่มี Project</h2><p>สร้าง Project แรกเพื่ออัปโหลด Testcase และเริ่มบันทึกผล</p><button className="primary-button" onClick={onAdd}><PlusIcon />เพิ่ม Project</button></section>}
+      {!error && projects.length > 0 && <section className="project-search-bar"><label><Search size={18} /><input value={projectSearch} onChange={(event) => setProjectSearch(event.target.value)} placeholder="ค้นหาชื่อ Project, Environment, Sprint หรือ Google Sheets" aria-label="ค้นหา Projects" />{hasQuery && <button type="button" onClick={() => setProjectSearch("")} aria-label="ล้างการค้นหา"><X size={16} /></button>}</label><span>{hasQuery ? `พบ ${visibleProjects.length} จาก ${projects.length} Projects` : `${projects.length} Projects`}</span></section>}
+      {error ? <section className="project-error"><CircleAlert size={20} /><div><strong>โหลด Projects ไม่สำเร็จ</strong><span>{error}</span></div></section> : visibleProjects.length ? <section className="project-grid">{visibleProjects.map((project) => <Link className="project-card" key={project.id} href={projectHref(project)}><div className="project-card-icon"><FolderKanban size={22} /></div><div className="project-card-title"><h2>{project.name}</h2><ChevronRight size={18} /></div><p>{project.description || "ไม่มีรายละเอียด"}</p><div className="project-card-meta"><span>{project.environment}</span>{project.sprintNo && <span>{project.sprintNo}</span>}{!project.canEdit && <span className="read-only-card-pill">ดูอย่างเดียว</span>}</div><small>สร้างเมื่อ {formatFlexibleDate(project.createdAt, false)}</small></Link>)}</section> : projects.length && hasQuery ? <section className="panel project-zero project-search-empty"><Search size={34} /><h2>ไม่พบ Project</h2><p>ไม่พบ Project ที่ตรงกับ “{projectSearch.trim()}”</p><button className="secondary-button" onClick={() => setProjectSearch("")}>ล้างการค้นหา</button></section> : <section className="panel project-zero"><FolderKanban size={34} /><h2>ยังไม่มี Project</h2><p>สร้าง Project แรกเพื่ออัปโหลด Testcase และเริ่มบันทึกผล</p><button className="primary-button" onClick={onAdd}><PlusIcon />เพิ่ม Project</button></section>}
     </div>
   );
 }

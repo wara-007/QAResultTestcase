@@ -198,6 +198,9 @@ export async function createProject(input: CreateProjectInput): Promise<CreatePr
         googleSheetId: data.google_sheet_id ?? "",
         googleSheetUrl: data.google_sheet_url ?? "",
         createdAt: data.created_at,
+        canView: true,
+        canEdit: true,
+        canManage: true,
         canDelete: true,
       },
     };

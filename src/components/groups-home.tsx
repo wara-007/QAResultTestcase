@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState, useTransition } from "react";
-import { ChevronRight, ClipboardCheck, Crown, FolderKanban, Layers3, LoaderCircle, LockKeyhole, LogOut, Plus, Users, X } from "lucide-react";
+import { ChevronRight, ClipboardCheck, Crown, FolderKanban, Layers3, LoaderCircle, LogOut, Plus, Users, X } from "lucide-react";
 import { createGroup } from "@/app/actions";
 import { signOut } from "@/app/auth/actions";
 import type { CurrentUser, Group } from "@/lib/types";
@@ -39,11 +39,11 @@ export function GroupsHome({ initialGroups, error, currentUser }: { initialGroup
         <div className="groups-heading"><div><p className="eyebrow">WORKSPACE</p><h1>{currentUser?.isSystemOwner ? "กลุ่มทั้งหมด" : "กลุ่มของคุณ"}</h1><span>{currentUser?.isSystemOwner ? "คุณเป็น System Owner และเห็นทุกกลุ่มในระบบ" : "เลือกกลุ่มเพื่อดู Projects หรือสร้างกลุ่มใหม่สำหรับทีม QA"}</span></div><button className="primary-button" onClick={() => setShowCreate(true)}><Plus size={17} />สร้างกลุ่ม</button></div>
         {error ? <div className="project-error"><div><strong>โหลด Groups ไม่สำเร็จ</strong><span>{error}</span></div></div> : groups.length ? (
           <div className="group-grid">{groups.map((group) => {
-            const content = <><div className="group-card-top"><span className="group-icon">{group.canAccess ? <Users size={23} /> : <LockKeyhole size={21} />}</span>{group.canAccess && <ChevronRight size={20} />}</div>
+            const content = <><div className="group-card-top"><span className="group-icon"><Users size={23} /></span><ChevronRight size={20} /></div>
               <h2>{group.name}</h2><p>{group.description || "พื้นที่ทำงานสำหรับทีม QA"}</p>
-              <div className="group-card-footer">{group.canAccess ? <span><FolderKanban size={15} />{group.projectCount} Projects</span> : <span className="no-group-access"><LockKeyhole size={14} />ยังไม่มีสิทธิ์เข้าถึง</span>}<small>สร้างเมื่อ {new Intl.DateTimeFormat("th-TH", { dateStyle: "medium" }).format(new Date(group.createdAt))}</small></div></>;
-            return <article className={`group-card-shell${group.canAccess ? "" : " locked"}`} key={group.id}>
-              {group.canAccess ? <Link className="group-card" href={`/groups/${group.id}/projects`}>{content}</Link> : <div className="group-card">{content}</div>}
+              <div className="group-card-footer"><span><FolderKanban size={15} />{group.projectCount} Projects</span><small>สร้างเมื่อ {new Intl.DateTimeFormat("th-TH", { dateStyle: "medium" }).format(new Date(group.createdAt))}</small></div></>;
+            return <article className="group-card-shell" key={group.id}>
+              <Link className="group-card" href={`/groups/${group.id}/projects`}>{content}</Link>
               {group.canManage && <Link className="group-members-link" href={`/groups/${group.id}/members`}><Users size={15} />จัดการกลุ่ม</Link>}
             </article>;
           })}</div>

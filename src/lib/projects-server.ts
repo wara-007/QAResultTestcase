@@ -2,7 +2,10 @@ import "server-only";
 
 import { hasValidSupabasePublicConfig } from "@/lib/supabase/config";
 import { createClient } from "@/lib/supabase/server";
+import { projectCapabilitiesFromRow, type ProjectAccessRow } from "@/lib/project-capabilities";
 import type { CurrentUser, Project } from "@/lib/types";
+
+type ProjectAccessRpcRow = ProjectAccessRow & { project_id: string };
 
 export async function loadProjects(groupId: string): Promise<{
   configured: boolean;
@@ -16,10 +19,11 @@ export async function loadProjects(groupId: string): Promise<{
 
   const supabase = await createClient();
   await supabase.rpc("claim_group_invitations");
-  const [{ data, error }, { data: authData }, { data: isSystemOwner }] = await Promise.all([
+  const [{ data, error }, { data: authData }, { data: isSystemOwner }, accessResult] = await Promise.all([
     supabase.from("projects").select("id, name, description, sprint_no, environment, google_sheet_id, google_sheet_url, owner_id, created_at").eq("group_id", groupId).order("created_at", { ascending: false }),
     supabase.auth.getUser(),
     supabase.rpc("is_system_owner"),
+    supabase.rpc("list_project_access", { requested_group_id: groupId }),
   ]);
 
   const user = authData.user;
@@ -30,7 +34,10 @@ export async function loadProjects(groupId: string): Promise<{
     isSystemOwner: isSystemOwner === true,
   } : null;
 
-  if (error) return { configured: true, projects: [], error: error.message, currentUser };
+  if (error || accessResult.error) return { configured: true, projects: [], error: error?.message ?? accessResult.error?.message ?? "โหลดสิทธิ์ Project ไม่สำเร็จ", currentUser };
+
+  const accessByProject = new Map(((accessResult.data ?? []) as ProjectAccessRpcRow[])
+    .map((access) => [access.project_id, projectCapabilitiesFromRow(access)]));
 
   return {
     configured: true,
@@ -45,7 +52,12 @@ export async function loadProjects(groupId: string): Promise<{
       googleSheetId: project.google_sheet_id ?? "",
       googleSheetUrl: project.google_sheet_url ?? "",
       createdAt: project.created_at,
-      canDelete: project.owner_id === user?.id || isSystemOwner === true,
+      ...(accessByProject.get(project.id) ?? {
+        canView: true,
+        canEdit: false,
+        canManage: false,
+        canDelete: project.owner_id === user?.id || isSystemOwner === true,
+      }),
     })),
   };
 }

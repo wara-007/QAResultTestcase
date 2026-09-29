@@ -138,6 +138,9 @@ export type Project = {
   googleSheetId: string;
   googleSheetUrl: string;
   createdAt: string;
+  canView: boolean;
+  canEdit: boolean;
+  canManage: boolean;
   canDelete: boolean;
 };
 

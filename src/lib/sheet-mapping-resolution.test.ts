@@ -100,3 +100,10 @@ test("an Excel tab without a stable Google sheet id stays unmapped when its muta
   assert.equal(result.unmapped[0]?.name, "Regression evidence");
   assert.deepEqual(result.associations, []);
 });
+
+test("a summary tab does not auto-map from Test Case references found only in its cells", () => {
+  const defected = { ...sheet(12, "Defected", ["TC-01", "TC-02"]), kind: "defect" as const };
+  const result = resolveSheetAssociations([defected], [testCase("TC-01"), testCase("TC-02")], []);
+  assert.deepEqual(result.associations, []);
+  assert.equal(result.unmapped[0]?.name, "Defected");
+});

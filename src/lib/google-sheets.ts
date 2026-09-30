@@ -4,6 +4,7 @@ import { google } from "googleapis";
 import type { googleOAuthClient } from "@/lib/google-user-oauth";
 import { parseFlexibleDate } from "@/lib/date-format";
 import { evidenceSheetUrl } from "@/lib/evidence";
+import { testCaseIdsFromSheetText, workbookSheetFromGoogleProperties } from "@/lib/sheet-mapping-model";
 import type { TestCase, TestCaseCustomField, TestCaseResultField, TestDefect, TestEvidence, TestResult, TestStatus, WorkbookSheet } from "@/lib/types";
 
 const GOOGLE_SCOPES = [
@@ -73,19 +74,6 @@ const evidenceFromValue = (value: unknown): TestEvidence[] => {
   } catch {
     return [];
   }
-};
-
-const sheetIds = (name: string) => Array.from(name.matchAll(/\b(TC|DEF)[\s:_-]*(\d+)/gi), (match) => `${match[1].toUpperCase()}-${match[2].padStart(2, "0")}`)
-  .filter((value, index, values) => values.indexOf(value) === index);
-
-const sheetKind = (name: string): WorkbookSheet["kind"] => {
-  const value = normalize(name);
-  if (value === "testcase" || value.includes("test case")) return "testcase";
-  if (value.includes("summary")) return "summary";
-  if (value.includes("defect")) return /def[\s:_-]*\d+/i.test(name) || value.startsWith("rc") ? "result" : "defect";
-  if (value === "data test" || value.includes("test data")) return "data";
-  if (/\b(?:tc|def)[\s:_-]*\d+/i.test(name) || value.startsWith("rc")) return "result";
-  return "other";
 };
 
 function casesFromRows(rows: unknown[][]): TestCase[] {
@@ -190,10 +178,7 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
     sheets.spreadsheets.get({ spreadsheetId, includeGridData: false, fields: "properties(title),sheets(properties(sheetId,title,index,hidden))" }),
     sheets.spreadsheets.values.get({ spreadsheetId, range: "Testcase!A:AZ", valueRenderOption: "FORMATTED_VALUE", dateTimeRenderOption: "FORMATTED_STRING" }),
   ]);
-  const workbookSheets: WorkbookSheet[] = (metadata.data.sheets ?? []).map((sheet, order) => {
-    const name = sheet.properties?.title ?? `Sheet ${order + 1}`;
-    return { name, path: String(sheet.properties?.sheetId ?? order), order: sheet.properties?.index ?? order, kind: sheetKind(name), testCaseIds: sheetIds(name), imageCount: 0, hidden: sheet.properties?.hidden ?? false };
-  });
+  const workbookSheets: WorkbookSheet[] = (metadata.data.sheets ?? []).map((sheet, order) => workbookSheetFromGoogleProperties(sheet.properties ?? {}, order));
   const cases = casesFromRows(values.data.values ?? []);
   // Read every tab, not only tabs named exactly like a Test Case ID. Teams often
   // place evidence/results in tabs with names such as "Regression", "Run 1" or
@@ -209,11 +194,11 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
       const name = workbookSheets.filter((sheet) => sheet.name !== "Testcase")[index]?.name;
       if (!name) return;
       const rows = resultValues.data.valueRanges?.[index]?.values ?? [];
-      const contentIds = Array.from(new Set(rows.flat().flatMap((cell) => sheetIds(String(cell ?? "")))));
+      const contentIds = Array.from(new Set(rows.flat().flatMap((cell) => testCaseIdsFromSheetText(String(cell ?? "")))));
       // A Test Case ID in the tab name is authoritative. Result tabs commonly
       // mention several other cases in their cells (references, defects, RCs),
       // which must not make those cases aliases of the same tab.
-      const nameIds = sheetIds(name);
+      const nameIds = testCaseIdsFromSheetText(name);
       const ids = nameIds.length ? nameIds : contentIds;
       const sheetIndex = sheetIndexes.get(name);
       if (sheetIndex != null) workbookSheets[sheetIndex] = { ...workbookSheets[sheetIndex], testCaseIds: ids };

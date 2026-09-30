@@ -99,6 +99,7 @@ export type WorkbookSource = {
 export type WorkbookSheetKind = "testcase" | "result" | "defect" | "summary" | "data" | "other";
 
 export type WorkbookSheet = {
+  sheetId?: number;
   name: string;
   path: string;
   order: number;
@@ -106,6 +107,17 @@ export type WorkbookSheet = {
   testCaseIds: string[];
   imageCount: number;
   hidden: boolean;
+};
+
+export type ProjectSheetMapping = {
+  projectId: string;
+  spreadsheetId: string;
+  sheetId: number;
+  sheetName: string;
+  testcaseKey: string;
+  mappedBy: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type WorkbookSheetContent = {

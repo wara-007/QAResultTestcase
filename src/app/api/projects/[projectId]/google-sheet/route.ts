@@ -1,19 +1,17 @@
-import { createClient } from "@/lib/supabase/server";
 import { readGoogleSheet, writeGoogleSheetResults } from "@/lib/google-sheets";
 import type { TestCase } from "@/lib/types";
 import { getGoogleUserAuth, GoogleConnectionRequiredError } from "@/lib/google-user-oauth";
 import { canonicalizeCases } from "@/lib/sync/canonical";
 import { loadBaselines, replaceBaselines } from "@/lib/sync/store";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { ProjectAccessError, requireProjectCapability } from "@/lib/project-access-server";
 
 export const runtime = "nodejs";
 
 async function spreadsheetIdForProject(projectId: string) {
-  const supabase = await createClient();
-  const { data, error } = await supabase.from("projects").select("google_sheet_id").eq("id", projectId).single();
-  if (error) throw new Error(error.message);
-  if (!data.google_sheet_id) throw new Error("Project นี้ยังไม่ได้เชื่อม Google Sheet");
-  return data.google_sheet_id as string;
+  const access = await requireProjectCapability(projectId, "view");
+  if (!access.project.google_sheet_id) throw new Error("Project นี้ยังไม่ได้เชื่อม Google Sheet");
+  return access.project.google_sheet_id as string;
 }
 
 function googleAuthError(reason: unknown, request: Request) {
@@ -32,26 +30,23 @@ export async function GET(request: Request, { params }: { params: Promise<{ proj
   } catch (reason) {
     const authError = googleAuthError(reason, request);
     if (authError) return authError;
-    return Response.json({ error: reason instanceof Error ? reason.message : "โหลด Google Sheet ไม่สำเร็จ" }, { status: 400 });
+    return Response.json({ error: reason instanceof Error ? reason.message : "โหลด Google Sheet ไม่สำเร็จ" }, { status: reason instanceof ProjectAccessError ? reason.status : 400 });
   }
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
-    const supabase = await createClient();
-    const { data: claimsData, error: claimsError } = await supabase.auth.getClaims();
-    if (claimsError || !claimsData?.claims?.sub) {
-      return Response.json({ error: "กรุณาเข้าสู่ระบบอีกครั้ง" }, { status: 401 });
-    }
+    const access = await requireProjectCapability(projectId, "edit");
     const body = await request.json() as { cases?: TestCase[] };
     if (!Array.isArray(body.cases) || body.cases.length > 2_000) throw new Error("ข้อมูล Testcase ไม่ถูกต้อง");
-    const result = await writeGoogleSheetResults(await spreadsheetIdForProject(projectId), body.cases, await getGoogleUserAuth());
-    await replaceBaselines(createAdminClient(), projectId, canonicalizeCases(body.cases), String(claimsData.claims.sub));
+    if (!access.project.google_sheet_id) throw new Error("Project นี้ยังไม่ได้เชื่อม Google Sheet");
+    const result = await writeGoogleSheetResults(access.project.google_sheet_id, body.cases, await getGoogleUserAuth());
+    await replaceBaselines(createAdminClient(), projectId, canonicalizeCases(body.cases), access.userId);
     return Response.json(result);
   } catch (reason) {
     const authError = googleAuthError(reason, request);
     if (authError) return authError;
-    return Response.json({ error: reason instanceof Error ? reason.message : "ซิงค์ Google Sheet ไม่สำเร็จ" }, { status: 400 });
+    return Response.json({ error: reason instanceof Error ? reason.message : "ซิงค์ Google Sheet ไม่สำเร็จ" }, { status: reason instanceof ProjectAccessError ? reason.status : 400 });
   }
 }

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
+import { ProjectAccessError, requireProjectCapability } from "@/lib/project-access-server";
 import { getGoogleUserAuth } from "@/lib/google-user-oauth";
 import { readGoogleSheet } from "@/lib/google-sheets";
 import { mappingUpsertPayload, projectSheetMappingFromRow, validateGoogleSheetId, type ProjectSheetMappingRow, type SaveSheetMappingInput } from "@/lib/sheet-mapping-model";
@@ -13,17 +14,13 @@ export class SheetMappingError extends Error {
 }
 
 async function authenticatedProject(projectId: string, requireEdit: boolean) {
-  const supabase = await createClient();
-  const { data: claimsData, error: claimsError } = await supabase.auth.getClaims();
-  const userId = claimsData?.claims?.sub;
-  if (claimsError || typeof userId !== "string") throw new SheetMappingError("กรุณาเข้าสู่ระบบอีกครั้ง", 401);
-  const projectResult = await supabase.from("projects").select("id,group_id,google_sheet_id").eq("id", projectId).maybeSingle();
-  if (projectResult.error || !projectResult.data) throw new SheetMappingError("ไม่พบ Project หรือคุณไม่มีสิทธิ์เข้าถึง", 403);
-  const accessResult = await supabase.rpc("list_project_access", { requested_group_id: projectResult.data.group_id });
-  if (accessResult.error) throw new Error(accessResult.error.message);
-  const access = (accessResult.data ?? []).find((row: { project_id?: string }) => row.project_id === projectId) as { can_view?: boolean; can_edit?: boolean } | undefined;
-  if (!access?.can_view || (requireEdit && !access.can_edit)) throw new SheetMappingError(requireEdit ? "คุณไม่มีสิทธิ์แก้ไข Project นี้" : "คุณไม่มีสิทธิ์ดู Project นี้", 403);
-  return { supabase, userId, project: projectResult.data };
+  try {
+    const access = await requireProjectCapability(projectId, requireEdit ? "edit" : "view");
+    return { supabase: access.supabase, userId: access.userId, project: access.project };
+  } catch (reason) {
+    if (reason instanceof ProjectAccessError) throw new SheetMappingError(reason.message, reason.status);
+    throw reason;
+  }
 }
 
 export async function loadSheetMappings(projectId: string): Promise<ProjectSheetMapping[]> {

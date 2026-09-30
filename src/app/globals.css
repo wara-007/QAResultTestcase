@@ -236,6 +236,14 @@ td:first-child strong { display: block; overflow: hidden; margin-top: 4px; color
 .status-badge.status-skip { color: #737d8e; background: #f0f2f5; }
 .status-badge.status-not-start { color: #b4751c; background: #fff5e6; }
 .status-badge.status-in-progress { color: #3d6dc9; background: #edf3ff; }
+.read-only-badge { display: inline-flex; align-items: center; padding: 5px 9px; color: #53647d; background: #edf1f6; border: 1px solid #d8e0ea; border-radius: 999px; font-size: 11px; font-weight: 800; white-space: nowrap; }
+.read-only-notice { display: flex; align-items: center; gap: 11px; margin-bottom: 14px; padding: 12px 16px; color: #5b6980; background: #f6f8fb; border: 1px solid #dfe5ee; border-radius: 10px; }
+.read-only-notice svg { flex: none; color: #5470a3; }
+.read-only-notice div { display: grid; gap: 2px; }
+.read-only-notice strong { color: #354965; font-size: 12px; }
+.read-only-notice span { font-size: 11px; }
+.read-only-fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.read-only-case .read-only-fieldset :is(input, textarea, select) { color: #526078; background: #f5f7fa; opacity: 1; cursor: default; }
 .tester { display: flex; align-items: center; gap: 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tester > span { display: grid; place-items: center; width: 24px; height: 24px; flex: none; color: #536b9d; background: #e7edfa; border-radius: 50%; font-size: 9px; font-weight: 800; }
 .empty-state { display: grid; place-items: center; gap: 7px; padding: 50px; color: #9098a7; }

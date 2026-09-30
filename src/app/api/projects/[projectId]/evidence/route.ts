@@ -2,8 +2,8 @@ import { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import { cookies } from "next/headers";
 import { google, type drive_v3 } from "googleapis";
-import { createClient } from "@/lib/supabase/server";
 import { googleOAuthClient, GOOGLE_USER_COOKIE, openGoogleToken } from "@/lib/google-user-oauth";
+import { ProjectAccessError, requireProjectCapability } from "@/lib/project-access-server";
 import type { TestEvidence } from "@/lib/types";
 import { getR2Config, uploadR2Object } from "@/lib/r2";
 
@@ -23,6 +23,8 @@ async function findOrCreateFolder(drive: drive_v3.Drive, name: string, parentId?
 
 export async function POST(request: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
+    const { projectId } = await params;
+    const access = await requireProjectCapability(projectId, "edit");
     const form = await request.formData();
     const file = form.get("file");
     const testCaseId = String(form.get("testCaseId") ?? "").trim();
@@ -35,10 +37,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
       throw new Error("Testcase ID ไม่ถูกต้อง");
     }
 
-    const { projectId } = await params;
-    const supabase = await createClient();
-    const { data: project, error } = await supabase.from("projects").select("name, google_sheet_id").eq("id", projectId).single();
-    if (error) throw new Error(error.message);
+    const project = access.project;
 
     const fileBuffer = Buffer.from(await file.arrayBuffer());
     if (getR2Config()) {
@@ -73,6 +72,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
     const evidence: TestEvidence = { fileId: uploaded.data.id, provider: "google-drive", name: uploaded.data.name ?? file.name, mimeType: uploaded.data.mimeType ?? file.type };
     return Response.json({ evidence, storage: "google-drive" });
   } catch (reason) {
-    return Response.json({ error: reason instanceof Error ? reason.message : "อัปโหลดรูปไม่สำเร็จ" }, { status: 400 });
+    return Response.json({ error: reason instanceof Error ? reason.message : "อัปโหลดรูปไม่สำเร็จ" }, { status: reason instanceof ProjectAccessError ? reason.status : 400 });
   }
 }

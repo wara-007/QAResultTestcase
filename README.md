@@ -44,6 +44,41 @@ System Owner เพิ่มอีเมลและ role ที่หน้า 
 
 ห้ามใส่ `service_role` หรือ secret key ในตัวแปรที่ขึ้นต้นด้วย `NEXT_PUBLIC_`
 
+### Migration สำหรับสิทธิ์ดูทุก Project และ Sheet mapping
+
+ก่อน Deploy UI เวอร์ชันนี้ ต้องรันไฟล์ต่อไปนี้ใน Supabase SQL Editor หลัง migration เก่าทั้งหมด:
+
+```text
+supabase/migrations/20260929114538_global_project_read_and_sheet_mappings.sql
+```
+
+Migration นี้ทำให้ผู้ใช้ที่อยู่ใน app allowlist มองเห็นทุก Group/Project แต่สิทธิ์แก้ไขยังอ้างอิง owner, System Owner, group member และ project member เหมือนเดิม รวมทั้งเพิ่มตาราง `project_sheet_mappings` สำหรับให้ QA ผูก Google tab กับ Test Case เอง
+
+ตรวจผลหลังรัน migration โดยแทน `<USER_UUID>`, `<GROUP_ID>` และ `<PROJECT_UUID>` ด้วยค่าจริง แล้วรันทีละบัญชี (แต่ละ block จบด้วย `rollback` จึงไม่แก้ข้อมูล):
+
+```sql
+begin;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"<USER_UUID>","role":"authenticated"}', true);
+
+-- ผู้ใช้ที่อยู่ใน allowlist แม้ไม่ได้เป็น member ต้องเห็น Project ได้
+select id, name from public.projects where id = '<PROJECT_UUID>'::uuid;
+
+-- ดูผลสิทธิ์ทั้งหมดของ Project ใน Group
+select * from public.list_project_access('<GROUP_ID>')
+where project_id = '<PROJECT_UUID>'::uuid;
+rollback;
+```
+
+ผลที่ต้องตรวจ:
+
+- allowlisted non-member หรือ PO viewer: query `projects` ได้ 1 row, `can_view = true`, แต่ `can_edit = false`; การ `insert/update/delete` ตารางของ Project ต้องถูก RLS ปฏิเสธหรือกระทบ 0 rows
+- QA ที่ได้รับสิทธิ์: `can_view = true` และ `can_edit = true`; บันทึก Test Case/Result และ Sheet mapping ได้
+- เจ้าของ Project หรือ System Owner: `can_delete = true`
+- ผู้ใช้อื่นที่ไม่ใช่เจ้าของและไม่ใช่ System Owner: `can_delete = false`
+
+หาก UI ถูก Deploy ก่อน migration ผู้ใช้จะเห็น error ของ `list_project_access` หรือ `project_sheet_mappings` และ mapping จะยังบันทึกไม่ได้
+
 ## Deploy บน Netlify Free
 
 1. นำ repository ขึ้น GitHub แล้วเลือก **Add new project > Import an existing project** ใน Netlify

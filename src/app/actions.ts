@@ -9,6 +9,7 @@ import type { Project } from "@/lib/types";
 import { hashReviewToken, type ApprovalStatus } from "@/lib/project-review";
 import { deleteR2ObjectsByPrefix } from "@/lib/r2";
 import { headers } from "next/headers";
+import { requireProjectCapability, type ProjectCapability } from "@/lib/project-access-server";
 
 export type ProjectApprovalSummary = {
   id: string;
@@ -22,16 +23,15 @@ export type ProjectApprovalSummary = {
   emailSentAt: string;
 };
 
-async function getSignedInProject(projectId: string): Promise<{ userId: string; name: string } | { error: string }> {
-  const supabase = await createClient();
-  const { data: claimsData, error: claimsError } = await supabase.auth.getClaims();
-  const userId = claimsData?.claims?.sub;
-  if (claimsError || !claimsData || typeof userId !== "string") return { error: "กรุณาเข้าสู่ระบบอีกครั้ง" };
-  const project = await supabase.from("projects").select("id").eq("id", projectId).maybeSingle();
-  if (project.error || !project.data) return { error: "ไม่พบ Project หรือคุณไม่มีสิทธิ์เข้าถึง" };
-  const metadata = claimsData.claims.user_metadata as Record<string, unknown> | undefined;
-  const name = [metadata?.full_name, metadata?.name, claimsData.claims.email].find((value) => typeof value === "string" && value.trim()) as string | undefined;
-  return { userId, name: name ?? "QA Team" };
+async function getSignedInProject(projectId: string, capability: ProjectCapability = "view"): Promise<{ userId: string; name: string } | { error: string }> {
+  try {
+    const access = await requireProjectCapability(projectId, capability);
+    const metadata = access.claims.user_metadata as Record<string, unknown> | undefined;
+    const name = [metadata?.full_name, metadata?.name, access.claims.email].find((value) => typeof value === "string" && value.trim()) as string | undefined;
+    return { userId: access.userId, name: name ?? "QA Team" };
+  } catch (reason) {
+    return { error: reason instanceof Error ? reason.message : "ตรวจสอบสิทธิ์ Project ไม่สำเร็จ" };
+  }
 }
 
 export async function getLatestProjectApproval(projectId: string): Promise<{ approval: ProjectApprovalSummary | null } | { error: string }> {
@@ -72,7 +72,7 @@ export async function createProjectApprovalRequest(input: CreateApprovalInput): 
   const email = input.recipientEmail.trim().toLowerCase();
   if (!/^\S+@\S+\.\S+$/.test(email)) return { error: "กรุณาใส่อีเมล PO ให้ถูกต้อง" };
   try {
-    const access = await getSignedInProject(input.projectId);
+    const access = await getSignedInProject(input.projectId, "edit");
     if ("error" in access) return access;
     const admin = createAdminClient();
     const projectResult = await admin.from("projects").select("id, name, environment, google_sheet_url, owner_id").eq("id", input.projectId).maybeSingle();
@@ -316,35 +316,29 @@ export async function updateProjectGoogleSheet(projectId: string, googleSheetUrl
   const url = googleSheetUrl.trim();
   const googleSheetId = extractGoogleSheetId(url);
   if (!googleSheetId) return { error: "Google Sheet URL ไม่ถูกต้อง" };
-  const supabase = await createClient();
-  const { data: claimsData, error: claimsError } = await supabase.auth.getClaims();
-  if (claimsError || !claimsData?.claims?.sub) return { error: "กรุณาเข้าสู่ระบบอีกครั้ง" };
-  const { error } = await supabase.from("projects").update({ google_sheet_id: googleSheetId, google_sheet_url: url }).eq("id", projectId);
-  if (error) return { error: error.message };
-  revalidatePath("/");
-  return { googleSheetId, googleSheetUrl: url };
+  try {
+    const access = await requireProjectCapability(projectId, "manage");
+    const { error } = await access.supabase.from("projects").update({ google_sheet_id: googleSheetId, google_sheet_url: url }).eq("id", projectId);
+    if (error) return { error: error.message };
+    revalidatePath("/");
+    return { googleSheetId, googleSheetUrl: url };
+  } catch (reason) {
+    return { error: reason instanceof Error ? reason.message : "ตรวจสอบสิทธิ์ Project ไม่สำเร็จ" };
+  }
 }
 
 export async function deleteProject(projectId: string) {
   try {
-    const supabase = await createClient();
-    const { data: claimsData, error: claimsError } = await supabase.auth.getClaims();
-    const userId = claimsData?.claims?.sub;
-    if (claimsError || typeof userId !== "string") return { error: "กรุณาเข้าสู่ระบบอีกครั้ง" };
+    await requireProjectCapability(projectId, "delete");
 
     const admin = createAdminClient();
-    const [project, sources, executions, ownerCheck] = await Promise.all([
+    const [project, sources, executions] = await Promise.all([
       admin.from("projects").select("id, group_id, owner_id").eq("id", projectId).maybeSingle(),
       admin.from("source_files").select("storage_key, column_mapping").eq("project_id", projectId),
       admin.from("test_executions").select("result_reference").eq("project_id", projectId),
-      supabase.rpc("is_system_owner"),
     ]);
     if (project.error) return { error: project.error.message };
     if (!project.data) return { error: "ไม่พบ Project" };
-    if (ownerCheck.error) return { error: ownerCheck.error.message };
-    if (project.data.owner_id !== userId && ownerCheck.data !== true) {
-      return { error: "ลบ Project ได้เฉพาะผู้สร้าง Project หรือ System Owner เท่านั้น" };
-    }
     if (sources.error) return { error: sources.error.message };
     if (executions.error) return { error: executions.error.message };
 

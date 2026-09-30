@@ -8,9 +8,8 @@ function errorResponse(reason: unknown, fallback: string) {
 export async function PUT(request: Request, { params }: { params: Promise<{ projectId: string; sheetId: string }> }) {
   try {
     const { projectId, sheetId } = await params;
-    const body = await request.json() as { spreadsheetId?: string; sheetName?: string; testcaseKey?: string };
+    const body = await request.json() as { sheetName?: string; testcaseKey?: string };
     const mapping = await saveSheetMapping(projectId, {
-      spreadsheetId: body.spreadsheetId ?? "",
       sheetId: Number(sheetId),
       sheetName: body.sheetName ?? "",
       testcaseKey: body.testcaseKey ?? "",

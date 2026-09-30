@@ -41,13 +41,13 @@ async function testcaseExists(projectId: string, testcaseKey: string, spreadshee
   return google.cases.some((testCase) => testCase.id.trim().toLocaleUpperCase() === testcaseKey.trim().toLocaleUpperCase());
 }
 
-export async function saveSheetMapping(projectId: string, input: Omit<SaveSheetMappingInput, "projectId">): Promise<ProjectSheetMapping> {
+export async function saveSheetMapping(projectId: string, input: Pick<SaveSheetMappingInput, "sheetId" | "sheetName" | "testcaseKey">): Promise<ProjectSheetMapping> {
   const { supabase, userId, project } = await authenticatedProject(projectId, true);
   const sheetId = validateGoogleSheetId(input.sheetId);
-  if (!project.google_sheet_id || project.google_sheet_id !== input.spreadsheetId.trim()) throw new SheetMappingError("Google Spreadsheet ไม่ตรงกับ Project นี้", 400);
+  if (!project.google_sheet_id) throw new SheetMappingError("Project นี้ยังไม่ได้เชื่อม Google Sheets", 400);
   if (!input.sheetName.trim() || !input.testcaseKey.trim()) throw new SheetMappingError("กรุณาเลือก Google tab และ Test case", 400);
   if (!await testcaseExists(projectId, input.testcaseKey, project.google_sheet_id, supabase)) throw new SheetMappingError("ไม่พบ Test case ที่เลือกใน Project นี้", 400);
-  const payload = mappingUpsertPayload({ ...input, projectId, sheetId }, userId);
+  const payload = mappingUpsertPayload({ ...input, projectId, spreadsheetId: project.google_sheet_id, sheetId }, userId);
   const result = await supabase.from("project_sheet_mappings").upsert(payload, { onConflict: "project_id,spreadsheet_id,sheet_id" })
     .select("project_id,spreadsheet_id,sheet_id,sheet_name,testcase_key,mapped_by,created_at,updated_at").single();
   if (result.error) throw new Error(result.error.message);

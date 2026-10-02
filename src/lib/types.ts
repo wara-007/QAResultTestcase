@@ -13,6 +13,11 @@ export type TestEvidence = {
 };
 
 export type TestDefect = {
+  platform?: string;
+  appVersion?: string;
+  reporter?: string;
+  testCaseReference?: string;
+  rcReference?: string;
   id: string;
   title: string;
   description: string;
@@ -26,6 +31,7 @@ export type TestDefect = {
 };
 
 export type TestResult = {
+  textHighlights?: Partial<Record<"actualResult" | "apiResponse" | "log", import("./result-preview").TextHighlight[]>>;
   id: string;
   testerName?: string;
   source?: 'web' | 'sheets';
@@ -106,6 +112,7 @@ export type WorkbookSource = {
 export type WorkbookSheetKind = "testcase" | "result" | "defect" | "summary" | "data" | "other";
 
 export type WorkbookSheet = {
+  defects?: TestDefect[];
   sheetId?: number;
   name: string;
   path: string;

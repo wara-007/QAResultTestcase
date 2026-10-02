@@ -7,6 +7,10 @@ import {
   workbookSheetFromGoogleProperties,
 } from "./sheet-mapping-model";
 
+test("keeps exact Google tab titles including leading and trailing whitespace", () => {
+  assert.equal(workbookSheetFromGoogleProperties({ sheetId: 42, title: " RC  TC-18 - พังที่แพ็กหลัก " }, 0).name, " RC  TC-18 - พังที่แพ็กหลัก ");
+});
+
 test("preserves the numeric Google sheet id in workbook metadata", () => {
   assert.deepEqual(workbookSheetFromGoogleProperties({ sheetId: 42, title: "RC TC-18", index: 3, hidden: false }), {
     sheetId: 42,

@@ -6,8 +6,9 @@ import { ChevronRight, ClipboardCheck, Crown, FolderKanban, Layers3, LoaderCircl
 import { createGroup } from "@/app/actions";
 import { signOut } from "@/app/auth/actions";
 import type { CurrentUser, Group } from "@/lib/types";
+import { groupSprintsHref } from '@/lib/year-navigation';
 
-export function GroupsHome({ initialGroups, error, currentUser }: { initialGroups: Group[]; error: string; currentUser: CurrentUser | null }) {
+export function GroupsHome({ initialGroups, error, currentUser, year }: { initialGroups: Group[]; error: string; currentUser: CurrentUser | null; year?:number }) {
   const [groups, setGroups] = useState(initialGroups);
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
@@ -36,14 +37,15 @@ export function GroupsHome({ initialGroups, error, currentUser }: { initialGroup
       </header>
 
       <section className="groups-content">
-        <div className="groups-heading"><div><p className="eyebrow">WORKSPACE</p><h1>{currentUser?.isSystemOwner ? "กลุ่มทั้งหมด" : "กลุ่มของคุณ"}</h1><span>{currentUser?.isSystemOwner ? "คุณเป็น System Owner และเห็นทุกกลุ่มในระบบ" : "เลือกกลุ่มเพื่อดู Projects หรือสร้างกลุ่มใหม่สำหรับทีม QA"}</span></div><button className="primary-button" onClick={() => setShowCreate(true)}><Plus size={17} />สร้างกลุ่ม</button></div>
+        <nav className="breadcrumb"><Link href="/groups">เลือกปี</Link><ChevronRight size={15}/><strong>ปี {year}</strong><ChevronRight size={15}/><span>Groups</span></nav>
+        <div className="groups-heading"><div><p className="eyebrow">WORKSPACE · {year}</p><h1>กลุ่มทั้งหมด</h1><span>เลือกกลุ่มเพื่อดู Sprint ของปี {year} · แสดงทุกกลุ่ม แม้ปีนี้ยังไม่มี Sprint</span></div><button className="primary-button" onClick={() => setShowCreate(true)}><Plus size={17} />สร้างกลุ่ม</button></div>
         {error ? <div className="project-error"><div><strong>โหลด Groups ไม่สำเร็จ</strong><span>{error}</span></div></div> : groups.length ? (
           <div className="group-grid">{groups.map((group) => {
             const content = <><div className="group-card-top"><span className="group-icon"><Users size={23} /></span><ChevronRight size={20} /></div>
               <h2>{group.name}</h2><p>{group.description || "พื้นที่ทำงานสำหรับทีม QA"}</p>
-              <div className="group-card-footer"><span><FolderKanban size={15} />{group.projectCount} Projects</span><small>สร้างเมื่อ {new Intl.DateTimeFormat("th-TH", { dateStyle: "medium" }).format(new Date(group.createdAt))}</small></div></>;
+              <div className="group-card-footer"><span><FolderKanban size={15} />{group.projectCount} Projects ทุกปี</span><small>สร้างเมื่อ {new Intl.DateTimeFormat("th-TH", { dateStyle: "medium" }).format(new Date(group.createdAt))}</small></div></>;
             return <article className="group-card-shell" key={group.id}>
-              <Link className="group-card" href={`/groups/${group.id}/years`}>{content}</Link>
+              <Link className="group-card" href={year ? groupSprintsHref(group.id,year) : `/groups/${group.id}/years`}>{content}</Link>
               {group.canManage && <Link className="group-members-link" href={`/groups/${group.id}/members`}><Users size={15} />จัดการกลุ่ม</Link>}
             </article>;
           })}</div>

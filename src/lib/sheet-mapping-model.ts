@@ -22,7 +22,7 @@ export function validateGoogleSheetId(value: unknown) {
 
 export function workbookSheetFromGoogleProperties(properties: { sheetId?: number | null; title?: string | null; index?: number | null; hidden?: boolean | null }, fallbackOrder = 0): WorkbookSheet {
   const sheetId = validateGoogleSheetId(properties.sheetId);
-  const name = properties.title?.trim() || `Sheet ${fallbackOrder + 1}`;
+  const name = properties.title || `Sheet ${fallbackOrder + 1}`;
   return {
     sheetId,
     name,

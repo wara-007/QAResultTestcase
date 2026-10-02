@@ -18,6 +18,11 @@
   "dependencies": {
     "@aws-sdk/client-s3": "3.1131.0",
     "@aws-sdk/s3-request-presigner": "3.1131.0",
+    "@codemirror/lang-json": "^6.0.2",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/search": "^6.7.2",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.13",
     "@supabase/ssr": "0.12.5",
     "@supabase/supabase-js": "2.115.0",
     "fflate": "0.8.3",

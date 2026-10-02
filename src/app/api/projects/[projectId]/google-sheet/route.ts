@@ -1,5 +1,6 @@
 import { readGoogleSheet, writeGoogleSheetResults } from "@/lib/google-sheets";
-import type { TestCase } from "@/lib/types";
+import type { TestCase, WorkbookSheet } from "@/lib/types";
+import { withCachedProjectDefects } from "@/lib/project-defect-cache";
 import { getGoogleUserAuth, GoogleConnectionRequiredError } from "@/lib/google-user-oauth";
 import { canonicalizeCases } from "@/lib/sync/canonical";
 import { loadBaselines, replaceBaselines } from "@/lib/sync/store";
@@ -7,6 +8,27 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { ProjectAccessError, requireProjectCapability } from "@/lib/project-access-server";
 
 export const runtime = "nodejs";
+
+// Store lightweight register data separately: importing images or resolving
+// testcase conflicts must not prevent the Sprint counter from seeing defects.
+export async function PATCH(request: Request, { params }: { params: Promise<{ projectId: string }> }) {
+  try {
+    const { projectId } = await params;
+    await requireProjectCapability(projectId, "edit");
+    const body = await request.json() as { sheets?: WorkbookSheet[] };
+    if (!Array.isArray(body.sheets) || body.sheets.length > 2000 || body.sheets.some(sheet => !sheet || typeof sheet.name !== "string")) throw new Error("ข้อมูลแท็บไม่ถูกต้อง");
+    const db = createAdminClient();
+    const source = await db.from("source_files").select("id,column_mapping").eq("project_id", projectId).order("version_no", { ascending: false }).limit(1).maybeSingle();
+    if (source.error) throw new Error(source.error.message);
+    if (!source.data) throw new Error("ยังไม่มีไฟล์ต้นฉบับสำหรับเก็บ Defects — กรุณาโหลดจาก Sheets ให้เสร็จก่อน");
+    const mapping = withCachedProjectDefects(source.data.column_mapping ?? {}, body.sheets);
+    const saved = await db.from("source_files").update({ column_mapping: mapping }).eq("id", source.data.id).eq("project_id", projectId).select("id").single();
+    if (saved.error) throw new Error(saved.error.message);
+    return Response.json({ saved: true });
+  } catch (reason) {
+    return Response.json({ error: reason instanceof Error ? reason.message : "บันทึก Defects สำหรับ Sprint ไม่สำเร็จ" }, { status: reason instanceof ProjectAccessError ? reason.status : 400 });
+  }
+}
 
 async function spreadsheetIdForProject(projectId: string) {
   const access = await requireProjectCapability(projectId, "view");
@@ -23,8 +45,9 @@ function googleAuthError(reason: unknown, request: Request) {
 export async function GET(request: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
-    const summary = new URL(request.url).searchParams.get("summary") === "1";
-    const result = await readGoogleSheet(await spreadsheetIdForProject(projectId), await getGoogleUserAuth(), { summary });
+    const query = new URL(request.url).searchParams;
+    const summary = query.get("summary") === "1";
+    const result = await readGoogleSheet(await spreadsheetIdForProject(projectId), await getGoogleUserAuth(), { summary, sheetName: query.get("sheet") ?? undefined, testcaseId: query.get("testcase") ?? undefined });
     const baseline = await loadBaselines(createAdminClient(), projectId);
     return Response.json({ ...result, baseline }, { headers: { "Cache-Control": "no-store" } });
   } catch (reason) {

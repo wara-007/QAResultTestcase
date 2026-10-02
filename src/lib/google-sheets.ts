@@ -5,6 +5,9 @@ import type { googleOAuthClient } from "@/lib/google-user-oauth";
 import { parseFlexibleDate } from "@/lib/date-format";
 import { evidenceMimeFromUrl, evidenceSheetCell } from "@/lib/evidence-media";
 import { testCaseIdsFromSheetText, workbookSheetFromGoogleProperties } from "@/lib/sheet-mapping-model";
+import { freeformTextFromCells, selectDetailSheets } from "@/lib/sheet-detail";
+import { sheetTextHighlights, type StyledSheetText } from "@/lib/result-preview";
+import { isProjectDefectSheet, projectDefectsFromRows, defectRecordsForSync } from "@/lib/project-defects";
 import type { TestCase, TestCaseCustomField, TestCaseResultField, TestDefect, TestEvidence, TestResult, TestStatus, WorkbookSheet } from "@/lib/types";
 
 const GOOGLE_SCOPES = [
@@ -172,43 +175,72 @@ function detailFieldsFromRows(rows: unknown[][], sheetName: string): TestCaseCus
   });
 }
 
-export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth = getGoogleServiceAuth(), options: { summary?: boolean } = {}) {
+export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth = getGoogleServiceAuth(), options: { summary?: boolean; sheetName?: string; testcaseId?: string } = {}) {
   const sheets = google.sheets({ version: "v4", auth });
   const [metadata, values] = await Promise.all([
-    sheets.spreadsheets.get({ spreadsheetId, includeGridData: false, fields: "properties(title),sheets(properties(sheetId,title,index,hidden))" }),
+    sheets.spreadsheets.get({ spreadsheetId, includeGridData: false, fields: "properties(title),sheets(properties(sheetId,title,index,hidden,gridProperties))" }),
     sheets.spreadsheets.values.get({ spreadsheetId, range: "Testcase!A:AZ", valueRenderOption: "FORMATTED_VALUE", dateTimeRenderOption: "FORMATTED_STRING" }),
   ]);
   const workbookSheets: WorkbookSheet[] = (metadata.data.sheets ?? []).map((sheet, order) => workbookSheetFromGoogleProperties(sheet.properties ?? {}, order));
   const cases = casesFromRows(values.data.values ?? []);
+  await Promise.all(workbookSheets.filter(sheet => isProjectDefectSheet(sheet.name) && (options.summary || (!options.sheetName && !options.testcaseId) || sheet.name === options.sheetName)).map(async sheet => {
+    const response = await sheets.spreadsheets.values.get({ spreadsheetId, range: `'${sheet.name.replaceAll("'", "''")}'!A:AZ`, valueRenderOption: "FORMULA", dateTimeRenderOption: "FORMATTED_STRING" });
+    sheet.defects = projectDefectsFromRows(response.data.values ?? [], sheet.name);
+  }));
   // Read every tab, not only tabs named exactly like a Test Case ID. Teams often
   // place evidence/results in tabs with names such as "Regression", "Run 1" or
   // "API logs". IDs are discovered from both the tab name and its cell content.
   if (options.summary) return { title: metadata.data.properties?.title ?? "Google Sheet", cases, sheets: workbookSheets };
-  const ranges = workbookSheets
-    .filter((sheet) => sheet.name !== "Testcase")
-    .map((sheet) => `'${sheet.name.replaceAll("'", "''")}'!A:AZ`);
+  const detailSheets = selectDetailSheets(workbookSheets, options);
+  const ranges = detailSheets.map(sheet => {
+    const grid = metadata.data.sheets?.find(item => item.properties?.sheetId === sheet.sheetId)?.properties?.gridProperties;
+    return `'${sheet.name.replaceAll("'", "''")}'!A1:${columnLetter((grid?.columnCount ?? 52) - 1)}${grid?.rowCount ?? 1000}`;
+  });
   if (ranges.length) {
-    const resultValues = await sheets.spreadsheets.values.batchGet({ spreadsheetId, ranges, valueRenderOption: "FORMULA" });
+    const [resultValues, formatting] = await Promise.all([
+      sheets.spreadsheets.values.batchGet({ spreadsheetId, ranges, valueRenderOption: "FORMULA" }),
+      sheets.spreadsheets.get({ spreadsheetId, ranges, fields: "properties(spreadsheetTheme),sheets(properties(sheetId),data(startRow,startColumn,rowData(values(formattedValue,effectiveFormat(backgroundColorStyle,backgroundColor,textFormat),textFormatRuns))))" }),
+    ]);
+    const theme = formatting.data.properties?.spreadsheetTheme?.themeColors ?? [];
+    const color = (style: { rgbColor?: { red?: number | null; green?: number | null; blue?: number | null } | null; themeColor?: string | null } | null | undefined, fallback?: { red?: number | null; green?: number | null; blue?: number | null } | null) => {
+      const rgb = style?.rgbColor ?? theme.find(item => item.colorType === style?.themeColor)?.color?.rgbColor ?? fallback;
+      return rgb ? `#${[rgb.red, rgb.green, rgb.blue].map(n => Math.round(Math.max(0, Math.min(1, n ?? 0)) * 255).toString(16).padStart(2, "0")).join("")}` : undefined;
+    };
     const sheetIndexes = new Map(workbookSheets.map((sheet, index) => [sheet.name, index]));
     ranges.forEach((_range, index) => {
-      const name = workbookSheets.filter((sheet) => sheet.name !== "Testcase")[index]?.name;
+      const name = detailSheets[index]?.name;
       if (!name) return;
+      if (isProjectDefectSheet(name)) return;
       const rows = resultValues.data.valueRanges?.[index]?.values ?? [];
+      const styled: StyledSheetText[] = (formatting.data.sheets?.find(item => item.properties?.sheetId === detailSheets[index].sheetId)?.data ?? []).flatMap(grid => (grid.rowData ?? []).flatMap(row => (row.values ?? []).flatMap(cell => {
+        if (!cell.formattedValue) return [];
+        const textFormat = cell.effectiveFormat?.textFormat;
+        const background = color(cell.effectiveFormat?.backgroundColorStyle, cell.effectiveFormat?.backgroundColor);
+        return [{ value: cell.formattedValue, background: background === "#ffffff" ? undefined : background, color: color(textFormat?.foregroundColorStyle, textFormat?.foregroundColor), bold: textFormat?.bold ?? undefined, runs: (cell.textFormatRuns ?? []).map(run => ({ start: run.startIndex ?? 0, color: color(run.format?.foregroundColorStyle, run.format?.foregroundColor), bold: run.format?.bold ?? undefined })) }];
+      })));
       const contentIds = Array.from(new Set(rows.flat().flatMap((cell) => testCaseIdsFromSheetText(String(cell ?? "")))));
       // A Test Case ID in the tab name is authoritative. Result tabs commonly
       // mention several other cases in their cells (references, defects, RCs),
       // which must not make those cases aliases of the same tab.
       const nameIds = testCaseIdsFromSheetText(name);
       const ids = nameIds.length ? nameIds : contentIds;
+      if (!ids.length) ids.push(name);
       const sheetIndex = sheetIndexes.get(name);
       if (sheetIndex != null) workbookSheets[sheetIndex] = { ...workbookSheets[sheetIndex], testCaseIds: ids };
       ids.forEach((id) => {
-        const testCase = cases.find((item) => caseIdentity(item.id) === caseIdentity(id));
-        if (!testCase) return;
+        let testCase = cases.find((item) => caseIdentity(item.id) === caseIdentity(id));
+        if (!testCase) {
+          testCase = { id, sourceSheetName: name, sourceRow: 0, platform: "", condition: "", scenario: "", name, steps: "", expected: "", status: "Not Start", device: "", testData: "", appVersion: "", environment: "", resultReference: name, executedBy: "", executedDate: "", executedTime: "", remark: "", evidence: [], results: [], defects: [] };
+          cases.push(testCase);
+        }
         const parsedResults = resultsFromRows(rows);
+        if (!rows.some(row => row.some(value => normalize(value) === "result id"))) {
+          const text = freeformTextFromCells(rows.flatMap((row, rowIndex) => row.flatMap((value, colIndex) => String(value ?? "").trim() ? [{ ref: `${columnLetter(colIndex)}${rowIndex + 1}`, value: String(value) }] : [])));
+          if (text.actualResult || text.apiResponse || text.log) parsedResults.push({ id: `SHEET-IMPORT-${name}`, source: "sheets", sourceSheetName: name, status: testCase.status, ...text, evidence: [], createdAt: "" });
+        }
         testCase.resultFieldDefinitions = [...(testCase.resultFieldDefinitions ?? []), ...resultFieldDefinitionsFromRows(rows)];
         testCase.customFields = [...(testCase.customFields ?? []), ...detailFieldsFromRows(rows, name)];
-        testCase.results = [...(testCase.results ?? []), ...parsedResults.map((result) => ({ ...result, sourceSheetName: name, defects: undefined }))];
+        testCase.results = [...(testCase.results ?? []), ...parsedResults.map((result) => ({ ...result, sourceSheetName: name, defects: undefined, textHighlights: { actualResult: sheetTextHighlights(result.actualResult, styled), apiResponse: sheetTextHighlights(result.apiResponse, styled), log: sheetTextHighlights(result.log, styled) } }))];
         testCase.defects = [...(testCase.defects ?? []), ...defectsFromRows(rows).map((defect) => ({ ...defect, sourceSheetName: name })), ...parsedResults.flatMap((result) => (result.defects ?? []).map((defect) => ({ ...defect, sourceSheetName: name })))];
       });
     });
@@ -321,7 +353,7 @@ function resultFieldDefinitionsFromRows(rows: unknown[][]): TestCaseResultField[
 }
 
 function defectsFromRows(rows: unknown[][]): TestDefect[] {
-  const headerIndex = rows.findIndex((row) => row.some((cell) => normalize(cell) === "defect id"));
+  const headerIndex = rows.findIndex((row) => row.some((cell) => ["defect id", "defected id"].includes(normalize(cell))));
   if (headerIndex < 0) return [];
   const header = rows[headerIndex] ?? [];
   const indexOf = (names: string[]) => {
@@ -375,8 +407,10 @@ export async function writeGoogleSheetResults(spreadsheetId: string, cases: Test
 
   const metadata = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets(properties(sheetId,title))" });
   const existing = new Map((metadata.data.sheets ?? []).map((sheet) => [sheet.properties?.title ?? "", sheet.properties?.sheetId]));
+  const registerName = [...existing.keys()].find(isProjectDefectSheet);
+  const registeredDefects = registerName ? projectDefectsFromRows((await sheets.spreadsheets.values.get({ spreadsheetId, range: `'${registerName.replaceAll("'", "''")}'!A:AZ`, valueRenderOption: "FORMULA", dateTimeRenderOption: "FORMATTED_STRING" })).data.values ?? [], registerName) : [];
   const resultCases = cases.filter((testCase) => (testCase.results?.length ?? 0) > 0 || (testCase.defects?.length ?? 0) > 0 || testCase.customFields?.some((field) => field.source === "detail"));
-  const defectRecords = cases.flatMap((testCase) => (testCase.defects ?? []).map((defect) => ({ testCase, defect }))).map((record, index) => ({ ...record, displayId: `DEF-${String(index + 1).padStart(2, "0")}` }));
+  const defectRecords = defectRecordsForSync(cases, registeredDefects);
   const defectDisplayIds = new Map(defectRecords.map((record) => [record.defect.id, record.displayId]));
   const evidenceIds = [...new Set(resultCases.flatMap((testCase) => [
     ...(testCase.results ?? []).flatMap((result) => result.evidence),
@@ -440,7 +474,7 @@ export async function writeGoogleSheetResults(spreadsheetId: string, cases: Test
       record.testCase.executedBy,
       reportDate,
       testcaseLink ? `=HYPERLINK("${testcaseLink}","${formulaText(record.testCase.id)}")` : record.testCase.id,
-      detailLink ? `=HYPERLINK("${detailLink}","RC : ${record.displayId}")` : `RC : ${record.displayId}`,
+      detailLink ? `=HYPERLINK("${detailLink}","RC : ${record.displayId}")` : record.defect.rcReference || `RC : ${record.displayId}`,
       "",
     ]);
   }

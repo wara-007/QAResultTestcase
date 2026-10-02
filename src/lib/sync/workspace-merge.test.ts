@@ -23,3 +23,16 @@ test("uses Google definition when no local edit was persisted", () => {
   const merged = mergeWorkspaceAndGoogleCases([makeCase("TC-01", "Stored")], [makeCase("TC-01", "Google")], "Tester");
   assert.equal(merged.cases[0].name, "Google");
 });
+
+test("refreshes imported text while keeping its evidence and locally authored results", () => {
+  const local = makeCase("TC-27", "Stored");
+  const google = makeCase("TC-27", "Google");
+  const imported = { id: "SHEET-IMPORT-RC TC-27", sourceSheetName: "RC TC-27", source: "sheets" as const, status: "Pass" as const, actualResult: "old", apiResponse: "", log: "old log", evidence: [], createdAt: "2026-01-01" };
+  local.results = [{ ...imported, evidence: [{ fileId: "image", name: "proof", mimeType: "image/png" }] }, { ...imported, id: "WEB-1", source: "web", actualResult: "QA edit" }];
+  google.results = [{ ...imported, log: "complete log", actualResult: "complete text" }];
+  const result = mergeWorkspaceAndGoogleCases([local], [google], "Tester").cases[0].results!;
+  assert.equal(result.length, 2);
+  assert.equal(result.find(r => r.id === imported.id)?.log, "complete log");
+  assert.equal(result.find(r => r.id === imported.id)?.evidence[0]?.fileId, "image");
+  assert.equal(result.find(r => r.id === "WEB-1")?.actualResult, "QA edit");
+});

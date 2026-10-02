@@ -6,6 +6,14 @@ import { summarizeSprint, type SprintProjectStatsInput } from "./sprint-summary"
 import { buildSprintDashboard, type MoveHistory, type ResultOriginRow, type MoveSnapshot } from './sprint-dashboard';
 import { personalCasesFromMetadata, type PersonalMetadataRow } from './personal-performance-metadata';
 
+export async function loadWorkspaceYears() {
+  const db=await createClient();
+  try {
+    const rows=await allRows<{year:number}>((from,to)=>db.from('workspace_years').select('id,year').order('id').range(from,to));
+    return {years:rows.map(row=>row.year),error:''};
+  } catch(reason) {return {years:[] as number[],error:reason instanceof Error ? reason.message : 'โหลดรายการปีไม่สำเร็จ'};}
+}
+
 export async function loadPlanning(groupId: string) {
   const db = await createClient();
   const [years, sprints, group, access] = await Promise.all([

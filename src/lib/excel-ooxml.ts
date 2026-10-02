@@ -1,5 +1,6 @@
 import { strFromU8, strToU8, unzipSync, zipSync, type Unzipped } from "fflate";
 import type { TestCase, TestStatus, WorkbookFreeformResult, WorkbookResultImage, WorkbookSheet, WorkbookSheetContent, WorkbookSheetKind, WorkbookSource } from "./types";
+import { freeformTextFromCells } from "./sheet-detail";
 
 const fieldAliases: Record<string, string[]> = {
   id: ["testcase id", "test case id", "case id"],
@@ -310,7 +311,7 @@ export function readWorkbookSheet(source: WorkbookSource, sheet: WorkbookSheet):
   const allCells = Array.from(document.getElementsByTagName("c"))
     .map((cell) => ({ ref: cell.getAttribute("r") ?? "", value: cellValue(cell, sharedStrings).trim() }))
     .filter((cell) => cell.value);
-  const cells = allCells.slice(0, 200).map((cell) => ({ ...cell, value: cell.value.length > 2_000 ? `${cell.value.slice(0, 2_000)}…` : cell.value }));
+  const cells = allCells;
 
   const images = drawingImages(files, sheet.path);
   return { cells, truncatedCellCount: Math.max(0, allCells.length - cells.length), images };
@@ -366,13 +367,11 @@ export function readWorkbookFreeformResults(source: WorkbookSource): WorkbookFre
   const files = unzipSync(new Uint8Array(source.buffer));
   const sharedStrings = readSharedStrings(files);
   const results: WorkbookFreeformResult[] = [];
-  const unique = (values: string[]) => values.filter((value, index) => value && values.indexOf(value) === index).join("\n\n");
-  const apiPattern = /(?:^|\n)\s*(?:endpoint|request|response|http status|server|method)\s*:|http inspector|["'](?:status|statusType|errorCode|errorMessage|data|transactionId)["']\s*:/i;
-  const logPattern = /kubectl\s+logs|^\s*\$\s+.*\blogs\b|(?:^|\n)\d{4}-\d{2}-\d{2}T[^\n]*\|\s*(?:INFO|ERROR|WARN|DEBUG)\b/i;
 
   for (const sheet of source.sheets.filter((item) => item.kind !== "testcase")) {
     const document = parseXml(files[sheet.path]);
     const allCells = Array.from(document.getElementsByTagName("c")).map((cell) => ({
+      ref: cell.getAttribute("r") ?? "",
       row: rowFromRef(cell.getAttribute("r") ?? "0"),
       column: columnFromRef(cell.getAttribute("r") ?? ""),
       value: cellValue(cell, sharedStrings).trim(),
@@ -380,35 +379,15 @@ export function readWorkbookFreeformResults(source: WorkbookSource): WorkbookFre
     if (allCells.some((cell) => normalize(cell.value) === "result id")) continue;
 
     const testCaseId = sheet.testCaseIds.find((id) => id.startsWith("TC-")) ?? sheet.name;
-    const metadataHeaderRow = allCells.find((cell) => ["testcase id", "test case id"].includes(normalize(cell.value)))?.row ?? 0;
-    const contentCells = allCells.filter((cell) => cell.row > metadataHeaderRow + 1 && cell.value !== testCaseId);
-    const logLabels = contentCells.filter((cell) => ["log", "logs"].includes(normalize(cell.value)));
-    const actual: string[] = [];
-    const api: string[] = [];
-    const logs: string[] = [];
-
-    for (const cell of contentCells) {
-      const normalized = normalize(cell.value);
-      if (["log", "logs"].includes(normalized)) continue;
-      const belongsToLogSection = logLabels.some((label) => cell.row > label.row && cell.column === label.column);
-      if (logPattern.test(cell.value) || belongsToLogSection) {
-        logs.push(cell.value);
-      } else if (apiPattern.test(cell.value) || (/^[\[{]/.test(cell.value) && /["']\w+["']\s*:/.test(cell.value))) {
-        api.push(cell.value);
-      } else if (/^(?:case|result|actual result|ผล(?:การ)?ทดสอบ)\b/i.test(cell.value)) {
-        actual.push(cell.value);
-      }
-    }
-
+    const text = freeformTextFromCells(allCells);
     const images = drawingImages(files, sheet.path);
-    if (!actual.length && !api.length && !logs.length && !images.length) continue;
+    if (!text.actualResult && !text.apiResponse && !text.log && !images.length) continue;
     results.push({
       sheetName: sheet.name,
       testCaseId,
       resultId: `SHEET-IMPORT-${sheet.name}`,
-      actualResult: unique(actual) || `นำเข้าจาก Google Sheets · ${sheet.name}`,
-      apiResponse: unique(api),
-      log: unique(logs),
+      ...text,
+      actualResult: text.actualResult || `นำเข้าจาก Google Sheets · ${sheet.name}`,
     });
   }
   return results;

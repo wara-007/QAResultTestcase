@@ -9,6 +9,7 @@ export type TestEvidence = {
   provider?: "google-drive" | "cloudflare-r2" | "external-url";
   objectKey?: string;
   url?: string;
+  uploadedBy?: string;
 };
 
 export type TestDefect = {
@@ -26,6 +27,8 @@ export type TestDefect = {
 
 export type TestResult = {
   id: string;
+  testerName?: string;
+  source?: 'web' | 'sheets';
   status: TestStatus;
   actualResult: string;
   apiResponse: string;
@@ -36,7 +39,11 @@ export type TestResult = {
   defects?: TestDefect[];
   createdAt: string;
   sourceSheetName?: string;
+  origin?: ResultOrigin;
 };
+
+export type ResultOrigin = { sprintId: string; sprintName: string; year: number; authorId: string | null; authorName: string; inferred: boolean; recordedAt: string };
+export type PlanningTeamMember = { userId: string; name: string; email: string; role: string };
 
 export type TestCaseResultField = {
   key: string;
@@ -154,7 +161,14 @@ export type Project = {
   canEdit: boolean;
   canManage: boolean;
   canDelete: boolean;
+  sprintId?: string;
+  year?: number;
+  updatedAt?: string;
 };
+
+export type WorkspaceYear = { id: string; groupId: string; year: number };
+export type Sprint = { id: string; yearId: string; groupId: string; name: string; year: number; startDate: string; endDate: string; goal?: string; status?: 'Planned' | 'Active' | 'Completed'; updatedAt?: string; canManage?: boolean };
+export type ProjectHistoryEntry = { id: string; actor_email: string; before_data: Record<string, unknown> | null; after_data: Record<string, unknown>; created_at: string };
 
 export type Group = {
   id: string;
@@ -164,6 +178,7 @@ export type Group = {
   createdAt: string;
   canAccess: boolean;
   canManage: boolean;
+  canDelete?: boolean;
 };
 
 export type GroupMember = {

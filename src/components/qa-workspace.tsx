@@ -32,15 +32,22 @@ import {
 import { ChangeEvent, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { GoogleCleanupWarning } from './google-cleanup-warning';
 import { createProject, createProjectApprovalRequest, deleteProject, getLatestProjectApproval, updateProjectGoogleSheet, type ProjectApprovalSummary } from "@/app/actions";
 import { signOut } from "@/app/auth/actions";
 import { exportTestCases, importTestCases, readWorkbookFreeformResults, readWorkbookResultImages, readWorkbookSheet } from "@/lib/excel-ooxml";
 import { evidenceImageUrl } from "@/lib/evidence";
 import { ImageViewerGallery } from "@/components/image-viewer-gallery";
+import { ProjectManagement } from "@/components/project-management";
+import { TestCaseAssignmentDialog, type AssignmentData } from './test-case-assignment-dialog';
+import { getTestCaseAssignments } from '@/app/planning-actions';
+import type { Sprint } from "@/lib/types";
 import { SheetMappingControl } from "@/components/sheet-mapping-control";
 import { SyncConflictDialog } from "@/components/sync-conflict-dialog";
 import { formatFlexibleDate } from "@/lib/date-format";
 import { compressEvidenceImage } from "@/lib/image-compression";
+import { compressEvidenceVideo } from "@/lib/video-compression";
+import { EVIDENCE_ACCEPT, validateEvidenceFile } from "@/lib/evidence-media";
 import { loadProjectWorkbook, loadProjectWorkspace, persistImportedWorkbook, persistTestCaseResult } from "@/lib/project-data";
 import { filterProjects } from "@/lib/project-search";
 import { resolveSheetAssociations } from "@/lib/sheet-mapping-resolution";
@@ -137,10 +144,11 @@ function mergeGoogleSheetsWithSource(sourceSheets: WorkbookSheet[], googleSheets
 }
 
 function evidenceViewerImages(evidence: TestEvidence[]) {
-  return evidence.filter((item) => item.mimeType.startsWith("image/")).map((item) => ({
+  return evidence.filter((item) => /^(image|video)\//.test(item.mimeType)).map((item) => ({
     id: `${item.fileId}-${item.name}`,
     name: item.name,
     url: evidenceImageUrl(item),
+    mimeType: item.mimeType,
   }));
 }
 
@@ -314,11 +322,11 @@ function SetupView() {
   );
 }
 
-function ProjectDialog({ groupId, onClose, onCreated }: { groupId: string; onClose: () => void; onCreated: (project: Project) => void }) {
+function ProjectDialog({ groupId, sprint, onClose, onCreated }: { groupId: string; sprint?: Sprint; onClose: () => void; onCreated: (project: Project) => void }) {
   const [sourceType, setSourceType] = useState<"file" | "url">("file");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [sprintNo, setSprintNo] = useState("");
+  const sprintNo = sprint?.name ?? "";
   const [environment, setEnvironment] = useState("UAT");
   const [googleSheetUrl, setGoogleSheetUrl] = useState("");
   const [excelFile, setExcelFile] = useState<File | null>(null);
@@ -334,10 +342,10 @@ function ProjectDialog({ groupId, onClose, onCreated }: { groupId: string; onClo
           ? excelFile ? importTestCases(await excelFile.arrayBuffer(), excelFile.name) : null
           : null;
         if (sourceType === "file" && !imported) return setError("กรุณาเลือกไฟล์ Excel");
-        const result = await createProject({ groupId, name, description, sprintNo, environment, googleSheetUrl: sourceType === "url" ? googleSheetUrl : "" });
+        const result = await createProject({ groupId, name, description, sprintNo, sprintId: sprint?.id, environment, googleSheetUrl: sourceType === "url" ? googleSheetUrl : "" });
         if (!result.project) return setError(result.error ?? "เพิ่ม Project ไม่สำเร็จ");
         if (imported) await persistImportedWorkbook(result.project.id, imported.cases, imported.source, true);
-        onCreated(result.project);
+        onCreated({ ...result.project, year: sprint?.year });
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : "เพิ่ม Project ไม่สำเร็จ");
       }
@@ -358,7 +366,7 @@ function ProjectDialog({ groupId, onClose, onCreated }: { groupId: string; onClo
         {sourceType === "file" ? <label className="project-file-picker"><Upload size={20} /><span><strong>{excelFile?.name ?? "เลือกไฟล์ Excel"}</strong><small>{excelFile ? `${(excelFile.size / 1024 / 1024).toFixed(2)} MB` : "รองรับไฟล์ .xlsx ที่มีชีต Testcase"}</small></span><input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => setExcelFile(event.target.files?.[0] ?? null)} /></label>
           : <label className="text-field"><span>Google Sheet URL *</span><input required value={googleSheetUrl} onChange={(event) => setGoogleSheetUrl(event.target.value)} placeholder="https://docs.google.com/spreadsheets/d/..." /></label>}
         <div className="two-column-fields">
-          <label><span>Sprint</span><input value={sprintNo} onChange={(event) => setSprintNo(event.target.value)} placeholder="เช่น Sprint 41" /></label>
+          <label><span>ปี / Sprint</span><input value={`${sprint?.year ?? ""} · ${sprintNo}`} readOnly /></label>
           <label><span>Environment *</span><input required value={environment} onChange={(event) => setEnvironment(event.target.value)} placeholder="UAT" /></label>
         </div>
         {error && <p className="form-error"><CircleAlert size={16} />{error}</p>}
@@ -390,15 +398,18 @@ function GoogleSheetDialog({ project, onClose, onConnected }: { project: Project
   </form></div>;
 }
 
-function ProjectsHome({ projects, error, onAdd, projectHref }: { projects: Project[]; error: string; onAdd: () => void; projectHref: (project: Project) => string }) {
+function ProjectsHome({ projects, error, onAdd, projectHref, canCreate, onUpdated }: { projects: Project[]; error: string; onAdd: () => void; projectHref: (project: Project) => string; canCreate: boolean; onUpdated: (project: Project) => void }) {
   const [projectSearch, setProjectSearch] = useState("");
+  const [managedId, setManagedId] = useState<string | null>(null);
+  const managed = projects.find((p) => p.id === managedId);
   const visibleProjects = useMemo(() => filterProjects(projects, projectSearch), [projectSearch, projects]);
   const hasQuery = Boolean(projectSearch.trim());
   return (
     <div className="projects-home" id="projects">
-      <section className="projects-heading"><div><p className="eyebrow">WORKSPACE</p><h1>Projects</h1><span>เลือก Project เพื่อดู Testcase หรือสร้าง Project ใหม่</span></div><button className="primary-button" onClick={onAdd}><PlusIcon />เพิ่ม Project</button></section>
+      <section className="projects-heading"><div><p className="eyebrow">WORKSPACE</p><h1>Projects</h1><span>เลือก Project เพื่อดู Testcase และผลทดสอบ</span></div>{canCreate && <button className="primary-button" onClick={onAdd}><PlusIcon />เพิ่ม Project</button>}</section>
       {!error && projects.length > 0 && <section className="project-search-bar"><label><Search size={18} /><input value={projectSearch} onChange={(event) => setProjectSearch(event.target.value)} placeholder="ค้นหาชื่อ Project, Environment, Sprint หรือ Google Sheets" aria-label="ค้นหา Projects" />{hasQuery && <button type="button" onClick={() => setProjectSearch("")} aria-label="ล้างการค้นหา"><X size={16} /></button>}</label><span>{hasQuery ? `พบ ${visibleProjects.length} จาก ${projects.length} Projects` : `${projects.length} Projects`}</span></section>}
-      {error ? <section className="project-error"><CircleAlert size={20} /><div><strong>โหลด Projects ไม่สำเร็จ</strong><span>{error}</span></div></section> : visibleProjects.length ? <section className="project-grid">{visibleProjects.map((project) => <Link className="project-card" key={project.id} href={projectHref(project)}><div className="project-card-icon"><FolderKanban size={22} /></div><div className="project-card-title"><h2>{project.name}</h2><ChevronRight size={18} /></div><p>{project.description || "ไม่มีรายละเอียด"}</p><div className="project-card-meta"><span>{project.environment}</span>{project.sprintNo && <span>{project.sprintNo}</span>}{!project.canEdit && <span className="read-only-card-pill">ดูอย่างเดียว</span>}</div><small>สร้างเมื่อ {formatFlexibleDate(project.createdAt, false)}</small></Link>)}</section> : projects.length && hasQuery ? <section className="panel project-zero project-search-empty"><Search size={34} /><h2>ไม่พบ Project</h2><p>ไม่พบ Project ที่ตรงกับ “{projectSearch.trim()}”</p><button className="secondary-button" onClick={() => setProjectSearch("")}>ล้างการค้นหา</button></section> : <section className="panel project-zero"><FolderKanban size={34} /><h2>ยังไม่มี Project</h2><p>สร้าง Project แรกเพื่ออัปโหลด Testcase และเริ่มบันทึกผล</p><button className="primary-button" onClick={onAdd}><PlusIcon />เพิ่ม Project</button></section>}
+      {error ? <section className="project-error"><CircleAlert size={20} /><div><strong>โหลด Projects ไม่สำเร็จ</strong><span>{error}</span></div></section> : visibleProjects.length ? <section className="panel project-row-list"><div className="project-list-header"><span>Project</span><span>Environment</span><span>ปี / Sprint</span><span>สร้างเมื่อ</span><span>จัดการ</span></div>{visibleProjects.map((project) => <article className="project-list-row" key={project.id}><Link className="project-row-title" href={projectHref(project)}><FolderKanban size={19} /><div><strong>{project.name}</strong><small>{project.description || "ไม่มีรายละเอียด"}</small>{!project.canEdit && <span className="read-only-card-pill">ดูอย่างเดียว</span>}</div></Link><span>{project.environment}</span><span>{project.year} · {project.sprintNo}</span><time>{formatFlexibleDate(project.createdAt, false)}</time><button className="secondary-button" onClick={() => setManagedId(project.id)}>{project.canManage ? "แก้ไข / ย้าย" : "ประวัติ"}</button></article>)}</section> : projects.length && hasQuery ? <section className="panel project-zero project-search-empty"><Search size={34} /><h2>ไม่พบ Project</h2><p>ไม่พบ Project ที่ตรงกับ “{projectSearch.trim()}”</p><button className="secondary-button" onClick={() => setProjectSearch("")}>ล้างการค้นหา</button></section> : <section className="panel project-zero"><FolderKanban size={34} /><h2>ยังไม่มี Project</h2><p>สร้าง Project แรกเพื่ออัปโหลด Testcase และเริ่มบันทึกผล</p>{canCreate && <button className="primary-button" onClick={onAdd}><PlusIcon />เพิ่ม Project</button>}</section>}
+      {managed && <div className="modal-backdrop"><div className="project-dialog project-management-dialog"><button className="icon-button close-button" onClick={() => setManagedId(null)} aria-label="ปิด"><X size={18} /></button><ProjectManagement project={managed} onSaved={(project) => { onUpdated(project); }} /></div></div>}
     </div>
   );
 }
@@ -615,6 +626,8 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
   const [viewingSheet, setViewingSheet] = useState<WorkbookSheet | null>(null);
   const [loadingWorkbook, setLoadingWorkbook] = useState(false);
   const evidenceInput = useRef<HTMLInputElement>(null);
+  const [compressVideo, setCompressVideo] = useState(false);
+  const [uploadStage, setUploadStage] = useState("");
   const resultSheets = focusedSheetName
     ? source?.sheets.filter((sheet) => sheet.name === focusedSheetName) ?? []
     : associatedSheets ?? source?.sheets.filter((sheet) => sheet.name.trim().toUpperCase() === value.id.trim().toUpperCase() || testCaseIdsFromSheet(sheet).some((id) => testCaseIdentity(id) === testCaseIdentity(value.id))) ?? [];
@@ -662,6 +675,9 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
     const createdAt = new Date().toISOString();
     const result: TestResult = {
       id: crypto.randomUUID(),
+      testerName: draft.executedBy.trim() || currentUserName.trim(),
+      source: 'web',
+      sourceSheetName: focusedSheetName || undefined,
       status: draft.status,
       actualResult: actualResult.trim(),
       apiResponse: apiResponse.trim(),
@@ -676,7 +692,7 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
       remark: actualResult.trim() || draft.remark,
       evidence: [],
       results: editingResultId
-        ? (draft.results ?? []).map((item) => testResultIdentity(item) === editingResultId ? { ...result, id: item.id, sourceSheetName: item.sourceSheetName, createdAt: item.createdAt } : item)
+        ? (draft.results ?? []).map((item) => testResultIdentity(item) === editingResultId ? { ...result, id: item.id, sourceSheetName: item.sourceSheetName, source:item.source ?? (item.sourceSheetName ? 'sheets' : 'web'), createdAt: item.createdAt,origin:item.origin, testerName:item.testerName ?? item.origin?.authorName ?? result.testerName } : item)
         : [result, ...(draft.results ?? [])],
     });
     setSavingResult(true);
@@ -789,16 +805,35 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
   async function uploadEvidence(files?: ArrayLike<File>) {
     const selectedFiles = Array.from(files ?? []);
     if (!selectedFiles.length) return;
-    const invalidFile = selectedFiles.find((file) => !file.type.startsWith("image/") || file.size > 10 * 1024 * 1024);
+    const invalidFile = selectedFiles.find((file) => validateEvidenceFile(file));
     if (invalidFile) {
-      setError(!invalidFile.type.startsWith("image/") ? `${invalidFile.name} ไม่ใช่ไฟล์รูปภาพ` : `${invalidFile.name} มีขนาดเกิน 10 MB`);
+      setError(`${invalidFile.name}: ${validateEvidenceFile(invalidFile)}`);
       return;
     }
     setUploadingEvidence(true);
     setError("");
     try {
       for (const file of selectedFiles) {
-        const prepared = await compressEvidenceImage(file);
+        setUploadStage(`เตรียม ${file.name}`);
+        const prepared = file.type.startsWith("video/") && compressVideo
+          ? await compressEvidenceVideo(file, (percent) => setUploadStage(`บีบอัด ${file.name} · ${percent}%`))
+          : await compressEvidenceImage(file);
+        if (file.type.startsWith("video/")) {
+          setUploadStage(`อัปโหลด ${file.name}${prepared.compressed ? ` · ลดเหลือ ${(prepared.file.size / 1024 / 1024).toFixed(1)} MB` : compressVideo ? " · ใช้ไฟล์ต้นฉบับ" : ""}`);
+          const api = `/api/projects/${projectId}/evidence/upload`;
+          const signed = await fetch(api, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: prepared.file.name, type: prepared.file.type, size: prepared.file.size, testCaseId: draft.id }) });
+          const upload = await signed.json();
+          if (!signed.ok) throw new Error(upload.error ?? "เตรียม Upload ไม่สำเร็จ");
+          let sent: Response;
+          try { sent = await fetch(upload.uploadUrl, { method: "PUT", headers: { "Content-Type": prepared.file.type }, body: prepared.file }); }
+          catch { throw new Error("อัปโหลดวิดีโอไม่สำเร็จ กรุณาตรวจ CORS ของ R2 ให้รองรับเว็บนี้และ PUT"); }
+          if (!sent.ok) throw new Error("อัปโหลดวิดีโอไม่สำเร็จ");
+          const complete = await fetch(api, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ticket: upload.ticket }) });
+          const data = await complete.json();
+          if (!complete.ok) throw new Error(data.error ?? "ตรวจสอบ Upload ไม่สำเร็จ");
+          setDraft((current) => ({ ...current, evidence: [...current.evidence, data.evidence] }));
+          continue;
+        }
         const form = new FormData();
         form.set("file", prepared.file);
         form.set("testCaseId", draft.id);
@@ -813,7 +848,7 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
         setDraft((current) => ({ ...current, evidence: [...current.evidence, data.evidence] }));
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "อัปโหลดรูปไม่สำเร็จ");
+      setError(reason instanceof Error ? reason.message : "อัปโหลดหลักฐานไม่สำเร็จ");
     } finally {
       setUploadingEvidence(false);
       if (evidenceInput.current) evidenceInput.current.value = "";
@@ -843,10 +878,10 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
         if (!uploadingEvidence) void uploadEvidence(event.dataTransfer.files);
       }}
     >
-      <input ref={evidenceInput} type="file" accept="image/*" multiple hidden onChange={(event) => void uploadEvidence(event.target.files ?? undefined)} />
+      <input ref={evidenceInput} type="file" accept={EVIDENCE_ACCEPT} multiple hidden onChange={(event) => void uploadEvidence(event.target.files ?? undefined)} />
       {uploadingEvidence ? <LoaderCircle className="spin" size={24} /> : <Upload size={24} />}
-      <div><strong>{uploadingEvidence ? "กำลังบีบอัดและอัปโหลดไป Google Drive..." : "ลากรูปมาวางที่นี่"}</strong><small>{uploadingEvidence ? "ระบบกำลังลดขนาดรูป กรุณารอสักครู่" : `หรือคลิกเพื่อเลือกรูปสำหรับ${label} · บีบอัดอัตโนมัติ · เลือกได้หลายรูป · ไฟล์ต้นฉบับไม่เกิน 10 MB`}</small></div>
-      <span>{draft.evidence.length} รูป</span>
+      <div><strong>{uploadingEvidence ? uploadStage : "ลากรูปหรือวิดีโอมาวางที่นี่"}</strong><small>{uploadingEvidence ? "กรุณารอสักครู่" : `หรือคลิกเลือกหลักฐานสำหรับ${label} · รูปไม่เกิน 10 MB · วิดีโอ MP4, WebM, MOV ไม่เกิน 25 MB`}</small></div>
+      <span>{draft.evidence.length} ไฟล์</span>
     </div>;
   }
   function renderResultFields(submitLabel: string, onCancel?: () => void) {
@@ -856,7 +891,8 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
       <label className="text-field"><span>Log</span><textarea className="code-input" rows={7} value={log} onChange={(event) => setLog(event.target.value)} placeholder="วาง application log" /></label></div>
       {resultCustomFields.length > 0 && <div className="result-custom-fields"><div className="result-form-heading"><div><span>ฟิลด์ Result จาก tab {draft.id}</span><small>ดึงจากหัวตาราง Result ของชีตนี้</small></div><strong>{resultCustomFields.length} fields</strong></div><div className="dynamic-field-grid">{resultCustomFields.map((field) => <label className="text-field" key={field.key}><span>{field.label}</span>{field.value.includes("\n") || field.value.length > 100 ? <textarea rows={3} value={field.value} onChange={(event) => setResultCustomFields((current) => current.map((item) => item.key === field.key ? { ...item, value: event.target.value } : item))} /> : <input value={field.value} onChange={(event) => setResultCustomFields((current) => current.map((item) => item.key === field.key ? { ...item, value: event.target.value } : item))} />}</label>)}</div></div>}
       <div className="result-evidence-entry">
-        <span className="field-label">รูปหลักฐานของ Result นี้</span>
+        <span className="field-label">หลักฐานของ Result นี้</span>
+        <label className="video-compression-option"><input type="checkbox" checked={compressVideo} onChange={(event) => setCompressVideo(event.target.checked)} disabled={uploadingEvidence} />บีบอัดวิดีโอก่อนอัปโหลด (คลิปไม่เกิน 2 นาที · ใช้เวลาใกล้เคียงความยาวคลิป)</label>
         <ImageViewerGallery images={evidenceViewerImages(draft.evidence)} />
         {renderEvidencePicker(" Result นี้")}
       </div>
@@ -871,7 +907,7 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
       <label className="text-field"><span>ชื่อ Defect</span><input value={defectTitle} onChange={(event) => setDefectTitle(event.target.value)} placeholder="ชื่อหรือรายละเอียดย่อ" /></label>
       <label className="text-field"><span>ผลที่พบ / Actual result</span><textarea rows={3} value={defectResult} onChange={(event) => setDefectResult(event.target.value)} placeholder="รายละเอียดบั๊กที่พบใน Test case นี้" /></label>
       <div className="result-input-grid"><label className="text-field"><span>API response</span><textarea className="code-input" rows={7} value={apiResponse} onChange={(event) => setApiResponse(event.target.value)} placeholder="วาง response JSON หรือข้อความ" /></label><label className="text-field"><span>Log</span><textarea className="code-input" rows={7} value={log} onChange={(event) => setLog(event.target.value)} placeholder="วาง application log" /></label></div>
-      <div className="result-evidence-entry"><span className="field-label">รูปหลักฐานของ Defect นี้</span><ImageViewerGallery images={evidenceViewerImages(draft.evidence)} />{renderEvidencePicker(" Defect นี้")}</div>
+      <div className="result-evidence-entry"><span className="field-label">หลักฐานของ Defect นี้</span><label className="video-compression-option"><input type="checkbox" checked={compressVideo} onChange={(event) => setCompressVideo(event.target.checked)} disabled={uploadingEvidence} />บีบอัดวิดีโอก่อนอัปโหลด (คลิปไม่เกิน 2 นาที)</label><ImageViewerGallery images={evidenceViewerImages(draft.evidence)} />{renderEvidencePicker(" Defect นี้")}</div>
       <div className="two-column-fields"><label><span>สถานะ Defect</span><select value={defectStatus} onChange={(event) => setDefectStatus(event.target.value)}><option>Open</option><option>In Progress</option><option>Resolved</option><option>Closed</option></select></label><label><span>Jira card URL</span><input type="url" value={jiraUrl} onChange={(event) => setJiraUrl(event.target.value)} placeholder="https://...atlassian.net/browse/..." /></label></div>
       <div className="result-editor-actions">{onCancel && <button className="secondary-button" type="button" onClick={onCancel} disabled={savingResult}>ยกเลิกการแก้ไข</button>}<button className="primary-button add-result-button" type="button" onClick={() => void saveDefect()} disabled={savingResult}>{savingResult ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}{submitLabel}</button></div>
     </>;
@@ -924,7 +960,7 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
           </fieldset>
           {(draft.results?.length ?? 0) > 0 && <div className="result-preview-list">
             <div className="result-sheet-heading"><span>Preview Results</span><strong>{draft.results?.length} รายการ</strong></div>
-            {draft.results?.map((result, index) => { const resultKey = testResultIdentity(result); return <article key={resultKey} className={editingResultId === resultKey ? "editing" : ""}><header><strong>ผลที่ {index + 1}</strong><StatusBadge status={result.status} /><time>{formatFlexibleDate(result.createdAt)}</time>{!readOnly && editingResultId !== resultKey && <><button type="button" className="secondary-button result-edit-button" onClick={() => editResult(result)}>แก้ไข</button><button type="button" className="danger-button result-delete-button" disabled={savingResult} onClick={() => void deleteResult(result)}><Trash2 size={13} />ลบ</button></>}</header>{editingResultId === resultKey ? <div className="result-entry-block inline-result-editor"><div className="result-form-heading"><div><span>{`แก้ไขผลที่ ${index + 1} ของ ${draft.id}`}</span><small>บันทึกแล้วจะแทนที่ Result รายการนี้</small></div></div>{renderResultFields("บันทึกการแก้ไข Result", resetResultForm)}</div> : <>{result.actualResult && <p>{result.actualResult}</p>}{(result.customFields?.length ?? 0) > 0 && <dl className="result-custom-preview">{result.customFields?.map((field) => <div key={field.key}><dt>{field.label}</dt><dd>{field.value || "—"}</dd></div>)}</dl>}{result.apiResponse && <details><summary>API response</summary><pre>{result.apiResponse}</pre></details>}{result.log && <details><summary>Log</summary><pre>{result.log}</pre></details>}<ImageViewerGallery className="drive-evidence-gallery result-evidence-gallery" images={evidenceViewerImages(result.evidence)} /></>}</article>; })}
+            {draft.results?.map((result, index) => { const resultKey = testResultIdentity(result); return <article key={resultKey} className={editingResultId === resultKey ? "editing" : ""}><header><strong>ผลที่ {index + 1}</strong><StatusBadge status={result.status} /><time>{formatFlexibleDate(result.createdAt)}</time>{!readOnly && editingResultId !== resultKey && <><button type="button" className="secondary-button result-edit-button" onClick={() => editResult(result)}>แก้ไข</button><button type="button" className="danger-button result-delete-button" disabled={savingResult} onClick={() => void deleteResult(result)}><Trash2 size={13} />ลบ</button></>}</header>{result.origin && <small className="result-origin-label">{result.origin.inferred ? 'Sprint ที่อนุมานจากข้อมูลเดิม/นำเข้า' : 'Sprint ต้นกำเนิด'}: {result.origin.sprintName} · {result.origin.year}{!result.origin.inferred && result.origin.authorName ? ` · ผู้บันทึก: ${result.origin.authorName}` : ' · ไม่ระบุผู้บันทึกต้นกำเนิด'}</small>}{editingResultId === resultKey ? <div className="result-entry-block inline-result-editor"><div className="result-form-heading"><div><span>{`แก้ไขผลที่ ${index + 1} ของ ${draft.id}`}</span><small>บันทึกแล้วจะแทนที่ Result รายการนี้</small></div></div>{renderResultFields("บันทึกการแก้ไข Result", resetResultForm)}</div> : <>{result.actualResult && <p>{result.actualResult}</p>}{(result.customFields?.length ?? 0) > 0 && <dl className="result-custom-preview">{result.customFields?.map((field) => <div key={field.key}><dt>{field.label}</dt><dd>{field.value || "—"}</dd></div>)}</dl>}{result.apiResponse && <details><summary>API response</summary><pre>{result.apiResponse}</pre></details>}{result.log && <details><summary>Log</summary><pre>{result.log}</pre></details>}<ImageViewerGallery className="drive-evidence-gallery result-evidence-gallery" images={evidenceViewerImages(result.evidence)} /></>}</article>; })}
           </div>}
           {focusedSheetName && loadingSheetDetails && <div className="result-preview-list sheet-result-evidence"><SheetContentShimmer /></div>}
           {focusedSheetName && !loadingSheetDetails && source && (() => { const focusedSheet = source.sheets.find((sheet) => sheet.name === focusedSheetName); return focusedSheet ? <div className="result-preview-list sheet-result-evidence"><div className="result-sheet-heading"><span>รูปหลักฐานของ Result: {focusedSheetName}</span><strong>{focusedSheet.imageCount} รูป</strong></div>{source.bufferLoaded ? <ResultSheetViewer source={source} sheet={focusedSheet} imagesOnly /> : <SheetContentShimmer />}</div> : null; })()}
@@ -965,6 +1001,8 @@ export function QaWorkspace({
   currentUser,
   testCaseId,
   sheetName,
+  planningSprint,
+  canCreateProject = false,
 }: {
   configured: boolean;
   initialProjects: Project[];
@@ -975,11 +1013,17 @@ export function QaWorkspace({
   currentUser: CurrentUser | null;
   testCaseId?: string;
   sheetName?: string;
+  planningSprint?: Sprint;
+  canCreateProject?: boolean;
 }) {
   const router = useRouter();
   const cachedWorkspace = selectedProjectId ? workspaceNavigationCache.get(selectedProjectId) : undefined;
   const [projects, setProjects] = useState(initialProjects);
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
+  const scopedSprintId = planningSprint?.id ?? selectedProject?.sprintId;
+  const scopedYear = planningSprint?.year ?? selectedProject?.year;
+  const sprintBase = scopedSprintId && scopedYear ? `/groups/${groupId}/years/${scopedYear}/sprints/${scopedSprintId}` : "";
+  const projectsHref = sprintBase ? `${sprintBase}/projects` : `/groups/${groupId}/years`;
   const canEditProject = selectedProject?.canEdit === true;
   const canManageProject = selectedProject?.canManage === true;
   const requiresDetailedGoogleData = Boolean((testCaseId || sheetName) && selectedProject?.googleSheetId);
@@ -996,6 +1040,18 @@ export function QaWorkspace({
   const [selectedCase, setSelectedCase] = useState<TestCase | null>(null);
   const [showUpload, setShowUpload] = useState(false);
   const [showCreateCase, setShowCreateCase] = useState(false);
+  const [assignmentData,setAssignmentData]=useState<AssignmentData|null>(null);
+  const [assignmentProjectId,setAssignmentProjectId]=useState('');
+  const [assignmentVersion,setAssignmentVersion]=useState(0);
+  const [assignmentSelection,setAssignmentSelection]=useState<{projectId:string;keys:string[]}>({projectId:'',keys:[]});
+  const [showCaseAssignment,setShowCaseAssignment]=useState(false);
+  const selectedAssignmentKeys=assignmentSelection.projectId===selectedProjectId ? assignmentSelection.keys : [];
+  useEffect(()=>{
+    if(!selectedProjectId || activePage!=='test-cases' || testCaseId || sheetName) return;
+    let active=true;
+    void getTestCaseAssignments(selectedProjectId).then(data=>{if(active){setAssignmentData(data);setAssignmentProjectId(selectedProjectId);}}).catch(()=>{if(active){setAssignmentData({team:[],assignments:[],cases:[],error:'โหลดผู้รับผิดชอบไม่สำเร็จ กรุณาลองใหม่'});setAssignmentProjectId(selectedProjectId);}});
+    return ()=>{active=false;};
+  },[selectedProjectId,activePage,testCaseId,sheetName,assignmentVersion]);
   const [showProjectDialog, setShowProjectDialog] = useState(false);
   const [showGoogleSheetDialog, setShowGoogleSheetDialog] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
@@ -1087,6 +1143,20 @@ export function QaWorkspace({
     const aliases = caseSheetAliases.get(testCaseIdentity(item.id)) ?? [];
     return aliases.length ? aliases.map((sheetAlias) => ({ item, sheetAlias })) : [{ item, sheetAlias: "" }];
   }), [caseSheetAliases, filteredCases]);
+  const assignmentRowKey=(id:string,sheetAlias:string)=>JSON.stringify([id,sheetAlias]);
+  const assignmentTargets=cases.flatMap(item=>{
+    const aliases=caseSheetAliases.get(testCaseIdentity(item.id)) ?? [];
+    return (aliases.length ? aliases : ['']).filter(alias=>selectedAssignmentKeys.includes(assignmentRowKey(item.id,alias))).map(alias=>({caseId:item.recordId,testcaseKey:item.id,sourceSheet:alias}));
+  });
+  function toggleAssignment(id:string,alias:string,checked:boolean) {
+    const key=assignmentRowKey(id,alias);
+    setAssignmentSelection({projectId:selectedProjectId ?? '',keys:checked ? [...new Set([...selectedAssignmentKeys,key])] : selectedAssignmentKeys.filter(k=>k!==key)});
+  }
+  function assigneeNames(item:TestCase,alias:string) {
+    if(assignmentProjectId!==selectedProjectId || assignmentData?.error) return '';
+    const recordId=item.recordId || assignmentData?.cases.find(c=>c.testcase_key===item.id)?.id;
+    return assignmentData?.assignments.filter(a=>a.test_case_id===recordId && a.source_sheet===alias).map(a=>assignmentData.team.find(m=>m.userId===a.user_id)?.name ?? 'สมาชิกเดิม').join(', ') ?? '';
+  }
   const activeSelectedCase = testCaseId
     ? cases.find((item) => item.id.toUpperCase() === decodeURIComponent(testCaseId).toUpperCase()) ?? null
     : selectedCase;
@@ -1134,7 +1204,7 @@ export function QaWorkspace({
     appVersion: "",
     environment: selectedProject?.environment ?? "",
     resultReference: activeSheet.name,
-    executedBy: currentUser?.name ?? "",
+    executedBy: "",
     executedDate: "",
     executedTime: "",
     remark: `นำเข้าจาก tab ${activeSheet.name}`,
@@ -1355,7 +1425,7 @@ export function QaWorkspace({
           sourceRow: sheet.order + 1,
           platform: "", condition: "", scenario: "", name: sheet.name, steps: "", expected: "",
           status: "Not Start", device: "", testData: "", appVersion: "", environment: selectedProject.environment,
-          resultReference: sheet.name, executedBy: currentUser?.name ?? "", executedDate: "", executedTime: "",
+          resultReference: sheet.name, executedBy: "", executedDate: "", executedTime: "",
           remark: `นำเข้าจาก tab ${sheet.name}`, evidence: [], results: [], defects: [],
         });
       }
@@ -1379,6 +1449,8 @@ export function QaWorkspace({
         } else {
           testCase.results = [...(testCase.results ?? []), {
             id: importedResult.resultId,
+            testerName: testCase.executedBy || '',
+            source: 'sheets',
             sourceSheetName: importedResult.sheetName,
             status: testCase.status,
             actualResult: importedResult.actualResult,
@@ -1426,6 +1498,8 @@ export function QaWorkspace({
         if (!result && image.resultId.startsWith("SHEET-IMPORT-")) {
           result = {
             id: image.resultId,
+            testerName: testCase.executedBy || '',
+            source: 'sheets',
             sourceSheetName: image.sheetName,
             status: testCase.status,
             actualResult: `นำเข้าจาก Google Sheets · ${image.sheetName}`,
@@ -1555,6 +1629,7 @@ export function QaWorkspace({
     setProjects((current) => current.filter((item) => item.id !== project.id));
     setCases([]);
     setSource(null);
+    if(result.warnings.length) {router.push(`/groups/${groupId}/years?googleCleanupWarning=1`);return;}
     flash(`ลบ Project ${project.name} แล้ว`);
     router.push(`/groups/${groupId}/projects`);
   }
@@ -1593,12 +1668,14 @@ export function QaWorkspace({
         {!selectedProject ? <>
           <nav className="main-nav" aria-label="เมนูระดับกลุ่ม">
             <Link href="/groups"><Users size={19} />Groups</Link>
-            <Link className="active" href={`/groups/${groupId}/projects`}><FolderKanban size={19} />Projects<span className="nav-count">{projects.length}</span></Link>
+            <Link href={`/groups/${groupId}/years`}>ปี / Sprints</Link>
+            {sprintBase && <Link href={sprintBase}><LayoutDashboard size={19} />Sprint Dashboard</Link>}
+            <Link className="active" href={projectsHref}><FolderKanban size={19} />Projects<span className="nav-count">{projects.length}</span></Link>
           </nav>
           <div className="sidebar-footer"><button><Settings size={18} />ตั้งค่ากลุ่ม</button></div>
         </> : <>
           <div className="sidebar-section project-context">
-            <Link className="back-to-projects" href={`/groups/${groupId}/projects`}><ChevronRight size={15} />กลับไป Projects</Link>
+            <Link className="back-to-projects" href={projectsHref}><ChevronRight size={15} />กลับไป Projects</Link>
             <label className="project-switcher"><span>PROJECT</span><select value={selectedProject.id} onChange={(event) => router.push(`/groups/${groupId}/projects/${event.target.value}/overview`)}>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></label>
           </div>
           <nav className="main-nav project-nav" aria-label="Project Workspace">
@@ -1617,13 +1694,13 @@ export function QaWorkspace({
       <main className="main-content">
         <header className="topbar">
           <button className="icon-button mobile-menu" onClick={() => setMobileNav(true)} aria-label="เปิดเมนู"><Menu size={21} /></button>
-          <div className="breadcrumb"><Link href="/groups">Groups</Link><ChevronRight size={15} /><Link href={`/groups/${groupId}/projects`}>Projects</Link>{selectedProject && <><ChevronRight size={15} /><strong>{selectedProject.name}</strong></>}</div>
+          <div className="breadcrumb"><Link href="/groups">Groups</Link><ChevronRight size={15} /><Link href={`/groups/${groupId}/years`}>ปี</Link>{scopedYear && <><ChevronRight size={15} /><Link href={`/groups/${groupId}/years/${scopedYear}/sprints`}>{scopedYear}</Link></>}{sprintBase && <><ChevronRight size={15} /><Link href={sprintBase}>{planningSprint?.name ?? selectedProject?.sprintNo}</Link></>}<ChevronRight size={15} /><Link href={projectsHref}>Projects</Link>{selectedProject && <><ChevronRight size={15} /><strong>{selectedProject.name}</strong></>}</div>
           <div className="topbar-actions">{selectedProject && currentEnvironment && <span className="environment-pill"><span />{currentEnvironment}</span>}</div>
         </header>
 
         <div className="page-content" id="dashboard">
           {((loadingWorkspace && !testCaseId && !sheetName) || pullingGoogle) && <div className="workspace-loading-overlay" role="status" aria-live="polite"><div className="workspace-loading-card"><LoaderCircle className="spin" size={42} /><strong>{pullingGoogle ? "กำลังโหลดข้อมูลจาก Google Sheets" : "กำลังโหลดข้อมูล Project"}</strong><span>กำลังอ่าน Testcase, ผลการทดสอบ และทุก tab จาก Google Sheets</span><small>กรุณารอสักครู่…</small></div></div>}
-          {!selectedProject ? <ProjectsHome projects={projects} error={projectsError} onAdd={() => setShowProjectDialog(true)} projectHref={(project) => `/groups/${groupId}/projects/${project.id}/overview`} /> : <>
+          {!selectedProject ? <ProjectsHome projects={projects} error={projectsError} canCreate={canCreateProject} onUpdated={(project) => { setProjects((current) => current.map((p) => p.id === project.id ? project : p).filter((p) => !planningSprint || p.sprintId === planningSprint.id)); router.refresh(); }} onAdd={() => setShowProjectDialog(true)} projectHref={(project) => `/groups/${groupId}/projects/${project.id}/overview`} /> : <>
           <section className="page-heading"><div><div className="title-line"><h1>{sheetName ? decodeURIComponent(sheetName) : activePage === "overview" ? selectedProject.name : ({ "test-cases": "Test cases", defects: "Defects", files: "เอกสาร/ไฟล์", settings: "ตั้งค่า Project" } as Record<string, string>)[activePage]}</h1>{selectedProject.sprintNo && <span className="sprint-pill">{selectedProject.sprintNo}</span>}{!canEditProject && <span className="read-only-badge">ดูอย่างเดียว</span>}{hasUnsyncedChanges && <span className="unsynced-pill">ยังไม่ Sync</span>}</div><p>{sheetName ? `รายละเอียด tab จาก Google Sheets · ${selectedProject.name}` : activePage === "overview" ? (selectedProject.description || "ภาพรวมการทดสอบของ Project") : selectedProject.name}</p></div><div className="heading-actions google-actions">
             {canEditProject && activePage === "files" && <button className="secondary-button" onClick={() => setShowUpload(true)}><Upload size={17} />ไฟล์ต้นฉบับ</button>}
             {(selectedProject.googleSheetId ? canEditProject : canManageProject) && <button className="secondary-button" onClick={() => void pullFromGoogle()} disabled={pullingGoogle}>{pullingGoogle ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}{selectedProject.googleSheetId ? "โหลดจาก Sheets" : "เชื่อม Google Sheet"}</button>}
@@ -1694,7 +1771,9 @@ export function QaWorkspace({
 
           {!testCaseId && !sheetName && activePage === "test-cases" && <section className="panel cases-panel" id="cases">
             <div className="cases-heading"><div><h2>Test cases</h2><span>{filteredCaseRows.length} รายการ</span></div><div className="table-actions">{canEditProject && <button className="primary-button add-testcase-button" onClick={() => setShowCreateCase(true)}><PlusIcon />เพิ่ม Test Case</button>}<label className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="ค้นหา ID หรือชื่อ Testcase" /></label><label className="filter-select"><Filter size={16} /><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as TestStatus | "All")}><option value="All">ทุกสถานะ</option>{TEST_STATUSES.map((status) => <option key={status} value={status}>{statusMeta[status].label}</option>)}</select><ChevronDown size={15} /></label></div></div>
-            <div className="table-wrap"><table><thead><tr><th>TESTCASE</th><th>SCENARIO</th><th>PLATFORM</th><th>DEVICE</th><th>STATUS</th><th>ผู้ทดสอบ</th><th aria-label="การทำงาน" /></tr></thead><tbody>{filteredCaseRows.map(({ item, sheetAlias }) => { const detailPath = sheetAlias ? `/groups/${groupId}/projects/${selectedProject.id}/sheets/${encodeURIComponent(sheetAlias)}` : `/groups/${groupId}/projects/${selectedProject.id}/test-cases/${encodeURIComponent(item.id)}`; return <tr key={`${item.id}:${sheetAlias || "testcase"}`} onClick={() => openTestCaseDetail(detailPath)}><td><span className="table-id">{item.id}{sheetAlias ? ` (${sheetAlias})` : ""}</span><strong>{item.name || "ไม่มีชื่อ Testcase"}</strong></td><td><span className="truncate-cell">{item.scenario || "—"}</span></td><td><span className="platform-chip">{item.platform || "—"}</span></td><td>{item.device || "—"}</td><td><StatusBadge status={item.status} /></td><td><span className="tester"><span>{item.executedBy ? item.executedBy.slice(0, 2).toUpperCase() : "—"}</span>{item.executedBy || "ยังไม่มอบหมาย"}</span></td><td><button className="icon-button" onClick={(event) => { event.stopPropagation(); openTestCaseDetail(detailPath); }} aria-label={`เปิด ${item.id}${sheetAlias ? ` ${sheetAlias}` : ""}`}><ChevronRight size={18} /></button></td></tr>; })}</tbody></table>{!filteredCaseRows.length && <div className="empty-state">{cases.length ? <Search size={26} /> : <FileSpreadsheet size={26} />}<strong>{cases.length ? "ไม่พบ Testcase" : "ยังไม่มี Testcase"}</strong><span>{cases.length ? "ลองเปลี่ยนคำค้นหาหรือตัวกรองสถานะ" : "ข้อมูลจะแสดงหลังจากอัปโหลดไฟล์ Excel"}</span>{!cases.length && <button className="secondary-button" onClick={() => setShowUpload(true)}><Upload size={16} />อัปโหลดไฟล์</button>}</div>}</div>
+            {canEditProject && <div className="case-assignment-selection"><label className="case-assignment-checkbox"><input type="checkbox" aria-label="เลือกทุกแถวที่แสดงเพื่อมอบหมาย" checked={!!filteredCaseRows.length && filteredCaseRows.every(r=>selectedAssignmentKeys.includes(assignmentRowKey(r.item.id,r.sheetAlias)))} onChange={e=>setAssignmentSelection({projectId:selectedProjectId ?? '',keys:e.target.checked ? [...new Set([...selectedAssignmentKeys,...filteredCaseRows.map(r=>assignmentRowKey(r.item.id,r.sheetAlias))])] : selectedAssignmentKeys.filter(k=>!filteredCaseRows.some(r=>assignmentRowKey(r.item.id,r.sheetAlias)===k))})}/>เลือกทุกแถวที่แสดง</label><span>เลือก {assignmentTargets.length} แถว</span><button type="button" className="secondary-button" disabled={!assignmentTargets.length || assignmentProjectId!==selectedProjectId || !assignmentData || !!assignmentData.error} onClick={()=>setShowCaseAssignment(true)}><Users size={16}/>มอบหมาย QA</button>{selectedAssignmentKeys.length>0 && <button type="button" className="secondary-button" onClick={()=>setAssignmentSelection({projectId:selectedProjectId ?? '',keys:[]})}>ล้างการเลือก</button>}</div>}
+            {assignmentProjectId===selectedProjectId && assignmentData?.error && <p className="form-error" role="alert" style={{padding:'0 20px'}}>โหลดผู้รับผิดชอบไม่ได้: {assignmentData.error} · หากยังไม่ได้ติดตั้ง ให้รัน migration personal_test_performance ก่อน</p>}
+            <div className="table-wrap"><table><thead><tr>{canEditProject && <th aria-label="เลือกเคสเพื่อมอบหมาย" />}<th>TESTCASE</th><th>SCENARIO</th><th>PLATFORM</th><th>DEVICE</th><th>STATUS</th><th>ผู้ทดสอบ</th><th aria-label="การทำงาน" /></tr></thead><tbody>{filteredCaseRows.map(({ item, sheetAlias }) => { const detailPath = sheetAlias ? `/groups/${groupId}/projects/${selectedProject.id}/sheets/${encodeURIComponent(sheetAlias)}` : `/groups/${groupId}/projects/${selectedProject.id}/test-cases/${encodeURIComponent(item.id)}`; return <tr key={`${item.id}:${sheetAlias || "testcase"}`} onClick={() => openTestCaseDetail(detailPath)}>{canEditProject && <td onClick={e=>e.stopPropagation()}><label className="case-assignment-checkbox"><input type="checkbox" aria-label={`เลือก ${item.id}${sheetAlias ? ` (${sheetAlias})` : ""} เพื่อมอบหมาย`} checked={selectedAssignmentKeys.includes(assignmentRowKey(item.id,sheetAlias))} onChange={e=>toggleAssignment(item.id,sheetAlias,e.target.checked)}/></label></td>}<td><span className="table-id">{item.id}{sheetAlias ? ` (${sheetAlias})` : ""}</span><strong>{item.name || "ไม่มีชื่อ Testcase"}</strong></td><td><span className="truncate-cell">{item.scenario || "—"}</span></td><td><span className="platform-chip">{item.platform || "—"}</span></td><td>{item.device || "—"}</td><td><StatusBadge status={item.status} /></td><td><span className="tester"><span>{item.executedBy ? item.executedBy.slice(0, 2).toUpperCase() : "—"}</span>{item.executedBy || "ยังไม่มีผู้ทดสอบ"}</span>{assigneeNames(item,sheetAlias) && <small className="case-assignees">รับผิดชอบ: {assigneeNames(item,sheetAlias)}</small>}</td><td><button className="icon-button" onClick={(event) => { event.stopPropagation(); openTestCaseDetail(detailPath); }} aria-label={`เปิด ${item.id}${sheetAlias ? ` ${sheetAlias}` : ""}`}><ChevronRight size={18} /></button></td></tr>; })}</tbody></table>{!filteredCaseRows.length && <div className="empty-state">{cases.length ? <Search size={26} /> : <FileSpreadsheet size={26} />}<strong>{cases.length ? "ไม่พบ Testcase" : "ยังไม่มี Testcase"}</strong><span>{cases.length ? "ลองเปลี่ยนคำค้นหาหรือตัวกรองสถานะ" : "ข้อมูลจะแสดงหลังจากอัปโหลดไฟล์ Excel"}</span>{!cases.length && <button className="secondary-button" onClick={() => setShowUpload(true)}><Upload size={16} />อัปโหลดไฟล์</button>}</div>}</div>
           </section>}
           {!testCaseId && !sheetName && activePage === "test-cases" && source && <section className="panel workbook-panel non-testcase-sheets-panel">
             <div className="panel-heading"><div><h2>แท็บอื่นใน Google Sheets</h2><p>แสดงเฉพาะแท็บที่ระบบยังผูกกับ Test Case ไม่ได้</p></div><span className="sheet-total">{otherSheets.length} tabs</span></div>
@@ -1706,7 +1785,7 @@ export function QaWorkspace({
 
           {!testCaseId && activePage === "files" && !source && <section className="panel route-empty-state"><FileArchive size={34} /><h2>ยังไม่มีเอกสารหรือไฟล์ต้นฉบับ</h2><p>{canEditProject ? "อัปโหลด Excel หรือเชื่อม Google Sheets เพื่อเริ่มต้น" : "ยังไม่มีไฟล์ใน Project นี้"}</p>{canEditProject && <button className="primary-button" onClick={() => setShowUpload(true)}><Upload size={16} />อัปโหลดไฟล์</button>}</section>}
 
-          {!testCaseId && activePage === "settings" && <section className="settings-grid"><article className="panel settings-card"><h2>ข้อมูล Project</h2><dl><div><dt>ชื่อ Project</dt><dd>{selectedProject.name}</dd></div><div><dt>Environment</dt><dd>{selectedProject.environment}</dd></div><div><dt>Google Sheets</dt><dd>{selectedProject.googleSheetUrl || "ยังไม่ได้เชื่อม"}</dd></div></dl>{canManageProject && <button className="secondary-button" onClick={() => setShowGoogleSheetDialog(true)}><Link2 size={16} />ตั้งค่า Google Sheet</button>}</article>{selectedProject.canDelete && <article className="panel settings-card danger-zone"><h2>ลบ Project</h2><p>Test cases, ผลทดสอบ, รูปใน R2 และ Approval จะถูกลบ แต่ Google Sheets จะยังคงอยู่</p><button className="danger-button" onClick={() => void removeSelectedProject()}><Trash2 size={16} />ลบ Project</button></article>}</section>}
+          {!testCaseId && activePage === "settings" && <><section className="settings-grid"><article className="panel settings-card"><h2>ข้อมูล Project</h2><dl><div><dt>ชื่อ Project</dt><dd>{selectedProject.name}</dd></div><div><dt>Environment</dt><dd>{selectedProject.environment}</dd></div><div><dt>Google Sheets</dt><dd>{selectedProject.googleSheetUrl || "ยังไม่ได้เชื่อม"}</dd></div></dl>{canManageProject && <button className="secondary-button" onClick={() => setShowGoogleSheetDialog(true)}><Link2 size={16} />ตั้งค่า Google Sheet</button>}</article>{selectedProject.canDelete && <article className="panel settings-card danger-zone"><h2>ลบ Project</h2><p>Test cases, ผลทดสอบ, หลักฐานใน R2 และ Approval จะถูกลบ แต่ Google Sheets จะยังคงอยู่</p><button className="danger-button" onClick={() => void removeSelectedProject()}><Trash2 size={16} />ลบ Project</button></article>}</section><div className="panel project-settings-management"><ProjectManagement project={selectedProject} onSaved={(project) => { setProjects((current) => current.map((p) => p.id === project.id ? project : p)); router.refresh(); }} /></div></>}
           </>}
         </div>
       </main>
@@ -1720,9 +1799,11 @@ export function QaWorkspace({
         flash(`บันทึก ${workspace.cases.length} Testcases ลง Supabase แล้ว`);
       }} />}
       {canEditProject && showCreateCase && selectedProject && <CreateTestCaseDialog existingIds={cases.map((item) => item.id)} nextSourceRow={Math.max(1, ...cases.map((item) => item.sourceRow)) + 1} defaultEnvironment={selectedProject.environment} currentUserName={currentUser?.name ?? ""} onClose={() => setShowCreateCase(false)} onCreated={createTestCase} />}
-      {showProjectDialog && <ProjectDialog groupId={groupId} onClose={() => setShowProjectDialog(false)} onCreated={(project) => { setProjects((current) => [project, ...current]); setShowProjectDialog(false); router.push(`/groups/${groupId}/projects/${project.id}/overview`); }} />}
+      {canCreateProject && showProjectDialog && <ProjectDialog groupId={groupId} sprint={planningSprint} onClose={() => setShowProjectDialog(false)} onCreated={(project) => { setProjects((current) => [project, ...current]); setShowProjectDialog(false); router.push(`/groups/${groupId}/projects/${project.id}/overview`); }} />}
       {canManageProject && showGoogleSheetDialog && selectedProject && <GoogleSheetDialog project={selectedProject} onClose={() => setShowGoogleSheetDialog(false)} onConnected={(project) => { setProjects((current) => current.map((item) => item.id === project.id ? project : item)); setShowGoogleSheetDialog(false); flash("เชื่อม Google Sheet แล้ว"); }} />}
       {syncConflictState && <SyncConflictDialog operation={syncConflictState.operation} conflicts={syncConflictState.conflicts} onCancel={() => setSyncConflictState(null)} onConfirm={confirmSyncConflicts} />}
+      <GoogleCleanupWarning />
+      {canEditProject && showCaseAssignment && selectedProject && assignmentProjectId===selectedProject.id && assignmentData && <TestCaseAssignmentDialog projectId={selectedProject.id} targets={assignmentTargets} data={assignmentData} onClose={()=>setShowCaseAssignment(false)} onSaved={()=>{setShowCaseAssignment(false);setAssignmentSelection({projectId:selectedProject.id,keys:[]});setAssignmentVersion(v=>v+1);flash('บันทึกผู้รับผิดชอบราย Test case แล้ว');router.refresh();}}/>}
       {toast && <div className="toast"><CheckCircle2 size={18} />{toast}</div>}
     </div>
   );

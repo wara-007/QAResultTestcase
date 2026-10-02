@@ -378,8 +378,8 @@ export async function persistTestCaseResult(projectId: string, testCase: TestCas
   const result = await supabase
     .from("test_executions")
     .upsert(execution, { onConflict: "test_case_id,attempt_no" })
-    .select("id")
+    .select("id,result_reference")
     .single();
   if (result.error) throw new Error(result.error.message);
-  return { ...testCase, recordId, executionId: result.data.id, persistedLocally: true };
+  return { ...testCase, results:parseStoredResults(result.data.result_reference).results, recordId, executionId: result.data.id, persistedLocally: true };
 }

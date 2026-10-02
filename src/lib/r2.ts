@@ -1,6 +1,7 @@
 import "server-only";
 
-import { DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 type R2Config = {
   bucket: string;
@@ -20,6 +21,8 @@ export function getR2Config(): R2Config | null {
     publicBaseUrl,
     client: new S3Client({
       region: "auto",
+      requestChecksumCalculation: "WHEN_REQUIRED",
+      responseChecksumValidation: "WHEN_REQUIRED",
       endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
       credentials: { accessKeyId, secretAccessKey },
     }),
@@ -43,6 +46,18 @@ export async function downloadR2Object(key: string) {
   const config = getR2Config();
   if (!config) throw new Error("ยังไม่ได้ตั้งค่า Cloudflare R2");
   return config.client.send(new GetObjectCommand({ Bucket: config.bucket, Key: key }));
+}
+
+export async function presignR2Upload(key: string, type: string, size: number) {
+  const config = getR2Config();
+  if (!config) throw new Error("กรุณาตั้งค่า Cloudflare R2 เพื่อเก็บวิดีโอ");
+  return getSignedUrl(config.client, new PutObjectCommand({ Bucket: config.bucket, Key: key, ContentType: type, ContentLength: size }), { expiresIn: 600, signableHeaders: new Set(["content-type", "content-length"]) });
+}
+
+export async function inspectR2Object(key: string) {
+  const config = getR2Config();
+  if (!config) throw new Error("กรุณาตั้งค่า Cloudflare R2");
+  return config.client.send(new HeadObjectCommand({ Bucket: config.bucket, Key: key }));
 }
 
 export async function deleteR2ObjectsByPrefix(prefix: string) {

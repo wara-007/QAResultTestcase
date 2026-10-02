@@ -24,7 +24,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ req
       drive.files.get({ fileId, fields: "mimeType" }),
       drive.files.get({ fileId, alt: "media" }, { responseType: "arraybuffer" }),
     ]);
-    const mimeType = metadata.data.mimeType?.startsWith("image/") ? metadata.data.mimeType : "application/octet-stream";
+    const mimeType = /^(image|video)\//.test(metadata.data.mimeType ?? "") ? metadata.data.mimeType! : "application/octet-stream";
     return new Response(content.data as ArrayBuffer, { headers: { "Content-Type": mimeType, "Cache-Control": "private, max-age=900", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox" } });
   } catch (reason) {
     return Response.json({ error: reason instanceof Error ? reason.message : "โหลดรูปไม่สำเร็จ" }, { status: 404 });

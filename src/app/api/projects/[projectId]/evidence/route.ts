@@ -6,6 +6,7 @@ import { googleOAuthClient, GOOGLE_USER_COOKIE, openGoogleToken } from "@/lib/go
 import { ProjectAccessError, requireProjectCapability } from "@/lib/project-access-server";
 import type { TestEvidence } from "@/lib/types";
 import { getR2Config, uploadR2Object } from "@/lib/r2";
+import { evidenceExtension, validateEvidenceFile } from "@/lib/evidence-media";
 
 export const runtime = "nodejs";
 
@@ -28,8 +29,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
     const form = await request.formData();
     const file = form.get("file");
     const testCaseId = String(form.get("testCaseId") ?? "").trim();
-    if (!(file instanceof File) || !file.type.startsWith("image/")) throw new Error("กรุณาเลือกไฟล์รูปภาพ");
-    if (file.size > 10 * 1024 * 1024) throw new Error("รูปต้องมีขนาดไม่เกิน 10 MB");
+    if (!(file instanceof File)) throw new Error("กรุณาเลือกไฟล์หลักฐาน");
+    const invalid = validateEvidenceFile(file);
+    if (invalid) throw new Error(invalid);
     // Result tabs are not always named TC-xx (for example RC DEF-04).
     // Keep validation focused on safe storage input; safeName() handles the
     // folder/object-key representation below.
@@ -41,7 +43,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
 
     const fileBuffer = Buffer.from(await file.arrayBuffer());
     if (getR2Config()) {
-      const extension = file.type === "image/webp" ? "webp" : file.type === "image/png" ? "png" : file.type === "image/jpeg" ? "jpg" : "image";
+      const extension = evidenceExtension(file.type);
       const objectId = randomUUID();
       const objectKey = `projects/${projectId}/${safeName(testCaseId)}/${objectId}.${extension}`;
       const publicUrl = await uploadR2Object(objectKey, fileBuffer, file.type);
@@ -61,7 +63,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
     const projectFolderId = await findOrCreateFolder(drive, safeName(project.name), rootId);
     const caseFolderId = await findOrCreateFolder(drive, safeName(testCaseId), projectFolderId);
     const uploaded = await drive.files.create({
-      requestBody: { name: `${Date.now()}-${safeName(file.name)}`, parents: [caseFolderId] },
+      requestBody: { name: `${Date.now()}-${safeName(file.name)}`, parents: [caseFolderId], appProperties: {qaProjectId:projectId,qaUploadedBy:access.userId} },
       media: { mimeType: file.type, body: Readable.from(fileBuffer) }, fields: "id,name,mimeType",
     });
     if (!uploaded.data.id) throw new Error("อัปโหลดรูปไป Google Drive ไม่สำเร็จ");
@@ -69,7 +71,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
     if (process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL) {
       await drive.permissions.create({ fileId: uploaded.data.id, requestBody: { type: "user", role: "reader", emailAddress: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL }, sendNotificationEmail: false });
     }
-    const evidence: TestEvidence = { fileId: uploaded.data.id, provider: "google-drive", name: uploaded.data.name ?? file.name, mimeType: uploaded.data.mimeType ?? file.type };
+    const evidence: TestEvidence = { fileId: uploaded.data.id, provider: "google-drive", uploadedBy:access.userId, name: uploaded.data.name ?? file.name, mimeType: uploaded.data.mimeType ?? file.type };
     return Response.json({ evidence, storage: "google-drive" });
   } catch (reason) {
     return Response.json({ error: reason instanceof Error ? reason.message : "อัปโหลดรูปไม่สำเร็จ" }, { status: reason instanceof ProjectAccessError ? reason.status : 400 });

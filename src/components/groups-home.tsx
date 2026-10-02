@@ -43,7 +43,7 @@ export function GroupsHome({ initialGroups, error, currentUser }: { initialGroup
               <h2>{group.name}</h2><p>{group.description || "พื้นที่ทำงานสำหรับทีม QA"}</p>
               <div className="group-card-footer"><span><FolderKanban size={15} />{group.projectCount} Projects</span><small>สร้างเมื่อ {new Intl.DateTimeFormat("th-TH", { dateStyle: "medium" }).format(new Date(group.createdAt))}</small></div></>;
             return <article className="group-card-shell" key={group.id}>
-              <Link className="group-card" href={`/groups/${group.id}/projects`}>{content}</Link>
+              <Link className="group-card" href={`/groups/${group.id}/years`}>{content}</Link>
               {group.canManage && <Link className="group-members-link" href={`/groups/${group.id}/members`}><Users size={15} />จัดการกลุ่ม</Link>}
             </article>;
           })}</div>

@@ -8,6 +8,9 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import type { Project } from "@/lib/types";
 import { hashReviewToken, type ApprovalStatus } from "@/lib/project-review";
 import { deleteR2ObjectsByPrefix } from "@/lib/r2";
+import { canDeleteGroup, collectGoogleEvidence, cleanupGoogleWithWarning } from '@/lib/evidence-cleanup';
+import { trashProjectGoogleEvidence } from '@/lib/google-evidence-cleanup';
+import { readAllRows } from '@/lib/paged-rows';
 import { headers } from "next/headers";
 import { requireProjectCapability, type ProjectCapability } from "@/lib/project-access-server";
 
@@ -142,6 +145,7 @@ type CreateProjectInput = {
   sprintNo: string;
   environment: string;
   googleSheetUrl: string;
+  sprintId?: string;
 };
 
 type CreateProjectResult =
@@ -156,6 +160,7 @@ export async function createProject(input: CreateProjectInput): Promise<CreatePr
 
   if (!name || name.length > 160) return { error: "ชื่อ Project ต้องมี 1-160 ตัวอักษร" };
   if (!environment) return { error: "กรุณาระบุ Environment" };
+  if (!input.sprintId) return { error: "กรุณาสร้าง Project จากหน้า Sprint" };
   if (googleSheetUrl && !googleSheetId) return { error: "Google Sheet URL ไม่ถูกต้อง" };
 
   try {
@@ -172,6 +177,7 @@ export async function createProject(input: CreateProjectInput): Promise<CreatePr
         name,
         description: input.description.trim(),
         sprint_no: input.sprintNo.trim(),
+        sprint_id: input.sprintId,
         environment,
         google_sheet_id: googleSheetId || null,
         google_sheet_url: googleSheetUrl || null,
@@ -194,6 +200,7 @@ export async function createProject(input: CreateProjectInput): Promise<CreatePr
         name: data.name,
         description: data.description,
         sprintNo: data.sprint_no,
+        sprintId: input.sprintId,
         environment: data.environment,
         googleSheetId: data.google_sheet_id ?? "",
         googleSheetUrl: data.google_sheet_url ?? "",
@@ -230,7 +237,7 @@ export async function createGroup(input: { name: string; description: string }) 
     .single();
   if (error) return { error: error.message };
   revalidatePath("/groups");
-  return { group: { id: data.id, name: data.name, description: data.description, projectCount: 0, createdAt: data.created_at, canAccess: true, canManage: true } };
+  return { group: { id: data.id, name: data.name, description: data.description, projectCount: 0, createdAt: data.created_at, canAccess: true, canManage: true, canDelete: true } };
 }
 
 export async function updateGroupName(input: { groupId: string; name: string }) {
@@ -330,17 +337,25 @@ export async function updateProjectGoogleSheet(projectId: string, googleSheetUrl
 export async function deleteProject(projectId: string) {
   try {
     await requireProjectCapability(projectId, "delete");
+    return await deleteProjectRecords(projectId);
+  } catch (reason) {
+    return { error: reason instanceof Error ? reason.message : "ลบ Project ไม่สำเร็จ" };
+  }
+}
+
+// Not exported: only the permission-checked Project/Group actions may call it.
+async function deleteProjectRecords(projectId: string) {
+  try {
 
     const admin = createAdminClient();
     const [project, sources, executions] = await Promise.all([
-      admin.from("projects").select("id, group_id, owner_id").eq("id", projectId).maybeSingle(),
-      admin.from("source_files").select("storage_key, column_mapping").eq("project_id", projectId),
-      admin.from("test_executions").select("result_reference").eq("project_id", projectId),
+      admin.from("projects").select("id, name, group_id, owner_id").eq("id", projectId).maybeSingle(),
+      readAllRows((a,b)=>admin.from("source_files").select("id, storage_key, column_mapping").eq("project_id", projectId).order('id').range(a,b)).then(data=>({data,error:null})),
+      readAllRows((a,b)=>admin.from("test_executions").select("id, result_reference").eq("project_id", projectId).order('id').range(a,b)).then(data=>({data,error:null})),
     ]);
     if (project.error) return { error: project.error.message };
     if (!project.data) return { error: "ไม่พบ Project" };
-    if (sources.error) return { error: sources.error.message };
-    if (executions.error) return { error: executions.error.message };
+    const googleCleanup = await cleanupGoogleWithWarning(()=>trashProjectGoogleEvidence(project.data!,collectGoogleEvidence(executions.data.map(e=>e.result_reference))));
 
     const hasR2Evidence = (executions.data ?? []).some(({ result_reference }) =>
       typeof result_reference === "string" && (result_reference.includes("cloudflare-r2") || result_reference.includes(`projects/${projectId}/`)),
@@ -367,8 +382,37 @@ export async function deleteProject(projectId: string) {
     revalidatePath("/");
     revalidatePath("/approvals");
     revalidatePath(`/groups/${project.data.group_id}/projects`);
-    return { success: true, deletedR2Images: deletedR2Images ?? 0 };
+    revalidatePath(`/groups/${project.data.group_id}`,'layout');
+    return { success: true, deletedR2Images: deletedR2Images ?? 0, ...googleCleanup };
   } catch (reason) {
     return { error: reason instanceof Error ? reason.message : "ลบ Project ไม่สำเร็จ" };
   }
+}
+
+export async function deleteGroup(groupId: string) {
+  const warnings:string[]=[];
+  try {
+    const db=await createClient();
+    const {data:auth,error:authError}=await db.auth.getUser();
+    if(authError || !auth.user) throw new Error('กรุณาเข้าสู่ระบบอีกครั้ง');
+    const [group,system,appAccess]=await Promise.all([db.from('groups').select('id,owner_id').eq('id',groupId).maybeSingle(),db.rpc('is_system_owner'),db.rpc('is_app_authorized')]);
+    if(group.error || system.error || appAccess.error) throw new Error(group.error?.message || system.error?.message || appAccess.error?.message);
+    if(!group.data || !appAccess.data || !canDeleteGroup(auth.user.id,group.data.owner_id,system.data===true)) throw new Error('เฉพาะ Group Owner หรือ System Owner เท่านั้นที่ลบกลุ่มได้');
+    const admin=createAdminClient();
+    const projects=await readAllRows((a,b)=>admin.from('projects').select('id,name').eq('group_id',groupId).order('id').range(a,b));
+    let deletedProjects=0;
+    for(const project of projects) {
+      const result=await deleteProjectRecords(project.id);
+      if(result.error) return {error:`ลบไปแล้ว ${deletedProjects} Projects แต่หยุดที่ ${project.name}: ${result.error} กรุณาแก้ไขแล้วลองใหม่`,deletedProjects,warnings};
+      if('warnings' in result) warnings.push(...result.warnings.map(warning=>`${project.name}: ${warning}`));
+      deletedProjects++;
+    }
+    // The existing RESTRICT FK prevents deletion if a new Project was added
+    // during cleanup. Never blindly cascade newly added evidence.
+    const deletion=admin.from('groups').delete().eq('id',groupId);
+    const result=await (group.data.owner_id ? deletion.eq('owner_id',group.data.owner_id) : deletion.is('owner_id',null)).select('id').maybeSingle();
+    if(result.error || !result.data) throw new Error(result.error?.message || 'กลุ่มเปลี่ยนแปลง กรุณาโหลดใหม่');
+    revalidatePath('/groups');revalidatePath(`/groups/${groupId}`,'layout');revalidatePath('/approvals');
+    return {success:true,deletedProjects,warnings};
+  } catch(reason) {return {error:reason instanceof Error ? reason.message : 'ลบกลุ่มไม่สำเร็จ',warnings};}
 }

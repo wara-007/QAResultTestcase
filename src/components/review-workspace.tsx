@@ -18,8 +18,8 @@ const statusClass: Record<TestStatus, string> = {
 
 function EvidenceGallery({ evidence, evidenceBasePath }: { evidence: TestEvidence[]; evidenceBasePath: string }) {
   if (!evidence.length) return null;
-  const images = evidence.filter((item) => item.mimeType.startsWith("image/")).map((item) => ({ id: `${item.fileId}-${item.name}`, name: item.name, url: evidenceImageUrl(item, evidenceBasePath) }));
-  const files = evidence.filter((item) => !item.mimeType.startsWith("image/"));
+  const images = evidence.filter((item) => /^(image|video)\//.test(item.mimeType)).map((item) => ({ id: `${item.fileId}-${item.name}`, name: item.name, mimeType: item.mimeType, url: evidenceImageUrl(item, evidenceBasePath) }));
+  const files = evidence.filter((item) => !/^(image|video)\//.test(item.mimeType));
   return <><ImageViewerGallery className="review-evidence" images={images} />{files.length > 0 ? <div className="review-evidence">{files.map((item) => <a key={`${item.fileId}-${item.name}`} href={evidenceImageUrl(item, evidenceBasePath)} target="_blank" rel="noreferrer"><span>{item.name}<ExternalLink size={14} /></span></a>)}</div> : null}</>;
 }
 

@@ -3,7 +3,7 @@ import "server-only";
 import { google } from "googleapis";
 import type { googleOAuthClient } from "@/lib/google-user-oauth";
 import { parseFlexibleDate } from "@/lib/date-format";
-import { evidenceSheetUrl } from "@/lib/evidence";
+import { evidenceMimeFromUrl, evidenceSheetCell } from "@/lib/evidence-media";
 import { testCaseIdsFromSheetText, workbookSheetFromGoogleProperties } from "@/lib/sheet-mapping-model";
 import type { TestCase, TestCaseCustomField, TestCaseResultField, TestDefect, TestEvidence, TestResult, TestStatus, WorkbookSheet } from "@/lib/types";
 
@@ -297,7 +297,7 @@ function evidenceFromCell(value: string, label: string): TestEvidence[] {
     try {
       const parsed = new URL(url);
       if (!/^https?:$/.test(parsed.protocol)) return [];
-      return [{ fileId: url, provider: "external-url" as const, url, name: `${label} ${index + 1}`, mimeType: "image/*" }];
+      return [{ fileId: url, provider: "external-url" as const, url, name: `${label} ${index + 1}`, mimeType: evidenceMimeFromUrl(url) }];
     } catch {
       return [];
     }
@@ -499,7 +499,7 @@ export async function writeGoogleSheetResults(spreadsheetId: string, cases: Test
 
 function resultSheetValues(testCase: TestCase, defectDisplayIds = new Map<string, string>()) {
   const MAX_CELL_LENGTH = 45_000;
-  const imageFormula = (evidence: TestEvidence) => `=IMAGE("${evidenceSheetUrl(evidence).replaceAll('"', '""')}",1)`;
+  const imageFormula = evidenceSheetCell;
   const chunks = (value: string) => {
     if (!value) return [""];
     const parts: string[] = [];

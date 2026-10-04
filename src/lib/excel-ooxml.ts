@@ -2,6 +2,17 @@ import { strFromU8, strToU8, unzipSync, zipSync, type Unzipped } from "fflate";
 import type { TestCase, TestStatus, WorkbookFreeformResult, WorkbookResultImage, WorkbookSheet, WorkbookSheetContent, WorkbookSheetKind, WorkbookSource } from "./types";
 import { freeformTextFromCells } from "./sheet-detail";
 
+const readOnlyWorkbooks = new WeakMap<ArrayBuffer, { files: Unzipped; strings: string[]; sheets: Map<string, WorkbookSheetContent> }>();
+function readOnlyWorkbook(buffer: ArrayBuffer) {
+  let cached = readOnlyWorkbooks.get(buffer);
+  if (!cached) {
+    const files = unzipSync(new Uint8Array(buffer));
+    cached = { files, strings: readSharedStrings(files), sheets: new Map() };
+    readOnlyWorkbooks.set(buffer, cached);
+  }
+  return cached;
+}
+
 const fieldAliases: Record<string, string[]> = {
   id: ["testcase id", "test case id", "case id"],
   platform: ["platform"],
@@ -190,8 +201,7 @@ const excelDate = (value: string) => {
 };
 
 export function importTestCases(buffer: ArrayBuffer, fileName: string) {
-  const files = unzipSync(new Uint8Array(buffer));
-  const sharedStrings = readSharedStrings(files);
+  const { files, strings: sharedStrings } = readOnlyWorkbook(buffer);
   const sheets = enrichResultSheets(files, resolveSheets(files), sharedStrings);
   const sheet = sheets.find((item) => normalize(item.name) === "testcase") ?? sheets.find((item) => normalize(item.name).includes("testcase"));
   if (!sheet) throw new Error("ไม่พบชีตชื่อ Testcase");
@@ -305,8 +315,10 @@ function drawingImages(files: Unzipped, sheetPath: string) {
 }
 
 export function readWorkbookSheet(source: WorkbookSource, sheet: WorkbookSheet): WorkbookSheetContent {
-  const files = unzipSync(new Uint8Array(source.buffer));
-  const sharedStrings = readSharedStrings(files);
+  const cached = readOnlyWorkbook(source.buffer);
+  const existing = cached.sheets.get(sheet.path);
+  if (existing) return existing;
+  const { files, strings: sharedStrings } = cached;
   const document = parseXml(files[sheet.path]);
   const allCells = Array.from(document.getElementsByTagName("c"))
     .map((cell) => ({ ref: cell.getAttribute("r") ?? "", value: cellValue(cell, sharedStrings).trim() }))
@@ -314,12 +326,13 @@ export function readWorkbookSheet(source: WorkbookSource, sheet: WorkbookSheet):
   const cells = allCells;
 
   const images = drawingImages(files, sheet.path);
-  return { cells, truncatedCellCount: Math.max(0, allCells.length - cells.length), images };
+  const content = { cells, truncatedCellCount: Math.max(0, allCells.length - cells.length), images };
+  cached.sheets.set(sheet.path, content);
+  return content;
 }
 
 export function readWorkbookResultImages(source: WorkbookSource): WorkbookResultImage[] {
-  const files = unzipSync(new Uint8Array(source.buffer));
-  const sharedStrings = readSharedStrings(files);
+  const { files, strings: sharedStrings } = readOnlyWorkbook(source.buffer);
   const imported: WorkbookResultImage[] = [];
   for (const sheet of source.sheets.filter((item) => item.kind !== "testcase")) {
     const document = parseXml(files[sheet.path]);
@@ -364,8 +377,7 @@ export function readWorkbookResultImages(source: WorkbookSource): WorkbookResult
 }
 
 export function readWorkbookFreeformResults(source: WorkbookSource): WorkbookFreeformResult[] {
-  const files = unzipSync(new Uint8Array(source.buffer));
-  const sharedStrings = readSharedStrings(files);
+  const { files, strings: sharedStrings } = readOnlyWorkbook(source.buffer);
   const results: WorkbookFreeformResult[] = [];
 
   for (const sheet of source.sheets.filter((item) => item.kind !== "testcase")) {

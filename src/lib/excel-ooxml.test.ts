@@ -7,6 +7,26 @@ import type { WorkbookSource } from "./types";
 
 Object.assign(globalThis, { DOMParser });
 
+test("reopening the same sheet reuses parsed content while refreshed workbook bytes stay independent", () => {
+  const original = workbook([["A1", "old log"]]);
+  let parses = 0;
+  class CountingParser extends DOMParser {
+    parseFromString(...args: Parameters<DOMParser["parseFromString"]>) {
+      parses += 1;
+      return super.parseFromString(...args);
+    }
+  }
+  Object.assign(globalThis, { DOMParser: CountingParser });
+  try {
+    const first = readWorkbookSheet(original, original.sheets[0]);
+    const initialParses = parses;
+    assert.deepEqual(readWorkbookSheet({ ...original }, original.sheets[0]), first);
+    assert.equal(parses, initialParses);
+    const refreshed = workbook([["A1", "new log"]]);
+    assert.equal(readWorkbookSheet(refreshed, refreshed.sheets[0]).cells[0].value, "new log");
+  } finally { Object.assign(globalThis, { DOMParser }); }
+});
+
 function workbook(cells: Array<[string, string]>): WorkbookSource {
   const xml = cells.map(([ref, text]) => `<c r="${ref}" t="inlineStr"><is><t>${text.replaceAll("&", "&amp;").replaceAll("<", "&lt;")}</t></is></c>`).join("");
   const bytes = zipSync({ "xl/worksheets/sheet1.xml": strToU8(`<worksheet><sheetData><row>${xml}</row></sheetData></worksheet>`) });

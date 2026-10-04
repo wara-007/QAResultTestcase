@@ -4,7 +4,8 @@ import { google } from "googleapis";
 import type { googleOAuthClient } from "@/lib/google-user-oauth";
 import { parseFlexibleDate } from "@/lib/date-format";
 import { evidenceMimeFromUrl, evidenceSheetCell } from "@/lib/evidence-media";
-import { testCaseIdsFromSheetText, workbookSheetFromGoogleProperties } from "@/lib/sheet-mapping-model";
+import { testCaseIdsFromSheetText, testCaseIdsMatchingSheetName, workbookSheetFromGoogleProperties } from "@/lib/sheet-mapping-model";
+import { casesFromRows } from "@/lib/testcase-rows";
 import { freeformTextFromCells, selectDetailSheets } from "@/lib/sheet-detail";
 import { sheetTextHighlights, type StyledSheetText } from "@/lib/result-preview";
 import { isProjectDefectSheet, projectDefectsFromRows, defectRecordsForSync } from "@/lib/project-defects";
@@ -67,68 +68,6 @@ const statusFromValue = (value: unknown): TestStatus => {
   return "Not Start";
 };
 
-const evidenceFromValue = (value: unknown): TestEvidence[] => {
-  try {
-    const parsed = JSON.parse(String(value ?? ""));
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item): item is TestEvidence => Boolean(
-      item && typeof item.fileId === "string" && typeof item.name === "string" && typeof item.mimeType === "string",
-    ));
-  } catch {
-    return [];
-  }
-};
-
-function casesFromRows(rows: unknown[][]): TestCase[] {
-  const aliases: Record<string, string[]> = {
-    id: ["testcase id", "test case id", "case id"], platform: ["platform"], condition: ["condition"], scenario: ["test scenario", "scenario"],
-    name: ["test case name", "testcase name", "case name"], steps: ["test step description", "test step", "steps"], expected: ["expected result", "expected"],
-    status: ["test result", "status", "result"], device: ["device"], testData: ["data test", "test data"], appVersion: ["app version", "version"],
-    environment: ["env", "environment"], resultReference: ["ref result testing", "result testing", "result reference"], executedBy: ["executed by", "tester"],
-    executedDate: ["executed date", "test date"], executedTime: ["executed time", "test time"], remark: ["remark", "note", "notes"],
-    evidence: ["evidence", "evidence images", "attachments"],
-  };
-  let headerIndex = rows.findIndex((row) => row.some((cell) => ["testcase id", "test case id"].includes(normalize(cell))));
-  if (headerIndex < 0) headerIndex = 0;
-  const header = rows[headerIndex] ?? [];
-  const indexes: Record<string, number> = {};
-  for (const [field, names] of Object.entries(aliases)) {
-    const exact = header.findIndex((cell) => names.includes(normalize(cell)));
-    indexes[field] = exact >= 0 ? exact : header.findIndex((cell) => names.some((name) => normalize(cell).includes(name)));
-  }
-  const get = (row: unknown[], field: string) => indexes[field] >= 0 ? String(row[indexes[field]] ?? "").trim() : "";
-  const standardColumns = new Set(Object.values(indexes).filter((index) => index >= 0));
-  const customHeaders = header.flatMap((cell, column) => {
-    const label = String(cell ?? "").trim();
-    return label && !standardColumns.has(column) ? [{ label, column }] : [];
-  });
-  let previousScenario = "";
-  let previousSteps = "";
-  return rows.slice(headerIndex + 1).flatMap((row, offset) => {
-    const id = get(row, "id");
-    if (!/^(TC|TEST|CASE)[\s_-]*\d+/i.test(id)) return [];
-    const scenario = get(row, "scenario") || previousScenario;
-    const steps = get(row, "steps") || previousSteps;
-    if (scenario) previousScenario = scenario;
-    if (steps) previousSteps = steps;
-    return [{
-      id, sourceRow: headerIndex + offset + 2, platform: get(row, "platform"), condition: get(row, "condition"), scenario,
-      name: get(row, "name"), steps, expected: get(row, "expected"), status: statusFromValue(get(row, "status")), device: get(row, "device"),
-      testData: get(row, "testData"), appVersion: get(row, "appVersion"), environment: get(row, "environment"), resultReference: get(row, "resultReference"),
-      executedBy: get(row, "executedBy"), executedDate: get(row, "executedDate"), executedTime: get(row, "executedTime"), remark: get(row, "remark"),
-      evidence: evidenceFromValue(get(row, "evidence")),
-      customFields: customHeaders.map(({ label, column }) => ({
-        key: `testcase:${normalize(label)}:${column}`,
-        label,
-        value: String(row[column] ?? "").trim(),
-        source: "testcase" as const,
-        sheetName: "Testcase",
-        row: headerIndex + offset + 2,
-        column,
-      })),
-    }];
-  });
-}
 
 const detailStandardHeaders = new Set([
   "testcase id", "test case id", "test scenario", "scenario", "test case name", "testcase name",
@@ -175,7 +114,7 @@ function detailFieldsFromRows(rows: unknown[][], sheetName: string): TestCaseCus
   });
 }
 
-export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth = getGoogleServiceAuth(), options: { summary?: boolean; sheetName?: string; testcaseId?: string } = {}) {
+export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth = getGoogleServiceAuth(), options: { summary?: boolean; sheetName?: string; sheetNames?: string[]; testcaseId?: string } = {}) {
   const sheets = google.sheets({ version: "v4", auth });
   const [metadata, values] = await Promise.all([
     sheets.spreadsheets.get({ spreadsheetId, includeGridData: false, fields: "properties(title),sheets(properties(sheetId,title,index,hidden,gridProperties))" }),
@@ -183,7 +122,8 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
   ]);
   const workbookSheets: WorkbookSheet[] = (metadata.data.sheets ?? []).map((sheet, order) => workbookSheetFromGoogleProperties(sheet.properties ?? {}, order));
   const cases = casesFromRows(values.data.values ?? []);
-  await Promise.all(workbookSheets.filter(sheet => isProjectDefectSheet(sheet.name) && (options.summary || (!options.sheetName && !options.testcaseId) || sheet.name === options.sheetName)).map(async sheet => {
+  workbookSheets.forEach(sheet => { sheet.testCaseIds = testCaseIdsMatchingSheetName(sheet.name, cases); });
+  await Promise.all(workbookSheets.filter(sheet => isProjectDefectSheet(sheet.name) && (options.summary || (!options.sheetName && !options.sheetNames && !options.testcaseId) || sheet.name === options.sheetName || options.sheetNames?.includes(sheet.name))).map(async sheet => {
     const response = await sheets.spreadsheets.values.get({ spreadsheetId, range: `'${sheet.name.replaceAll("'", "''")}'!A:AZ`, valueRenderOption: "FORMULA", dateTimeRenderOption: "FORMATTED_STRING" });
     sheet.defects = projectDefectsFromRows(response.data.values ?? [], sheet.name);
   }));
@@ -212,17 +152,17 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
       if (!name) return;
       if (isProjectDefectSheet(name)) return;
       const rows = resultValues.data.valueRanges?.[index]?.values ?? [];
-      const styled: StyledSheetText[] = (formatting.data.sheets?.find(item => item.properties?.sheetId === detailSheets[index].sheetId)?.data ?? []).flatMap(grid => (grid.rowData ?? []).flatMap(row => (row.values ?? []).flatMap(cell => {
+      const styled: StyledSheetText[] = (formatting.data.sheets?.find(item => item.properties?.sheetId === detailSheets[index].sheetId)?.data ?? []).flatMap(grid => (grid.rowData ?? []).flatMap((row, rowIndex) => (row.values ?? []).flatMap((cell, colIndex) => {
         if (!cell.formattedValue) return [];
         const textFormat = cell.effectiveFormat?.textFormat;
         const background = color(cell.effectiveFormat?.backgroundColorStyle, cell.effectiveFormat?.backgroundColor);
-        return [{ value: cell.formattedValue, background: background === "#ffffff" ? undefined : background, color: color(textFormat?.foregroundColorStyle, textFormat?.foregroundColor), bold: textFormat?.bold ?? undefined, runs: (cell.textFormatRuns ?? []).map(run => ({ start: run.startIndex ?? 0, color: color(run.format?.foregroundColorStyle, run.format?.foregroundColor), bold: run.format?.bold ?? undefined })) }];
+        return [{ ref: `${columnLetter((grid.startColumn ?? 0) + colIndex)}${(grid.startRow ?? 0) + rowIndex + 1}`, value: cell.formattedValue, background: background === "#ffffff" ? undefined : background, color: color(textFormat?.foregroundColorStyle, textFormat?.foregroundColor), bold: textFormat?.bold ?? undefined, runs: (cell.textFormatRuns ?? []).map(run => ({ start: run.startIndex ?? 0, color: color(run.format?.foregroundColorStyle, run.format?.foregroundColor), bold: run.format?.bold ?? undefined })) }];
       })));
       const contentIds = Array.from(new Set(rows.flat().flatMap((cell) => testCaseIdsFromSheetText(String(cell ?? "")))));
       // A Test Case ID in the tab name is authoritative. Result tabs commonly
       // mention several other cases in their cells (references, defects, RCs),
       // which must not make those cases aliases of the same tab.
-      const nameIds = testCaseIdsFromSheetText(name);
+      const nameIds = testCaseIdsMatchingSheetName(name, cases);
       const ids = nameIds.length ? nameIds : contentIds;
       if (!ids.length) ids.push(name);
       const sheetIndex = sheetIndexes.get(name);
@@ -234,12 +174,46 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
           cases.push(testCase);
         }
         const parsedResults = resultsFromRows(rows);
-        if (!rows.some(row => row.some(value => normalize(value) === "result id"))) {
-          const text = freeformTextFromCells(rows.flatMap((row, rowIndex) => row.flatMap((value, colIndex) => String(value ?? "").trim() ? [{ ref: `${columnLetter(colIndex)}${rowIndex + 1}`, value: String(value) }] : [])));
+        const detailFields = detailFieldsFromRows(rows, name);
+        const representedRefs = detailFields.flatMap(field => {
+          if (field.row == null || field.column == null) return [];
+          const column = columnLetter(field.column);
+          const refs = [`${column}${field.row}`];
+          if (String(rows[field.row - 2]?.[field.column] ?? "").trim() === field.label) refs.push(`${column}${field.row - 1}`);
+          rows[field.row - 1]?.forEach((value, index) => { if (String(value ?? "").trim() === field.label) refs.push(`${columnLetter(index)}${field.row}`); });
+          return refs;
+        });
+        const resultHeaderRow = rows.findIndex(row => row.some(value => normalize(value) === "result id"));
+        if (resultHeaderRow >= 0 && parsedResults.length) {
+          const defectHeaderRow = rows.findIndex(row => row.some(value => normalize(value) === "defect id"));
+          const limit = defectHeaderRow > resultHeaderRow ? defectHeaderRow : rows.length;
+          const columns = rows[resultHeaderRow].flatMap((value, column) => String(value ?? "").trim() ? [column] : []);
+          for (let row = resultHeaderRow; row < limit; row++) {
+            columns.forEach(column => representedRefs.push(`${columnLetter(column)}${row + 1}`));
+          }
+        }
+        // The testcase metadata is already displayed above Preview Results.
+        rows.forEach((row, rowIndex) => row.forEach((value, column) => {
+          if (!detailStandardHeaders.has(normalize(value))) return;
+          const below = String(rows[rowIndex + 1]?.[column] ?? "").trim();
+          if ([testCase.id, testCase.scenario, testCase.name, testCase.steps, testCase.expected].some(mapped => mapped.trim() && mapped.trim() === below)) {
+            representedRefs.push(`${columnLetter(column)}${rowIndex + 1}`, `${columnLetter(column)}${rowIndex + 2}`);
+          }
+        }));
+        {
+          // Mapping is presentation only: always collect the cells not represented
+          // by the structured Results, including cells outside/above the table.
+          const represented = [testCase.id, testCase.scenario, testCase.name, testCase.steps, testCase.expected,
+            ...parsedResults.flatMap(result => [result.id, result.actualResult, result.apiResponse, result.log, ...(result.customFields ?? []).map(field => field.value)]),
+          ];
+          const text = freeformTextFromCells(rows.flatMap((row, rowIndex) => row.flatMap((value, colIndex) => String(value ?? "").trim() ? [{ ref: `${columnLetter(colIndex)}${rowIndex + 1}`, value: String(value) }] : [])), represented, representedRefs);
+          text.sheetSections.forEach(section => section.rows.forEach(row => row.fields.forEach(field => {
+            field.highlights = sheetTextHighlights(field.value, styled.filter(cell => cell.ref === field.ref));
+          })));
           if (text.actualResult || text.apiResponse || text.log) parsedResults.push({ id: `SHEET-IMPORT-${name}`, source: "sheets", sourceSheetName: name, status: testCase.status, ...text, evidence: [], createdAt: "" });
         }
         testCase.resultFieldDefinitions = [...(testCase.resultFieldDefinitions ?? []), ...resultFieldDefinitionsFromRows(rows)];
-        testCase.customFields = [...(testCase.customFields ?? []), ...detailFieldsFromRows(rows, name)];
+        testCase.customFields = [...(testCase.customFields ?? []), ...detailFields];
         testCase.results = [...(testCase.results ?? []), ...parsedResults.map((result) => ({ ...result, sourceSheetName: name, defects: undefined, textHighlights: { actualResult: sheetTextHighlights(result.actualResult, styled), apiResponse: sheetTextHighlights(result.apiResponse, styled), log: sheetTextHighlights(result.log, styled) } }))];
         testCase.defects = [...(testCase.defects ?? []), ...defectsFromRows(rows).map((defect) => ({ ...defect, sourceSheetName: name })), ...parsedResults.flatMap((result) => (result.defects ?? []).map((defect) => ({ ...defect, sourceSheetName: name })))];
       });

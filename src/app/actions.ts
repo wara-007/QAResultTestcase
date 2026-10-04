@@ -12,6 +12,7 @@ import { canDeleteGroup, collectGoogleEvidence, cleanupGoogleWithWarning } from 
 import { trashProjectGoogleEvidence } from '@/lib/google-evidence-cleanup';
 import { readAllRows } from '@/lib/paged-rows';
 import { headers } from "next/headers";
+import { approvalNotificationPatch } from "@/lib/approval-notification";
 import { requireProjectCapability, type ProjectCapability } from "@/lib/project-access-server";
 
 export type ProjectApprovalSummary = {
@@ -69,7 +70,7 @@ type CreateApprovalInput = {
   counts: { total: number; pass: number; failed: number; skip: number; notStart: number; inProgress: number };
 };
 
-type CreateApprovalResult = { request: { id: string; recipientEmail: string; status: "pending"; requestedAt: string; expiresAt: string; emailSentAt: string }; mailtoUrl: string } | { error: string };
+type CreateApprovalResult = { request: ProjectApprovalSummary; mailtoUrl: string } | { error: string };
 
 export async function createProjectApprovalRequest(input: CreateApprovalInput): Promise<CreateApprovalResult> {
   const email = input.recipientEmail.trim().toLowerCase();
@@ -88,51 +89,41 @@ export async function createProjectApprovalRequest(input: CreateApprovalInput): 
       .eq("project_id", input.projectId).eq("recipient_email", email)
       .maybeSingle();
     if (existingResult.error) return { error: existingResult.error.message };
-    if (existingResult.data?.status === "approved") return { error: `Project นี้ได้รับการ Approve จาก ${email} แล้ว` };
-    if (existingResult.data?.status === "pending" && existingResult.data.email_sent_at) return { error: `เคยส่ง Project นี้ให้ ${email} แล้ว และกำลังรอ Approve` };
+    if (existingResult.data?.status === "revoked") return { error: "คำขอนี้ถูกยกเลิกสิทธิ์แล้ว กรุณาจัดการสิทธิ์ก่อนส่งอีกครั้ง" };
+
+    const headerStore = await headers();
+    const requestOrigin = headerStore.get("origin")?.replace(/\/$/, "") ?? "";
+    const configuredOrigin = process.env.NEXT_PUBLIC_SITE_URL?.trim().replace(/\/$/, "") ?? "";
+    const baseUrl = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(requestOrigin) ? requestOrigin : configuredOrigin;
+    if (!baseUrl) return { error: "ยังไม่ได้ตั้งค่า NEXT_PUBLIC_SITE_URL สำหรับสร้างลิงก์ Approval" };
 
     const token = randomBytes(32).toString("base64url");
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
     const requestId = existingResult.data?.id ?? randomUUID();
+    const notification = approvalNotificationPatch(new Date().toISOString(), access.userId, access.name, Boolean(existingResult.data));
     const requestData = {
       id: requestId,
       project_id: input.projectId,
       recipient_email: email,
       token_hash: hashReviewToken(token),
       status: "pending",
-      requested_by: access.userId,
-      requested_by_name: access.name,
-      requested_at: new Date().toISOString(),
       expires_at: expiresAt,
       reviewed_at: null,
       reviewer_name: "",
       reviewer_comment: "",
-      email_sent_at: null,
-      email_id: "",
-      email_error: "",
+      ...notification,
     };
+    const columns = "id, recipient_email, status, requested_at, expires_at, reviewed_at, reviewer_name, reviewer_comment, email_sent_at";
     const result = existingResult.data
-      ? await admin.from("project_approval_requests").update(requestData).eq("id", requestId).select("id, requested_at").single()
-      : await admin.from("project_approval_requests").insert(requestData).select("id, requested_at").single();
+      ? await admin.from("project_approval_requests").update(notification).eq("id", requestId).neq("status", "revoked").select(columns).single()
+      : await admin.from("project_approval_requests").insert(requestData).select(columns).single();
     if (result.error) return { error: result.error.message };
 
-    const headerStore = await headers();
-    const requestOrigin = headerStore.get("origin")?.replace(/\/$/, "") ?? "";
-    const configuredOrigin = process.env.NEXT_PUBLIC_SITE_URL?.trim().replace(/\/$/, "") ?? "";
-    const baseUrl = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(requestOrigin) ? requestOrigin : configuredOrigin;
-    if (!baseUrl) {
-      await admin.from("project_approval_requests").delete().eq("id", requestId);
-      return { error: "ยังไม่ได้ตั้งค่า NEXT_PUBLIC_SITE_URL สำหรับสร้างลิงก์ Approval" };
-    }
-
-    const emailSentAt = new Date().toISOString();
-    const marked = await admin.from("project_approval_requests").update({ email_sent_at: emailSentAt, email_id: "mailto", email_error: "" }).eq("id", requestId);
-    if (marked.error) return { error: marked.error.message };
-    const subject = input.subject.trim() || `[QA Approval] ${projectResult.data.name}`;
-    const body = [input.body.trim(), "", `เปิดหน้า Review และ Approve: ${baseUrl}/approvals/${requestId}`, `Google Sheets: ${projectResult.data.google_sheet_url}`].filter(Boolean).join("\n");
+    const subject = `${existingResult.data ? "[อัปเดต] " : ""}${input.subject.trim() || `[QA Approval] ${projectResult.data.name}`}`;
+    const body = [existingResult.data ? "มีการอัปเดตผลการทดสอบ Project กรุณาตรวจสอบข้อมูลล่าสุด สถานะอนุมัติเดิมยังคงเดิม" : "", input.body.trim(), "", `เปิดหน้า Review และ Approve: ${baseUrl}/approvals/${requestId}`, `Google Sheets: ${projectResult.data.google_sheet_url}`].filter(Boolean).join("\n");
     const mailtoUrl = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(subject)}${input.cc.trim() ? `&cc=${encodeURIComponent(input.cc.trim())}` : ""}&body=${encodeURIComponent(body)}`;
     revalidatePath("/approvals");
-    return { request: { id: result.data.id, recipientEmail: email, status: "pending" as const, requestedAt: result.data.requested_at, expiresAt, emailSentAt }, mailtoUrl };
+    return { request: { id: result.data.id, recipientEmail: email, status: result.data.status as ApprovalStatus, requestedAt: result.data.requested_at, expiresAt: result.data.expires_at, emailSentAt: result.data.email_sent_at ?? "", reviewedAt: result.data.reviewed_at ?? "", reviewerName: result.data.reviewer_name, reviewerComment: result.data.reviewer_comment }, mailtoUrl };
   } catch (reason) {
     return { error: reason instanceof Error ? reason.message : "สร้างลิงก์รีวิวไม่สำเร็จ" };
   }

@@ -47,7 +47,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ proj
     const { projectId } = await params;
     const query = new URL(request.url).searchParams;
     const summary = query.get("summary") === "1";
-    const result = await readGoogleSheet(await spreadsheetIdForProject(projectId), await getGoogleUserAuth(), { summary, sheetName: query.get("sheet") ?? undefined, testcaseId: query.get("testcase") ?? undefined });
+    const requestedSheets = query.getAll("sheet");
+    if (requestedSheets.length > 10) throw new Error("โหลดได้ไม่เกิน 10 แท็บต่อคำขอ");
+    const result = await readGoogleSheet(await spreadsheetIdForProject(projectId), await getGoogleUserAuth(), { summary, sheetName: requestedSheets.length === 1 ? requestedSheets[0] : undefined, sheetNames: requestedSheets.length > 1 ? requestedSheets : undefined, testcaseId: query.get("testcase") ?? undefined });
     const baseline = await loadBaselines(createAdminClient(), projectId);
     return Response.json({ ...result, baseline }, { headers: { "Cache-Control": "no-store" } });
   } catch (reason) {

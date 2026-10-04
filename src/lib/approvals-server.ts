@@ -3,6 +3,7 @@ import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import type { ApprovalStatus } from "@/lib/project-review";
+import { approvalUpdateNotice } from "@/lib/approval-notification";
 
 export type ApprovalInboxItem = {
   id: string;
@@ -14,6 +15,7 @@ export type ApprovalInboxItem = {
   projectName: string;
   environment: string;
   sprintNo: string;
+  hasUpdates: boolean;
 };
 
 export async function getApprovalUser() {
@@ -30,7 +32,7 @@ export async function getApprovalUser() {
 export async function loadApprovalInbox(email: string): Promise<ApprovalInboxItem[]> {
   const admin = createAdminClient();
   const requests = await admin.from("project_approval_requests")
-    .select("id, project_id, status, requested_at, reviewed_at, requested_by_name, reviewer_comment")
+    .select("id, project_id, status, requested_at, reviewed_at, requested_by_name, reviewer_comment, email_id")
     .eq("recipient_email", email.toLowerCase()).neq("status", "revoked").order("requested_at", { ascending: false });
   if (requests.error) throw new Error(requests.error.message);
   const projectIds = [...new Set((requests.data ?? []).map((request) => request.project_id))];
@@ -45,6 +47,7 @@ export async function loadApprovalInbox(email: string): Promise<ApprovalInboxIte
     const project = projectById.get(request.project_id);
     return {
       id: request.id,
+      hasUpdates: approvalUpdateNotice(request.email_id, request.requested_at, request.reviewed_at),
       status: request.status as ApprovalStatus,
       requestedAt: request.requested_at,
       reviewedAt: request.reviewed_at ?? "",

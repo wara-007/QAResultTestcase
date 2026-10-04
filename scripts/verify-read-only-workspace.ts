@@ -28,7 +28,8 @@ for (const capabilityGuard of [
   /canEditProject\s*&&\s*selectedProject\.googleSheetId\s*&&\s*<button[\s\S]{0,500}ซิงค์กลับ Google Sheets/,
   /canEditProject\s*&&\s*<button[\s\S]{0,300}เพิ่ม Test Case/,
   /<ProjectApprovalPanel[^>]+canSubmit=\{canEditProject\}/,
-  /<CaseDrawer[\s\S]+?readOnly=\{!canEditProject\}/,
+  // Importing may add a temporary read-only condition, never remove the viewer guard.
+  /<CaseDrawer[\s\S]+?readOnly=\{!canEditProject(?: \|\| pullingGoogle)?\}/,
 ]) assert.match(workspace, capabilityGuard, `missing read-only UI guard: ${capabilityGuard}`);
 
 assert.match(migration, /private\.has_app_access\(\).*private\.can_view_project/s, "allowlisted non-members must receive global Project view access");

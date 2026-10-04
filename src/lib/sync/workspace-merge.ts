@@ -29,7 +29,7 @@ export function mergeWorkspaceAndGoogleCases(localCases: TestCase[], googleCases
           refreshed.delete(key);
           // Only auto-imported snapshots refresh; never overwrite a QA-authored Result.
           return fresh && result.id.startsWith("SHEET-IMPORT-")
-            ? { ...result, ...fresh, evidence: result.evidence.length ? result.evidence : fresh.evidence, createdAt: result.createdAt }
+            ? { ...result, ...fresh, sheetDisplay: result.sheetDisplay ?? fresh.sheetDisplay, evidence: result.evidence.length ? result.evidence : fresh.evidence, createdAt: result.createdAt }
             : result;
         });
         return [...merged, ...refreshed.values()];

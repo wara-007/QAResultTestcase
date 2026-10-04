@@ -36,3 +36,14 @@ test("refreshes imported text while keeping its evidence and locally authored re
   assert.equal(result.find(r => r.id === imported.id)?.evidence[0]?.fileId, "image");
   assert.equal(result.find(r => r.id === "WEB-1")?.actualResult, "QA edit");
 });
+
+test("refreshing imported cells preserves QA display settings", () => {
+  const local = makeCase("TC-01", "Stored");
+  const google = makeCase("TC-01", "Google");
+  const result = { id: "SHEET-IMPORT-TC-01", sourceSheetName: "TC-01", status: "Pass" as const, actualResult: "old", apiResponse: "", log: "", evidence: [], createdAt: "" };
+  local.results = [{ ...result, sheetDisplay: { modes: { first: "log" }, groupTransactions: false } }];
+  google.results = [{ ...result, actualResult: "fresh", sheetDisplay: undefined }];
+  const merged = mergeWorkspaceAndGoogleCases([local], [google], "Tester").cases[0].results![0];
+  assert.equal(merged.actualResult, "fresh");
+  assert.deepEqual(merged.sheetDisplay, { modes: { first: "log" }, groupTransactions: false });
+});

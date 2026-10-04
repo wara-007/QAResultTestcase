@@ -31,6 +31,8 @@ export type TestDefect = {
 };
 
 export type TestResult = {
+  sheetDisplay?: import("./sheet-sections").SheetDisplaySettings;
+  sheetSections?: import("./sheet-sections").SheetSection[];
   textHighlights?: Partial<Record<"actualResult" | "apiResponse" | "log", import("./result-preview").TextHighlight[]>>;
   id: string;
   testerName?: string;
@@ -99,6 +101,7 @@ export type TestCase = {
 };
 
 export type WorkbookSource = {
+  sheetImport?: import("./sheet-import-state").SheetImportState;
   id?: string;
   fileName: string;
   buffer: ArrayBuffer;
@@ -147,6 +150,7 @@ export type WorkbookResultImage = WorkbookSheetContent["images"][number] & {
 };
 
 export type WorkbookFreeformResult = {
+  sheetSections?: import("./sheet-sections").SheetSection[];
   sheetName: string;
   testCaseId: string;
   resultId: string;

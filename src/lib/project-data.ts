@@ -1,4 +1,7 @@
 import { createClient } from "@/lib/supabase/client";
+import { readSheetImportState } from "./sheet-import-state";
+import type { SheetImportState } from "./sheet-import-state";
+import type { RowLoadState } from "./result-preview";
 import type { TestCase, TestCaseCustomField, TestDefect, TestResult, TestStatus, WorkbookSheet, WorkbookSource } from "@/lib/types";
 
 const SOURCE_BUCKET = "testcase-source-files";
@@ -180,6 +183,7 @@ export async function loadProjectWorkspace(projectId: string, options: { include
       key !== "sheetPath" && key !== "chunkCount" && key !== "sheets" && typeof value === "string",
     )) as Record<string, string>;
     source = {
+      sheetImport: readSheetImportState(mapping.sheetImport),
       id: sourceRow.id,
       fileName: sourceRow.original_name,
       buffer,
@@ -271,7 +275,7 @@ export async function persistImportedWorkbook(projectId: string, cases: TestCase
     storage_key: storageKey,
     byte_size: source.buffer.byteLength,
     sheet_name: source.sheetName,
-    column_mapping: { ...source.columns, sheetPath: source.sheetPath, chunkCount, sheets: source.sheets },
+    column_mapping: { ...source.columns, sheetPath: source.sheetPath, chunkCount, sheets: source.sheets, sheetImport: source.sheetImport },
     version_no: (versionResult.data?.version_no ?? 0) + 1,
     uploaded_by: userResult.user.id,
   });
@@ -319,6 +323,18 @@ export async function persistImportedWorkbook(projectId: string, cases: TestCase
   if (executionResult.error) throw new Error(executionResult.error.message);
 
   return loadProjectWorkspace(projectId);
+}
+
+export async function persistSheetImportState(projectId: string, sourceId: string, spreadsheetId: string, states: Record<string, RowLoadState>, complete: boolean, invalidate = false): Promise<SheetImportState> {
+  const response = await fetch(`/api/projects/${projectId}/import-state`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sourceId, spreadsheetId, states, complete, invalidate }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error ?? "บันทึกสถานะนำเข้าไม่สำเร็จ");
+  const snapshot = readSheetImportState(data.snapshot, spreadsheetId);
+  if (!snapshot) throw new Error("สถานะนำเข้าที่บันทึกไม่ถูกต้อง");
+  return snapshot;
 }
 
 export async function persistTestCaseResult(projectId: string, testCase: TestCase) {

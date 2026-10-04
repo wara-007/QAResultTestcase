@@ -5,6 +5,15 @@ const normalizeSheetName = (value: string) => value.toLowerCase().replace(/[\n\r
 export const testCaseIdsFromSheetText = (name: string) => Array.from(name.matchAll(/\b(TC|DEF)[\s:_-]*(\d+)/gi), (match) => `${match[1].toUpperCase()}-${match[2].padStart(2, "0")}`)
   .filter((value, index, values) => values.indexOf(value) === index);
 
+/** Only recognize arbitrary prefixes when they exist in the testcase register. */
+export function testCaseIdsMatchingSheetName(name: string, cases: readonly { id: string }[]) {
+  const matching = cases.filter(testCase => {
+    const tokens = testCase.id.trim().split(/[\s:_-]+/).map(token => token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    return new RegExp(`(?:^|[^\\p{L}\\p{N}])${tokens.join("[\\s:_-]*")}(?=$|[^\\p{L}\\p{N}])`, "iu").test(name);
+  }).map(testCase => testCase.id);
+  return matching.length ? matching : testCaseIdsFromSheetText(name);
+}
+
 export function workbookSheetKind(name: string): WorkbookSheetKind {
   const value = normalizeSheetName(name);
   if (value === "testcase" || value.includes("test case")) return "testcase";

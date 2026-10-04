@@ -107,3 +107,9 @@ test("a summary tab does not auto-map from Test Case references found only in it
   assert.deepEqual(result.associations, []);
   assert.equal(result.unmapped[0]?.name, "Defected");
 });
+
+test("non-TC IDs map from their tab names without matching unrelated IDs in cell references", () => {
+  const result = resolveSheetAssociations([sheet(1, "True_01"), sheet(2, "SW_21"), sheet(3, "RC Dtac_02"), sheet(4, "True_011")], [testCase("True_01"), testCase("SW_21"), testCase("Dtac_02")], []);
+  assert.deepEqual(result.associations.map(a => [a.sheet.name, a.testCase.id]), [["True_01", "True_01"], ["SW_21", "SW_21"], ["RC Dtac_02", "Dtac_02"]]);
+  assert.deepEqual(result.unmapped.map(s => s.name), ["True_011"]);
+});

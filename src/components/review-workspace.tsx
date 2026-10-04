@@ -5,8 +5,10 @@ import { AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Cl
 import { useEffect, useMemo, useState } from "react";
 import { ImageViewerGallery } from "@/components/image-viewer-gallery";
 import type { ProjectReview } from "@/lib/project-review";
-import type { TestEvidence, TestStatus } from "@/lib/types";
+import type { TestEvidence, TestResult, TestStatus } from "@/lib/types";
 import { evidenceImageUrl } from "@/lib/evidence";
+import { SheetResultSections } from "./sheet-result-sections";
+import { ResultTextViewer } from "./result-text-viewer";
 
 const statusClass: Record<TestStatus, string> = {
   "Not Start": "status-not-start",
@@ -26,6 +28,20 @@ function EvidenceGallery({ evidence, evidenceBasePath }: { evidence: TestEvidenc
 function TextBlock({ label, value, code = false }: { label: string; value: string; code?: boolean }) {
   if (!value) return null;
   return <div className="review-text-block"><strong>{label}</strong>{code ? <pre>{value}</pre> : <p>{value}</p>}</div>;
+}
+
+export function ReviewResultContent({ result, evidenceBasePath }: { result: TestResult; evidenceBasePath: string }) {
+  const images = result.evidence.filter(item => /^(image|video)\//.test(item.mimeType)).map(item => ({ id: `${item.fileId}-${item.name}`, name: item.name, mimeType: item.mimeType, url: evidenceImageUrl(item, evidenceBasePath) }));
+  return <div className="review-result-content">
+    {result.sheetSections?.length ? <SheetResultSections sections={result.sheetSections} images={images} sheetName={result.sourceSheetName ?? ""} /> : <>
+      <TextBlock label="Actual Result" value={result.actualResult} />
+      {result.apiResponse && <ResultTextViewer title="API Response" text={result.apiResponse} highlights={result.textHighlights?.apiResponse} />}
+      {result.log && <ResultTextViewer title="Log" text={result.log} highlights={result.textHighlights?.log} />}
+      <EvidenceGallery evidence={result.evidence} evidenceBasePath={evidenceBasePath} />
+    </>}
+    {result.customFields?.map(field => <TextBlock key={field.key} label={field.label} value={field.value} />)}
+    {!!result.sheetSections?.length && <EvidenceGallery evidence={result.evidence.filter(item => !/^(image|video)\//.test(item.mimeType))} evidenceBasePath={evidenceBasePath} />}
+  </div>;
 }
 
 export function ReviewWorkspace({ token, requestId, currentUserName = "" }: { token?: string; requestId?: string; currentUserName?: string }) {
@@ -130,7 +146,7 @@ export function ReviewWorkspace({ token, requestId, currentUserName = "" }: { to
           <div className="review-case-content">
             <div className="review-case-grid"><TextBlock label="Test Scenario" value={testCase.scenario} /><TextBlock label="Platform" value={testCase.platform} /><TextBlock label="Test Step Description" value={testCase.steps} /><TextBlock label="Expected Result" value={testCase.expected} /><TextBlock label="Test Data" value={testCase.testData} /><TextBlock label="หมายเหตุ" value={testCase.remark} /></div>
             <div className="review-execution-meta"><span>Device: <strong>{testCase.device || "-"}</strong></span><span>App version: <strong>{testCase.appVersion || "-"}</strong></span><span>ผู้ทดสอบ: <strong>{testCase.executedBy || "-"}</strong></span><span>เวลา: <strong>{[testCase.executedDate, testCase.executedTime].filter(Boolean).join(" ") || "-"}</strong></span></div>
-            <div className="review-results"><h3>Results <span>{testCase.results?.length ?? 0}</span></h3>{testCase.results?.length ? testCase.results.map((result, resultIndex) => <article key={`${result.id}-${result.sourceSheetName ?? "web"}`}><header><strong>Result {resultIndex + 1}</strong><div className="review-result-origin"><small>แหล่งที่มา: {result.sourceSheetName || testCase.sourceSheetName || "Web"}</small><span className={`status-badge ${statusClass[result.status]}`}><span />{result.status}</span></div></header><TextBlock label="Actual Result" value={result.actualResult} /><TextBlock label="API Response" value={result.apiResponse} code /><TextBlock label="Log" value={result.log} code /><EvidenceGallery evidence={result.evidence ?? []} evidenceBasePath={evidenceBasePath} /></article>) : <p className="review-empty">ยังไม่มี Result</p>}</div>
+            <div className="review-results"><h3>Results <span>{testCase.results?.length ?? 0}</span></h3>{testCase.results?.length ? testCase.results.map((result, resultIndex) => <article key={`${result.id}-${result.sourceSheetName ?? "web"}`}><header><strong>Result {resultIndex + 1}</strong><div className="review-result-origin"><small>แหล่งที่มา: {result.sourceSheetName || testCase.sourceSheetName || "Web"}</small><span className={`status-badge ${statusClass[result.status]}`}><span />{result.status}</span></div></header><ReviewResultContent result={result} evidenceBasePath={evidenceBasePath} /></article>) : <p className="review-empty">ยังไม่มี Result</p>}</div>
             {!!testCase.defects?.length && <div className="review-defects"><h3>Defects <span>{testCase.defects.length}</span></h3>{testCase.defects.map((defect) => <article key={defect.id}><header><strong>{defect.title || defect.id}</strong><span>{defect.status}</span></header><TextBlock label="รายละเอียด" value={defect.description} />{defect.jiraUrl && <a href={defect.jiraUrl} target="_blank" rel="noreferrer">เปิด Jira Card <ExternalLink size={14} /></a>}<TextBlock label="API Response" value={defect.apiResponse} code /><TextBlock label="Log" value={defect.log} code /><EvidenceGallery evidence={defect.evidence ?? []} evidenceBasePath={evidenceBasePath} /></article>)}</div>}
           </div>
         </details>)}</div>

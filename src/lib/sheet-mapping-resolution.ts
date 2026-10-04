@@ -1,5 +1,5 @@
 import type { ProjectSheetMapping, TestCase, WorkbookSheet } from "./types";
-import { testCaseIdsFromSheetText } from "./sheet-mapping-model";
+import { testCaseIdsMatchingSheetName } from "./sheet-mapping-model";
 
 const identity = (value: string) => value.trim().toLocaleUpperCase().replace(/[\s_-]+/g, "");
 const stableSheetKey = (sheet: WorkbookSheet) => sheet.sheetId == null ? `path:${sheet.path}` : `google:${sheet.sheetId}`;
@@ -45,7 +45,7 @@ export function resolveSheetAssociations(
     // References inside a sheet can mention many unrelated Test Cases (for
     // example the Defected summary). Only the tab name is safe to infer from;
     // content-only references stay unmapped until QA chooses the target.
-    const inferredCase = testCaseIdsFromSheetText(sheet.name)
+    const inferredCase = testCaseIdsMatchingSheetName(sheet.name, cases)
       .map((testCaseId) => casesByIdentity.get(identity(testCaseId)))
       .find((testCase): testCase is TestCase => Boolean(testCase));
     if (inferredCase) associations.push({ sheet, testCase: inferredCase, source: "automatic" });

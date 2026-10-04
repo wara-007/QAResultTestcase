@@ -1,20 +1,15 @@
-import { google } from "googleapis";
-import { getGoogleUserAuth } from "@/lib/google-user-oauth";
+import { serveSharedDriveEvidence } from "@/lib/shared-drive-evidence";
+import { authorizeProjectDriveEvidence, loadCentralDriveEvidence } from "@/lib/shared-drive-evidence-server";
+import { ProjectAccessError } from "@/lib/project-access-server";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET(_request: Request, { params }: { params: Promise<{ fileId: string }> }) {
   try {
     const { fileId } = await params;
-    if (!/^[A-Za-z0-9_-]{10,}$/.test(fileId)) throw new Error("Google Drive file ID ไม่ถูกต้อง");
-    const drive = google.drive({ version: "v3", auth: await getGoogleUserAuth() });
-    const [metadata, content] = await Promise.all([
-      drive.files.get({ fileId, fields: "mimeType" }),
-      drive.files.get({ fileId, alt: "media" }, { responseType: "arraybuffer" }),
-    ]);
-    const mimeType = /^(image|video)\//.test(metadata.data.mimeType ?? "") ? metadata.data.mimeType! : "application/octet-stream";
-    return new Response(content.data as ArrayBuffer, { headers: { "Content-Type": mimeType, "Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff" } });
+    return await serveSharedDriveEvidence(fileId, () => authorizeProjectDriveEvidence(fileId), loadCentralDriveEvidence);
   } catch (reason) {
-    return Response.json({ error: reason instanceof Error ? reason.message : "โหลดรูปไม่สำเร็จ" }, { status: 404 });
+    return Response.json({ error: reason instanceof Error ? reason.message : "โหลดรูปไม่สำเร็จ" }, { status: reason instanceof ProjectAccessError ? reason.status : 400, headers: { "Cache-Control": "no-store" } });
   }
 }

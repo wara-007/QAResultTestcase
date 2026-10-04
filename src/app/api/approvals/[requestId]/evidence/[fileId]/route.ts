@@ -1,6 +1,6 @@
-import { google } from "googleapis";
 import { getApprovalUser } from "@/lib/approvals-server";
-import { getGoogleServiceAuth } from "@/lib/google-sheets";
+import { serveSharedDriveEvidence } from "@/lib/shared-drive-evidence";
+import { loadCentralDriveEvidence } from "@/lib/shared-drive-evidence-server";
 import { loadRecipientProjectReview } from "@/lib/project-review";
 
 export const runtime = "nodejs";
@@ -19,13 +19,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ req
       ...(testCase.defects ?? []).flatMap((defect) => defect.evidence ?? []),
     ]).map((evidence) => evidence.fileId));
     if (!allowed.has(fileId)) return Response.json({ error: "ไม่พบรูปนี้ในคำขอรีวิว" }, { status: 404 });
-    const drive = google.drive({ version: "v3", auth: getGoogleServiceAuth() });
-    const [metadata, content] = await Promise.all([
-      drive.files.get({ fileId, fields: "mimeType" }),
-      drive.files.get({ fileId, alt: "media" }, { responseType: "arraybuffer" }),
-    ]);
-    const mimeType = /^(image|video)\//.test(metadata.data.mimeType ?? "") ? metadata.data.mimeType! : "application/octet-stream";
-    return new Response(content.data as ArrayBuffer, { headers: { "Content-Type": mimeType, "Cache-Control": "private, max-age=900", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox" } });
+    // Recipient and exact evidence membership were checked above, before central access.
+    return await serveSharedDriveEvidence(fileId, async () => {}, loadCentralDriveEvidence);
   } catch (reason) {
     return Response.json({ error: reason instanceof Error ? reason.message : "โหลดรูปไม่สำเร็จ" }, { status: 404 });
   }

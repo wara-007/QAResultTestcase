@@ -41,6 +41,7 @@ import { evidenceImageUrl } from "@/lib/evidence";
 import { ImageViewerGallery } from "@/components/image-viewer-gallery";
 import { ResultTextViewer } from "@/components/result-text-viewer";
 import { SheetResultSections } from "@/components/sheet-result-sections";
+import { isSheetPayloadLabel } from "@/lib/sheet-sections";
 import { loadRows, batchRowLoader, sheetRowState, caseDetailLoadKeys, canReuseSheetDetails, completeResultTabLoad, isImportedEvidenceDisplayed, type RowLoadState } from "@/lib/result-preview";
 import { selectDetailSheets } from "@/lib/sheet-detail";
 import { collectProjectDefects, isProjectDefectSheet, summarizeProjectDefects } from "@/lib/project-defects";
@@ -661,7 +662,7 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
   }, [source, focusedSheetName, displayedResultEvidence]);
   const additionalCustomFields = [...new Map(
     (draft.customFields ?? [])
-      .filter((field) => field.column >= 0 && !isResultRecordField(field.label))
+      .filter((field) => field.column >= 0 && !isResultRecordField(field.label) && !(field.source === "detail" && isSheetPayloadLabel(field.label)))
       .map((field) => [field.key, field]),
   ).values()];
   const update = (field: keyof TestCase, next: string) => setDraft((current) => ({ ...current, [field]: next }));

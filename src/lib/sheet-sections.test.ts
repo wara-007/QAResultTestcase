@@ -1,7 +1,58 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { sheetSectionsFromCells, sectionLogGroups, combineSheetFields, sectionsForDisplay, sectionFieldsForDisplay, isCodeSheetField, groupSheetResultSections, evidenceSectionIndex } from "./sheet-sections";
-import { sheetFieldDisplayLabel } from "./sheet-sections";
+import { sheetFieldDisplayLabel, isSheetPayloadLabel } from "./sheet-sections";
+
+test("parallel payload lines must not become label/value form fields", () => {
+  assert.equal(isSheetPayloadLabel('"groupType": "OTHER",'), true);
+  assert.equal(isSheetPayloadLabel("}"), true);
+  assert.equal(isSheetPayloadLabel("curl 'https://example.test'"), true);
+  assert.equal(isSheetPayloadLabel("Device"), false);
+  assert.equal(isSheetPayloadLabel("Environment"), false);
+});
+
+test("IR Voice parallel fragments include unheaded curl and scalar JSON array lines", () => {
+  const [section] = sheetSectionsFromCells([
+    { ref: "W88", value: "core" }, { ref: "Y88", value: "profile" },
+    { ref: "T89", value: "curl --location 'https://example.test' \\" },
+    { ref: "W89", value: "{" }, { ref: "Y89", value: "{" },
+    { ref: "T90", value: "--header 'Accept: application/json'" },
+    { ref: "W90", value: '"items": [' }, { ref: "Y90", value: '"status": "ok"' },
+    { ref: "W91", value: '"voice",' }, { ref: "Y91", value: "}" },
+    { ref: "W92", value: '"data"' }, { ref: "W93", value: "]" }, { ref: "W94", value: "}" },
+  ]);
+  section.rows.find(row => row.row === 91)!.fields[0].highlights = [{ start: 1, end: 6, color: "red" }];
+  const displayed = sectionFieldsForDisplay(section);
+  assert.equal(displayed.length, 3);
+  assert.equal(displayed.find(field => field.label === "core")?.value, '{\n"items": [\n"voice",\n"data"\n]\n}');
+  assert.deepEqual(displayed.find(field => field.label === "core")?.highlights, [{ start: 14, end: 19, color: "red" }]);
+  assert.equal(displayed.find(field => field.label === "profile")?.value, '{\n"status": "ok"\n}');
+  assert.ok(displayed.some(field => field.value === "curl --location 'https://example.test' \\\n--header 'Accept: application/json'"));
+});
+
+test("unheaded vertical JSON and kubectl logs join without swallowing ordinary notes or complete responses", () => {
+  const sections = sheetSectionsFromCells([
+    { ref: "A1", value: "kubectl logs deployment/core" },
+    { ref: "A2", value: '{"@timestamp":"first"}' }, { ref: "A3", value: '{"@timestamp":"second"}' },
+    { ref: "C1", value: "note" }, { ref: "C2", value: "confirmed" },
+    { ref: "E1", value: '{"one":1}' }, { ref: "E2", value: '{"two":2}' },
+    { ref: "A8", value: "{" }, { ref: "A9", value: '"incomplete": [' }, { ref: "A10", value: "123," },
+  ]);
+  const first = sectionFieldsForDisplay(sections[0]);
+  assert.ok(first.some(field => field.value === 'kubectl logs deployment/core\n{"@timestamp":"first"}\n{"@timestamp":"second"}'));
+  assert.ok(first.some(field => field.value === "confirmed"));
+  assert.equal(first.filter(field => field.ref.startsWith("E")).length, 2);
+  assert.equal(sectionFieldsForDisplay(sections[1])[0].value, '{\n"incomplete": [\n123,');
+});
+
+test("blank rows within a column separate JSON runs even when a parallel column continues", () => {
+  const [section] = sheetSectionsFromCells([
+    { ref: "A1", value: "{" }, { ref: "A2", value: '"first": 1' }, { ref: "A3", value: "}" },
+    { ref: "C4", value: "keep this note" },
+    { ref: "A5", value: "{" }, { ref: "A6", value: '"second": 2' }, { ref: "A7", value: "}" },
+  ]);
+  assert.deepEqual(sectionFieldsForDisplay(section).map(field => field.value), ["keep this note", '{\n"first": 1\n}', '{\n"second": 2\n}']);
+});
 
 test("two headed columns of JSON fragments stay separate with their own highlights", () => {
   const [section] = sheetSectionsFromCells([
@@ -87,6 +138,8 @@ test("HTTP Inspector exports and mixed API logs use code even with generic cell 
     'Endpoint: /package/category/api/v1/crossSellCheckout',
     'Request headers: {"content-type":"application/json"}\nResponse status: 200',
     'curl -X POST https://example.test --data "test"',
+    "curl 'https://example.test/core' \\\n-H 'platform: ANDROID' \\\n--proxy http://localhost:9090",
+    '"groupType": "OTHER",',
   ]) assert.equal(isCodeSheetField({ ref: "G5", label: "ข้อมูลจาก G5", value }), true);
   assert.equal(isCodeSheetField({ ref: "A31", label: "ข้อมูลจาก A31", value: "Case : Data not found" }), false);
   assert.equal(isCodeSheetField({ ref: "A1", label: "Notes", value: "Check the response and request again" }), false);

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { google } from "googleapis";
+import { isSheetPayloadLabel } from "@/lib/sheet-sections";
 import type { googleOAuthClient } from "@/lib/google-user-oauth";
 import { parseFlexibleDate } from "@/lib/date-format";
 import { evidenceMimeFromUrl, evidenceSheetCell } from "@/lib/evidence-media";
@@ -101,7 +102,7 @@ function detailFieldsFromRows(rows: unknown[][], sheetName: string): TestCaseCus
     const populated = row.map((cell, column) => ({ value: String(cell ?? "").trim(), column })).filter((cell) => cell.value);
     if (populated.length !== 2) return [];
     const [labelCell, valueCell] = populated;
-    if (detailStandardHeaders.has(normalize(labelCell.value))) return [];
+    if (detailStandardHeaders.has(normalize(labelCell.value)) || isSheetPayloadLabel(labelCell.value)) return [];
     return [{
       key: `detail:${normalize(labelCell.value)}:${valueCell.column}`,
       label: labelCell.value,

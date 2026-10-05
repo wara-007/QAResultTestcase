@@ -3,15 +3,25 @@ import type { TextHighlight } from "./result-preview";
 
 export const addHighlight = StateEffect.define<TextHighlight>();
 export const clearHighlights = StateEffect.define<null>();
+function validMarks(marks: TextHighlight[], length: number): TextHighlight[] {
+  return marks.flatMap(mark => {
+    if (!Number.isFinite(mark.start) || !Number.isFinite(mark.end)) return [];
+    const start = Math.max(0, Math.min(length, Math.trunc(mark.start)));
+    const end = Math.max(0, Math.min(length, Math.trunc(mark.end)));
+    return end > start ? [{ ...mark, start, end }] : [];
+  });
+}
 export const highlightField = StateField.define<TextHighlight[]>({
   create: () => [],
   update(marks, transaction) {
-    let next = marks.map(mark => ({ ...mark, start: transaction.changes.mapPos(mark.start, 1), end: transaction.changes.mapPos(mark.end, -1) })).filter(mark => mark.end > mark.start);
+    // Imported offsets may refer to longer source text. Validate against the old
+    // document before mapPos (which throws out of range), then the new document.
+    let next = validMarks(marks, transaction.startState.doc.length).map(mark => ({ ...mark, start: transaction.changes.mapPos(mark.start, 1), end: transaction.changes.mapPos(mark.end, -1) }));
     for (const effect of transaction.effects) {
       if (effect.is(clearHighlights)) next = [];
-      if (effect.is(addHighlight) && effect.value.end > effect.value.start) next = [...next, effect.value];
+      if (effect.is(addHighlight)) next.push(...validMarks([effect.value], transaction.newDoc.length));
     }
-    return next.sort((a, b) => a.start - b.start);
+    return validMarks(next, transaction.newDoc.length).sort((a, b) => a.start - b.start);
   },
 });
 export function readHighlights(state: EditorState) { return state.field(highlightField); }

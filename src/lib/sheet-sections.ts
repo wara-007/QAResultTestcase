@@ -21,10 +21,15 @@ const logHeading = /^(?:logs?|บันทึก)\s*[:：]?\s*$/i;
 const isLog = (value: string) => /\.log\b|["']@timestamp["']\s*:|\|\s*(?:INFO|DEBUG|ERROR|WARN)\s*\||["']txId["']\s*:/i.test(value);
 const columnOf = (ref: string) => ref.replace(/\d+$/, "");
 
+/** Code pasted into adjacent cells is evidence, not a form label/value pair. */
+export function isSheetPayloadLabel(label: string): boolean {
+  return /^[{}\[\],\s]+$/.test(label.trim()) || isCodeSheetField({ ref: "", label: "", value: label });
+}
+
 export function isCodeSheetField(field: SheetField): boolean {
   if (inspectResultJson(field.value).isJsonLike) return true;
   if (/\b(?:api|endpoint|response|request|logs?\d*)\b|บันทึก/i.test(field.label) || isLog(field.value)) return true;
-  if (/\bHTTP Inspector\b|^\s*(?:Endpoint\s*:|(?:Request|Response)\s+(?:body|headers?|status|content type|cookies|time|size)\s*:|curl\s+(?:-[\w-]+\b|https?:\/\/))/im.test(field.value)) return true;
+  if (/\bHTTP Inspector\b|^\s*(?:Endpoint\s*:|(?:Request|Response)\s+(?:body|headers?|status|content type|cookies|time|size)\s*:|curl\s+(?:-[\w-]+\b|["']?https?:\/\/))/im.test(field.value)) return true;
   try {
     const parsed: unknown = JSON.parse(field.value);
     return parsed !== null && typeof parsed === "object";
@@ -161,18 +166,30 @@ export function sectionFieldsForDisplay(section: SheetSection): SheetField[] {
       ? [{ ...row.fields[1], label: row.fields[0].value, ref: `${row.fields[0].ref} / ${row.fields[1].ref}` }]
       : row.fields);
   }
-  if (section.kind === "table") {
+  if (section.kind === "table" || section.kind === "text") {
     const used = new Set<string>();
     const payloads: SheetField[] = [];
-    for (const header of section.headers ?? []) {
-      const parts = fields.filter(field => columnOf(field.ref) === columnOf(header.ref));
-      // Only join vertical JSON fragments, not ordinary table rows or
-      // independently complete payloads. Parallel columns remain independent.
-      if (parts.length < 2 || !parts.some(field => /^\s*"[^"\n]+"\s*:/.test(field.value)) ||
-        !parts.every(field => /^(?:"[^"\n]+"\s*:[^\n]*|[{}\[\],\s]+)$/.test(field.value.trim()))) continue;
-      const combined = combineSheetFields(parts);
-      parts.forEach(field => used.add(field.ref));
-      payloads.push({ ref: parts.map(field => field.ref).join(", "), label: header.label, value: combined.text, highlights: combined.highlights });
+    for (const column of new Set(fields.map(field => columnOf(field.ref)))) {
+      const header = section.headers?.find(header => columnOf(header.ref) === column);
+      const runs: SheetField[][] = [];
+      for (const field of fields.filter(field => columnOf(field.ref) === column)) {
+        const previous = runs.at(-1);
+        const row = Number(field.ref.match(/\d+$/)?.[0]);
+        if (!previous || row !== Number(previous.at(-1)!.ref.match(/\d+$/)?.[0]) + 1) runs.push([field]);
+        else previous.push(field);
+      }
+      for (const parts of runs) {
+        // Reconstruct only recognizable continuous code. A blank row in this
+        // column is a boundary even when another column continues alongside it.
+        const jsonFragments = parts.length > 1 && parts.some(field => /^\s*"[^"\n]+"\s*:/.test(field.value)) &&
+          parts.every(field => /^(?:"[^"\n]+"\s*:[^\n]*|[{}\[\],\s]+|"(?:[^"\\]|\\.)*"\s*,?|(?:-?\d+(?:\.\d+)?|true|false|null)\s*,?)$/.test(field.value.trim()));
+        const curl = /^\s*curl\s/.test(parts[0].value) && parts.slice(1).every(field => /^\s*--?[\w-]+\b/.test(field.value) || /\\\s*$/.test(field.value));
+        const logs = parts.every(field => isLog(field.value) || /^\s*kubectl\s+.*\blogs\b/.test(field.value));
+        if (parts.length < 2 || !(jsonFragments || curl || logs)) continue;
+        const combined = combineSheetFields(parts);
+        parts.forEach(field => used.add(field.ref));
+        payloads.push({ ref: parts.map(field => field.ref).join(", "), label: header?.label ?? (logs ? "Log" : curl ? "Curl" : "JSON"), value: combined.text, highlights: combined.highlights });
+      }
     }
     if (payloads.length) return [...fields.filter(field => !used.has(field.ref)), ...payloads];
   }

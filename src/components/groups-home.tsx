@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { useState, useTransition } from "react";
-import { ChevronRight, ClipboardCheck, Crown, FolderKanban, Layers3, LoaderCircle, LogOut, Plus, Users, X } from "lucide-react";
-import { createGroup } from "@/app/actions";
+import { ChevronRight, ClipboardCheck, Crown, FolderKanban, Layers3, LoaderCircle, LogOut, Pin, Plus, Users, X } from "lucide-react";
+import { createGroup, setGroupPinned } from "@/app/actions";
 import { signOut } from "@/app/auth/actions";
+import { sortGroupsByPinned } from "@/lib/group-pins";
 import type { CurrentUser, Group } from "@/lib/types";
 import { groupSprintsHref } from '@/lib/year-navigation';
 
@@ -14,6 +15,8 @@ export function GroupsHome({ initialGroups, error, currentUser, year }: { initia
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [formError, setFormError] = useState("");
+  const [pinError, setPinError] = useState("");
+  const [pinningGroupId, setPinningGroupId] = useState("");
   const [pending, startTransition] = useTransition();
 
   function submit(event: React.FormEvent<HTMLFormElement>) {
@@ -22,11 +25,28 @@ export function GroupsHome({ initialGroups, error, currentUser, year }: { initia
     startTransition(async () => {
       const result = await createGroup({ name, description });
       if (!result.group) return setFormError(result.error ?? "สร้างกลุ่มไม่สำเร็จ");
-      setGroups((current) => [...current, result.group]);
+      setGroups((current) => sortGroupsByPinned([...current, result.group]));
       setName("");
       setDescription("");
       setShowCreate(false);
     });
+  }
+
+  async function togglePin(groupId: string) {
+    if (pinningGroupId) return;
+    const previousGroups = groups;
+    const group = groups.find((item) => item.id === groupId);
+    if (!group) return;
+    const pinned = !group.isPinned;
+    setPinError("");
+    setPinningGroupId(groupId);
+    setGroups((current) => sortGroupsByPinned(current.map((item) => item.id === groupId ? { ...item, isPinned: pinned } : item)));
+    const result = await setGroupPinned({ groupId, pinned });
+    if (!result.success) {
+      setGroups(previousGroups);
+      setPinError(result.error ?? "บันทึก Group ที่ Pin ไม่สำเร็จ");
+    }
+    setPinningGroupId("");
   }
 
   return (
@@ -39,6 +59,7 @@ export function GroupsHome({ initialGroups, error, currentUser, year }: { initia
       <section className="groups-content">
         <nav className="breadcrumb"><Link href="/groups">เลือกปี</Link><ChevronRight size={15}/><strong>ปี {year}</strong><ChevronRight size={15}/><span>Groups</span></nav>
         <div className="groups-heading"><div><p className="eyebrow">WORKSPACE · {year}</p><h1>กลุ่มทั้งหมด</h1><span>เลือกกลุ่มเพื่อดู Sprint ของปี {year} · แสดงทุกกลุ่ม แม้ปีนี้ยังไม่มี Sprint</span></div><button className="primary-button" onClick={() => setShowCreate(true)}><Plus size={17} />สร้างกลุ่ม</button></div>
+        {pinError && <p className="group-pin-error" role="alert">{pinError}</p>}
         {error ? <div className="project-error"><div><strong>โหลด Groups ไม่สำเร็จ</strong><span>{error}</span></div></div> : groups.length ? (
           <div className="group-grid">{groups.map((group) => {
             const content = <><div className="group-card-top"><span className="group-icon"><Users size={23} /></span><ChevronRight size={20} /></div>
@@ -46,6 +67,7 @@ export function GroupsHome({ initialGroups, error, currentUser, year }: { initia
               <div className="group-card-footer"><span><FolderKanban size={15} />{group.projectCount} Projects ทุกปี</span><small>สร้างเมื่อ {new Intl.DateTimeFormat("th-TH", { dateStyle: "medium" }).format(new Date(group.createdAt))}</small></div></>;
             return <article className="group-card-shell" key={group.id}>
               <Link className="group-card" href={year ? groupSprintsHref(group.id,year) : `/groups/${group.id}/years`}>{content}</Link>
+              <button type="button" className={`group-pin-button${group.isPinned ? " pinned" : ""}`} onClick={() => void togglePin(group.id)} disabled={Boolean(pinningGroupId)} aria-pressed={Boolean(group.isPinned)} aria-label={group.isPinned ? `เลิก Pin ${group.name}` : `Pin ${group.name}`} title={group.isPinned ? "เลิก Pin กลุ่ม" : "Pin กลุ่มไว้ด้านบน"}>{pinningGroupId === group.id ? <LoaderCircle className="spin" size={16} /> : <Pin size={16} fill={group.isPinned ? "currentColor" : "none"} />}</button>
               {group.canManage && <Link className="group-members-link" href={`/groups/${group.id}/members`}><Users size={15} />จัดการกลุ่ม</Link>}
             </article>;
           })}</div>

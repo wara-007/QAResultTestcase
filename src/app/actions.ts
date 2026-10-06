@@ -231,6 +231,26 @@ export async function createGroup(input: { name: string; description: string }) 
   return { group: { id: data.id, name: data.name, description: data.description, projectCount: 0, createdAt: data.created_at, canAccess: true, canManage: true, canDelete: true } };
 }
 
+export async function setGroupPinned(input: { groupId: string; pinned: boolean }) {
+  const groupId = input.groupId.trim();
+  if (!groupId || groupId.length > 160) return { error: "Group ID ไม่ถูกต้อง" };
+
+  const supabase = await createClient();
+  const { data: claimsData, error: claimsError } = await supabase.auth.getClaims();
+  if (claimsError || typeof claimsData?.claims?.sub !== "string") return { error: "กรุณาเข้าสู่ระบบอีกครั้ง" };
+
+  if (input.pinned) {
+    const { error } = await supabase.from("user_group_pins").insert({ group_id: groupId });
+    if (error && error.code !== "23505") return { error: error.message };
+  } else {
+    const { error } = await supabase.from("user_group_pins").delete().eq("group_id", groupId);
+    if (error) return { error: error.message };
+  }
+
+  revalidatePath("/groups");
+  return { success: true, pinned: input.pinned };
+}
+
 export async function updateGroupName(input: { groupId: string; name: string }) {
   const name = input.name.trim();
   if (!name || name.length > 120) return { error: "ชื่อกลุ่มต้องมี 1-120 ตัวอักษร" };

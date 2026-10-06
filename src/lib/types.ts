@@ -190,6 +190,7 @@ export type Group = {
   canAccess: boolean;
   canManage: boolean;
   canDelete?: boolean;
+  isPinned?: boolean;
 };
 
 export type GroupMember = {

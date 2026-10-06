@@ -3,6 +3,7 @@ import "server-only";
 import { createClient } from "@/lib/supabase/server";
 import type { CurrentUser, Group, GroupMember } from "@/lib/types";
 import { canDeleteGroup } from './evidence-cleanup';
+import { sortGroupsByPinned } from "./group-pins";
 
 type GroupMemberRow = { member_id: string | null; email: string; display_name: string; role: GroupMember["role"]; pending: boolean; is_owner: boolean };
 type GroupAccessRow = { group_id: string; can_access: boolean; can_manage: boolean };
@@ -28,12 +29,13 @@ export async function loadGroupMembers(groupId: string): Promise<{ members: Grou
 export async function loadGroups(): Promise<{ groups: Group[]; error: string; currentUser: CurrentUser | null }> {
   const supabase = await createClient();
   await supabase.rpc("claim_group_invitations");
-  const [{ data: groups, error }, { data: projects }, { data: authData }, { data: isSystemOwner }, { data: accessData }] = await Promise.all([
+  const [{ data: groups, error }, { data: projects }, { data: authData }, { data: isSystemOwner }, { data: accessData }, { data: pinData }] = await Promise.all([
     supabase.from("groups").select("id, name, description, created_at, owner_id").order("created_at", { ascending: true }),
     supabase.from("projects").select("group_id"),
     supabase.auth.getUser(),
     supabase.rpc("is_system_owner"),
     supabase.rpc("list_group_access"),
+    supabase.from("user_group_pins").select("group_id"),
   ]);
 
   const user = authData.user;
@@ -48,11 +50,12 @@ export async function loadGroups(): Promise<{ groups: Group[]; error: string; cu
   const counts = new Map<string, number>();
   for (const project of projects ?? []) counts.set(project.group_id, (counts.get(project.group_id) ?? 0) + 1);
   const accessByGroup = new Map(((accessData ?? []) as GroupAccessRow[]).map((access) => [access.group_id, access]));
+  const pinnedGroupIds = new Set((pinData ?? []).map((pin) => pin.group_id));
 
   return {
     error: "",
     currentUser,
-    groups: (groups ?? []).map((group) => ({
+    groups: sortGroupsByPinned((groups ?? []).map((group) => ({
       id: group.id,
       name: group.name,
       description: group.description,
@@ -61,6 +64,7 @@ export async function loadGroups(): Promise<{ groups: Group[]; error: string; cu
       canAccess: accessByGroup.get(group.id)?.can_access ?? false,
       canManage: accessByGroup.get(group.id)?.can_manage ?? false,
       canDelete: canDeleteGroup(user?.id ?? '',group.owner_id,isSystemOwner === true),
-    })),
+      isPinned: pinnedGroupIds.has(group.id),
+    }))),
   };
 }

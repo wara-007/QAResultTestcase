@@ -557,6 +557,11 @@ td:first-child strong { display: block; overflow: hidden; margin-top: 4px; color
 .groups-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 24px; }.groups-heading h1 { font-size: 29px; }.groups-heading > div > span { display: block; margin-top: 7px; color: var(--muted); font-size:13px; }
 .group-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
 .group-card-shell { position: relative; }
+.group-pin-button { position: absolute; z-index: 2; top: 17px; right: 50px; display: grid; width: 34px; height: 34px; place-items: center; color: #8190a5; background: #f7f9fc; border: 1px solid #e2e7ef; border-radius: 9px; cursor: pointer; transition: color .15s, background .15s, border-color .15s, transform .15s; }
+.group-pin-button:hover { color: #356bd0; background: #edf3ff; border-color: #b8cbed; transform: translateY(-1px); }
+.group-pin-button.pinned { color: #8a5a00; background: #fff4cf; border-color: #efd78f; }
+.group-pin-button:disabled { cursor: wait; opacity: .65; transform: none; }
+.group-pin-error { margin: -10px 0 16px; padding: 10px 12px; color: #a33d50; background: #fff2f4; border: 1px solid #f0d2d9; border-radius: 8px; font-size: 12px; }
 .group-card { display: block; min-height: 225px; padding: 22px 22px 54px; color: inherit; text-decoration: none; background: white; border: 1px solid var(--line); border-radius: 13px; box-shadow: 0 2px 7px rgba(20,32,54,.03); transition: transform .15s, border-color .15s, box-shadow .15s; }.group-card:hover { border-color: #b8cbef; box-shadow: var(--shadow); transform: translateY(-2px); }
 .group-members-link { position: absolute; bottom: 16px; left: 22px; display: inline-flex; align-items: center; gap: 6px; color: #496baf; font-size: 12px; font-weight: 700; text-decoration: none; }
 .group-card-shell.locked { opacity: .72; }.group-card-shell.locked .group-card { cursor: default; }.no-group-access { color: #8a6470 !important; }

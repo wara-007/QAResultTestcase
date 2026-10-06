@@ -1,11 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DOMParser } from "@xmldom/xmldom";
-import { strToU8, zipSync } from "fflate";
-import { readWorkbookFreeformResults, readWorkbookSheet } from "./excel-ooxml";
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
+import { strToU8, strFromU8, zipSync, unzipSync } from "fflate";
+import { exportTestCases, readWorkbookFreeformResults, readWorkbookSheet } from "./excel-ooxml";
+import { casesFromRows } from "./testcase-rows";
 import type { WorkbookSource } from "./types";
 
 Object.assign(globalThis, { DOMParser });
+test("Step export preserves formula cells, original Cover and detail definitions", () => {
+  Object.assign(globalThis, { XMLSerializer });
+  const rows = [["Test Case (TC ID)", "Step#", "Description Step", "Expected Result", "Status"], ["ENQ_01_TC_01", "step 01", "Landing", "Correct", "TESTING"]];
+  const cells = rows.map((row, index) => `<row r="${index + 1}">${row.map((value, col) => `<c r="${String.fromCharCode(65 + col)}${index + 1}" t="inlineStr"><is><t>${value}</t></is></c>`).join("")}</row>`).join("").replace('<c r="E2" t="inlineStr"><is><t>TESTING</t></is></c>', '<c r="E2"><f>"TESTING"</f><v>TESTING</v></c>');
+  const detail = '<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Original definition</t></is></c></row></sheetData></worksheet>';
+  const cover = '<worksheet><sheetData/></worksheet>';
+  const bytes = zipSync({ "xl/worksheets/register.xml": strToU8(`<worksheet><sheetData>${cells}</sheetData></worksheet>`), "xl/worksheets/detail.xml": strToU8(detail), "xl/worksheets/cover.xml": strToU8(cover) });
+  const source: WorkbookSource = { fileName: "fixture.xlsx", buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, bufferLoaded: true, sheetName: "Testcase", sheetPath: "xl/worksheets/register.xml", columns: {}, sheets: [{ name: "Testcase", path: "xl/worksheets/register.xml", order: 0, kind: "testcase", testCaseIds: [], imageCount: 0, hidden: false }, { name: "ENQ_01_TC_01", path: "xl/worksheets/detail.xml", order: 1, kind: "result", testCaseIds: ["ENQ_01_TC_01"], imageCount: 0, hidden: false }] };
+  const testCase = casesFromRows(rows)[0];
+  testCase.stepDefinitions![0].status = "Pass";
+  const exported = unzipSync(exportTestCases(source, [testCase]));
+  assert.match(strFromU8(exported[source.sheetPath]), /<f>"TESTING"<\/f>/);
+  assert.equal(strFromU8(exported["xl/worksheets/cover.xml"]), cover);
+  assert.match(strFromU8(exported["xl/worksheets/detail.xml"]), /Original definition/);
+});
 
 test("reopening the same sheet reuses parsed content while refreshed workbook bytes stay independent", () => {
   const original = workbook([["A1", "old log"]]);

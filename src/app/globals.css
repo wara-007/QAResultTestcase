@@ -1123,3 +1123,23 @@ body :is(p, li, td, th, dt, dd, label, button, input, select, textarea):not(.cod
   padding-block: 12px;
   border-top: 1px solid #cddbf1;
 }
+.test-case-steps { margin-block: 20px; min-width: 0; }
+.test-case-step { margin-block: 10px; border: 1px solid #d5deec; border-radius: 12px; overflow: hidden; }
+.test-case-step > summary { display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px; background: #edf3ff; cursor: pointer; overflow-wrap: anywhere; }
+.test-case-step > summary span { flex-shrink: 0; color: #526581; }
+.test-case-step-body { padding: 16px; display: grid; gap: 14px; }
+.test-case-step-body label { display: grid; gap: 6px; min-width: 0; }
+.test-case-step-body input, .test-case-step-body select, .test-case-step-body textarea { width: 100%; min-width: 0; border: 1px solid #d5deec; border-radius: 8px; padding: 10px; font: inherit; background: white; }
+.test-case-step-body .multiline { white-space: pre-wrap; overflow-wrap: anywhere; }
+.result-step-mapping { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-block: 12px; padding: 12px; border-radius: 10px; background: #f0f5ff; min-width: 0; }
+.result-step-mapping > small, .result-step-mapping > label, .result-step-mapping > .multiline, .result-step-mapping > details { flex-basis: 100%; overflow-wrap: anywhere; }
+.result-step-mapping label { display: grid; gap: 6px; }
+.result-step-mapping select { width: 100%; padding: 10px; border: 1px solid #d5deec; border-radius: 8px; font: inherit; min-width: 0; }
+.test-case-step-body > .result-preview-list { margin: 0; min-width: 0; }
+.workbook-summary-body { padding: 20px; display: grid; gap: 12px; min-width: 0; }
+.workbook-cover-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.workbook-cover-fields dt { color: #526581; }
+.workbook-cover-fields dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+.workbook-summary .sheet-cell-list pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.workbook-validation-issues { padding: 16px 16px 16px 36px; border-radius: 10px; background: #fff7e8; color: #8a5616; }
+@media (max-width: 640px) { .test-case-step > summary { flex-direction: column; } }

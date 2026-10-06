@@ -2,6 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { TestCase } from "../types";
 import { canonicalCaseId, canonicalChildId, canonicalizeCases, hashSnapshot } from "./canonical";
+import { casesFromRows } from "../testcase-rows";
+test("Step execution changes remain detectable even when aggregate case status is unchanged", () => {
+  const testCase = casesFromRows([["Test Case (TC ID)", "Step#", "Description Step", "Expected Result", "Status"], ["ENQ_01_TC_01", "step 01", "Landing", "Correct", "TESTING"], ["", "step 02", "Coin", "Updated", "NotStart"]])[0];
+  const before = hashSnapshot(canonicalizeCases([testCase]));
+  testCase.stepDefinitions![1].status = "Pass";
+  assert.notEqual(hashSnapshot(canonicalizeCases([testCase])), before);
+});
 
 const makeCase = (overrides: Partial<TestCase> = {}): TestCase => ({
   id: "TC-01", sourceRow: 2, platform: "Web", condition: "", scenario: "S", name: "N", steps: "Step", expected: "Expected",

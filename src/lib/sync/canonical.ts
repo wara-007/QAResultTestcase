@@ -20,9 +20,11 @@ function canonicalizeCase(testCase: TestCase): CanonicalTestCase {
     name: testCase.name, steps: testCase.steps, expected: testCase.expected, status: testCase.status, device: testCase.device,
     testData: testCase.testData, appVersion: testCase.appVersion, environment: testCase.environment, executedBy: testCase.executedBy,
     executedDate: testCase.executedDate, executedTime: testCase.executedTime, remark: testCase.remark,
+    ...(testCase.stepDefinitions?.length ? { stepDefinitions: sortedEntries(testCase.stepDefinitions.map(step => [step.id, step])) } : {}),
     customFields: sortedEntries((testCase.customFields ?? []).map((field) => [`${field.source}:${field.sheetName.toLowerCase()}:${label(field.label)}`, field.value])),
     results: sortedEntries((testCase.results ?? []).map((result) => [canonicalChildId(result.sourceSheetName, result.id), {
       id: result.id, status: result.status, actualResult: result.actualResult, apiResponse: result.apiResponse, log: result.log,
+      ...(result.stepId ? { stepId: result.stepId } : {}),
       createdAt: result.createdAt, customFields: sortedEntries((result.customFields ?? []).map((field) => [label(field.label), field.value])),
     }])),
     defects: sortedEntries((testCase.defects ?? []).map((defect) => [canonicalChildId(defect.sourceSheetName, defect.id), {

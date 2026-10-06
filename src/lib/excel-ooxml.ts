@@ -1,6 +1,11 @@
 import { strFromU8, strToU8, unzipSync, zipSync, type Unzipped } from "fflate";
 import type { TestCase, TestStatus, WorkbookFreeformResult, WorkbookResultImage, WorkbookSheet, WorkbookSheetContent, WorkbookSheetKind, WorkbookSource } from "./types";
 import { freeformTextFromCells } from "./sheet-detail";
+import { parseStepTestCases } from "./step-testcases";
+import { isProjectSummarySheet, testCaseIdsMatchingSheetName } from "./sheet-mapping-model";
+import { parseStepSheetResults } from "./step-sheet-results";
+import { parseCoverSnapshot } from "./workbook-validation";
+import { buildStepSheetWritePlan, stepResultSnapshotRows } from "./step-sheet-sync";
 
 const readOnlyWorkbooks = new WeakMap<ArrayBuffer, { files: Unzipped; strings: string[]; sheets: Map<string, WorkbookSheetContent> }>();
 function readOnlyWorkbook(buffer: ArrayBuffer) {
@@ -94,6 +99,7 @@ function relatedPart(files: Unzipped, sourcePath: string, id: string | null) {
 
 function sheetKind(name: string): WorkbookSheetKind {
   const value = normalize(name);
+  if (isProjectSummarySheet(name)) return "summary";
   if (value === "testcase" || value.includes("test case")) return "testcase";
   if (value.includes("summary")) return "summary";
   if (value.includes("defect")) return /def[\s_-]*\d+/i.test(name) || value.startsWith("rc") ? "result" : "defect";
@@ -208,6 +214,20 @@ export function importTestCases(buffer: ArrayBuffer, fileName: string) {
   const document = parseXml(files[sheet.path]);
   const cells = Array.from(document.getElementsByTagName("c"));
   const values = new Map(cells.map((cell) => [cell.getAttribute("r") ?? "", cellValue(cell, sharedStrings)]));
+  const stepRows: string[][] = [];
+  for (const [ref, value] of values) {
+    const rowIndex = rowFromRef(ref) - 1;
+    const columnIndex = [...columnFromRef(ref)].reduce((total, char) => total * 26 + char.charCodeAt(0) - 64, 0) - 1;
+    if (rowIndex >= 0 && columnIndex >= 0) (stepRows[rowIndex] ??= [])[columnIndex] = value;
+  }
+  const stepCases = parseStepTestCases(Array.from({ length: stepRows.length }, (_, index) => stepRows[index] ?? []), sheet.name);
+  if (stepCases) {
+    sheets.forEach(item => { if (item.kind !== "summary" && item.kind !== "defect") item.testCaseIds = testCaseIdsMatchingSheetName(item.name, stepCases); });
+    const source: WorkbookSource = { fileName, buffer, bufferLoaded: true, sheetName: sheet.name, sheetPath: sheet.path, columns: {}, sheets };
+    const cover = sheets.find(item => item.kind === "summary");
+    if (cover) source.coverSnapshot = parseCoverSnapshot(contentRows(readWorkbookSheet(source, cover)), cover.name);
+    return { cases: stepCases, source };
+  }
 
   const headerRows = Array.from(document.getElementsByTagName("row")).slice(0, 10);
   const detectedColumns: Record<string, string> = {};
@@ -331,10 +351,20 @@ export function readWorkbookSheet(source: WorkbookSource, sheet: WorkbookSheet):
   return content;
 }
 
-export function readWorkbookResultImages(source: WorkbookSource): WorkbookResultImage[] {
+export function readWorkbookResultImages(source: WorkbookSource, cases: TestCase[] = []): WorkbookResultImage[] {
   const { files, strings: sharedStrings } = readOnlyWorkbook(source.buffer);
   const imported: WorkbookResultImage[] = [];
-  for (const sheet of source.sheets.filter((item) => item.kind !== "testcase")) {
+  for (const sheet of source.sheets.filter((item) => item.kind !== "testcase" && item.kind !== "summary" && item.kind !== "defect")) {
+    const ownerCase = cases.find(item => sheet.testCaseIds.includes(item.id) || item.id === sheet.name);
+    if (ownerCase?.stepDefinitions?.length) {
+      const content = readWorkbookSheet(source, sheet);
+      const parsed = parseStepSheetResults(contentRows(content), ownerCase, sheet.name)!;
+      content.images.forEach(image => {
+        const result = parsed.results.find(result => result.sourceRange && image.row >= result.sourceRange.startRow && image.row <= result.sourceRange.endRow);
+        imported.push({ ...image, sheetName: sheet.name, testCaseId: ownerCase.id, resultId: result?.id ?? `SHEET-IMPORT-${sheet.name}-UNASSIGNED` });
+      });
+      continue;
+    }
     const document = parseXml(files[sheet.path]);
     const rows = Array.from(document.getElementsByTagName("row"));
     let headerRow = -1;
@@ -376,11 +406,27 @@ export function readWorkbookResultImages(source: WorkbookSource): WorkbookResult
   return imported;
 }
 
-export function readWorkbookFreeformResults(source: WorkbookSource): WorkbookFreeformResult[] {
+function contentRows(content: WorkbookSheetContent) {
+  const rows: string[][] = [];
+  for (const cell of content.cells) {
+    const row = rowFromRef(cell.ref) - 1;
+    const column = [...columnFromRef(cell.ref)].reduce((total, char) => total * 26 + char.charCodeAt(0) - 64, 0) - 1;
+    (rows[row] ??= [])[column] = cell.value;
+  }
+  return Array.from({ length: rows.length }, (_, index) => rows[index] ?? []);
+}
+
+export function readWorkbookFreeformResults(source: WorkbookSource, cases: TestCase[] = []): WorkbookFreeformResult[] {
   const { files, strings: sharedStrings } = readOnlyWorkbook(source.buffer);
   const results: WorkbookFreeformResult[] = [];
 
-  for (const sheet of source.sheets.filter((item) => item.kind !== "testcase")) {
+  for (const sheet of source.sheets.filter((item) => item.kind !== "testcase" && item.kind !== "summary" && item.kind !== "defect")) {
+    const ownerCase = cases.find(item => sheet.testCaseIds.includes(item.id) || item.id === sheet.name);
+    if (ownerCase?.stepDefinitions?.length) {
+      const parsed = parseStepSheetResults(contentRows(readWorkbookSheet(source, sheet)), ownerCase, sheet.name)!;
+      results.push(...parsed.results.map(result => ({ ...result, sheetName: sheet.name, testCaseId: ownerCase.id, resultId: result.id })));
+      continue;
+    }
     const document = parseXml(files[sheet.path]);
     const allCells = Array.from(document.getElementsByTagName("c")).map((cell) => ({
       ref: cell.getAttribute("r") ?? "",
@@ -435,6 +481,27 @@ function setInlineString(document: Document, ref: string, value: string) {
 export function exportTestCases(source: WorkbookSource, cases: TestCase[]) {
   const files = unzipSync(new Uint8Array(source.buffer));
   const document = parseXml(files[source.sheetPath]);
+  const stepCases = cases.filter(testCase => testCase.stepDefinitions?.length);
+  if (stepCases.length) {
+    const rows = contentRows(readWorkbookSheet(source, source.sheets.find(sheet => sheet.path === source.sheetPath)!));
+    const formulaRefs = new Set(Array.from(document.getElementsByTagName("c")).filter(cell => cell.getElementsByTagName("f").length).map(cell => cell.getAttribute("r")));
+    for (const write of buildStepSheetWritePlan(stepCases, rows)) {
+      const ref = write.range.split("!")[1];
+      if (!formulaRefs.has(ref)) setInlineString(document, ref, String(write.values[0][0] ?? ""));
+    }
+    files[source.sheetPath] = strToU8(new XMLSerializer().serializeToString(document));
+    for (const testCase of stepCases) {
+      const target = source.sheets.find(sheet => sheet.name === testCase.id);
+      if (!target) throw new Error(`ไม่พบแท็บรายละเอียด ${testCase.id} สำหรับดาวน์โหลดแบบปลอดภัย`);
+      const detail = parseXml(files[target.path]);
+      const content = readWorkbookSheet(source, target);
+      const lastRow = Math.max(0, ...content.cells.map(cell => rowFromRef(cell.ref)), ...content.images.map(image => image.row + 100));
+      const values = stepResultSnapshotRows(testCase);
+      values.forEach((row, index) => row.forEach((value, column) => setInlineString(detail, `${String.fromCharCode(65 + column)}${lastRow + index + 2}`, value)));
+      files[target.path] = strToU8(new XMLSerializer().serializeToString(detail));
+    }
+    return zipSync(files, { level: 6 });
+  }
   const exportFields: Array<keyof TestCase> = [
     "status",
     "device",

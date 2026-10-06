@@ -31,6 +31,10 @@ export type TestDefect = {
 };
 
 export type TestResult = {
+  editedLocally?: boolean;
+  stepId?: string;
+  stepMappingHistory?: { fromStepId: string | null; toStepId: string | null; by: string; at: string }[];
+  sourceRange?: { startRow: number; endRow: number };
   sheetDisplay?: import("./sheet-sections").SheetDisplaySettings;
   sheetSections?: import("./sheet-sections").SheetSection[];
   textHighlights?: Partial<Record<"actualResult" | "apiResponse" | "log", import("./result-preview").TextHighlight[]>>;
@@ -71,6 +75,8 @@ export type TestCaseCustomField = {
 };
 
 export type TestCase = {
+  stepDefinitions?: TestCaseStep[];
+  importIssues?: string[];
   id: string;
   sourceSheetName?: string;
   recordId?: string;
@@ -100,7 +106,28 @@ export type TestCase = {
   defects?: TestDefect[];
 };
 
+export type TestCaseStep = {
+  sourceFields?: Array<{ ref: string; column: number; label: string; value: string; mapped: boolean; highlights?: import("./result-preview").TextHighlight[] }>;
+  id: string;
+  sourceSheetName: string;
+  sourceRow: number;
+  name: string;
+  description: string;
+  expected: string;
+  classification: string;
+  rawStatus: string;
+  status: TestStatus | "Blocked" | "Unknown";
+  device: string;
+  environment: string;
+  appVersion: string;
+  executedBy: string;
+  executedDate: string;
+  resultReference: string;
+  remark: string;
+};
+
 export type WorkbookSource = {
+  coverSnapshot?: import("./workbook-validation").CoverSnapshot;
   sheetImport?: import("./sheet-import-state").SheetImportState;
   id?: string;
   fileName: string;
@@ -150,6 +177,8 @@ export type WorkbookResultImage = WorkbookSheetContent["images"][number] & {
 };
 
 export type WorkbookFreeformResult = {
+  stepId?: string;
+  sourceRange?: TestResult["sourceRange"];
   sheetSections?: import("./sheet-sections").SheetSection[];
   sheetName: string;
   testCaseId: string;

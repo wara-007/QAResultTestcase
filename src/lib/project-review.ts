@@ -3,6 +3,8 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { readGoogleSheet } from "@/lib/google-sheets";
+import { isProjectSummarySheet } from "@/lib/sheet-mapping-model";
+import { reconcileStepCases, replaceLegacyStepPreviews } from "@/lib/step-reconciliation";
 import type { TestCase, TestCaseCustomField, TestDefect, TestResult, TestStatus, WorkbookSheet } from "@/lib/types";
 
 export type ApprovalStatus = "pending" | "approved" | "changes_requested" | "revoked";
@@ -30,7 +32,7 @@ export type ProjectReview = {
   cases: TestCase[];
 };
 
-type StoredPayload = { resultReference?: string; results?: TestResult[]; defects?: TestDefect[]; customFields?: TestCaseCustomField[]; resultFieldDefinitions?: TestCase["resultFieldDefinitions"] };
+type StoredPayload = { stepDefinitions?: TestCase["stepDefinitions"]; importIssues?: string[]; resultReference?: string; results?: TestResult[]; defects?: TestDefect[]; customFields?: TestCaseCustomField[]; resultFieldDefinitions?: TestCase["resultFieldDefinitions"] };
 type ReviewCaseRow = { id: string; testcase_key: string; source_row: number | null; sort_order: number; platform: string; condition_text: string; scenario: string; case_name: string; steps: string; expected_result: string; test_data: string };
 type ReviewExecutionRow = { id: string; test_case_id: string; status: string; device: string; app_version: string; environment: string; remark: string; result_reference: string; executed_by_name: string; executed_date: string; executed_time: string; attempt_no: number };
 type ApprovalRow = { id: string; project_id: string; recipient_email: string; status: string; requested_by_name: string; requested_at: string; expires_at: string; reviewed_at: string | null; reviewer_name: string; reviewer_comment: string };
@@ -56,6 +58,8 @@ function parseStoredResults(value: string | null) {
     const oldDefects = Array.isArray(payload.results) ? payload.results.flatMap((result) => result.defects ?? []) : [];
     return {
       resultReference: typeof payload.resultReference === "string" ? payload.resultReference : "",
+      stepDefinitions: Array.isArray(payload.stepDefinitions) ? payload.stepDefinitions : undefined,
+      importIssues: Array.isArray(payload.importIssues) ? payload.importIssues : [],
       results,
       defects: Array.isArray(payload.defects) ? payload.defects : oldDefects,
       customFields: Array.isArray(payload.customFields) ? payload.customFields : [],
@@ -152,6 +156,8 @@ async function buildProjectReview(approval: ApprovalRow): Promise<ProjectReview>
       appVersion: execution?.app_version ?? "",
       environment: execution?.environment ?? "",
       resultReference: stored.resultReference,
+      stepDefinitions: stored.stepDefinitions,
+      importIssues: stored.importIssues,
       executedBy: execution?.executed_by_name ?? "",
       executedDate: execution?.executed_date ?? "",
       executedTime: execution?.executed_time ?? "",
@@ -181,7 +187,7 @@ async function buildProjectReview(approval: ApprovalRow): Promise<ProjectReview>
     if (!googleWorkspace) {
       const mapping = sourceResult.data?.column_mapping as { sheets?: WorkbookSheet[] } | null;
       const persistedSheets = Array.isArray(mapping?.sheets) ? mapping.sheets : [];
-      if (persistedSheets.length) googleWorkspace = { title: project.name, cases: storedCases, sheets: persistedSheets };
+      if (persistedSheets.length) googleWorkspace = { title: project.name, cases: storedCases, sheets: persistedSheets, coverSnapshot: undefined };
     }
     if (googleWorkspace) {
     const normalizedSource = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
@@ -198,16 +204,23 @@ async function buildProjectReview(approval: ApprovalRow): Promise<ProjectReview>
     const googleCases = googleWorkspace.cases.map((testCase) => {
       const stored = storedById.get(testCase.id.trim().toUpperCase());
       if (!stored) return testCase;
+      if (testCase.stepDefinitions?.length) stored.results = replaceLegacyStepPreviews(stored.results ?? [], testCase.results ?? []);
       const hasStoredResults = Boolean(stored.results?.length);
       const hasStoredDefects = Boolean(stored.defects?.length);
       const hasStoredExecution = Boolean(stored.persistedLocally || stored.executionId || hasStoredResults || hasStoredDefects);
       return {
         ...testCase,
+        ...(testCase.stepDefinitions || stored.stepDefinitions ? (() => { const reconciled = reconcileStepCases(stored, testCase).testCase; return { stepDefinitions: reconciled.stepDefinitions, importIssues: reconciled.importIssues }; })() : {}),
         recordId: stored.recordId,
         executionId: stored.executionId,
         persistedLocally: stored.persistedLocally,
         results: [...new Map([...(testCase.results ?? []), ...(stored.results ?? [])]
           .map(restoreResultSource)
+          .map(result => {
+            if (result.source !== "sheets" || result.editedLocally) return result;
+            const fresh = testCase.results?.find(item => item.id === result.id && item.sourceSheetName === result.sourceSheetName);
+            return fresh ? { ...result, ...fresh, evidence: result.evidence?.length ? result.evidence : fresh.evidence } : result;
+          })
           .map((result) => [`${result.id}:${result.sourceSheetName ?? "web"}`, result])).values()],
         defects: [...new Map([...(testCase.defects ?? []), ...(stored.defects ?? [])].map((defect) => [`${defect.id}:${defect.sourceSheetName ?? "web"}`, defect])).values()],
         customFields: (() => {
@@ -260,7 +273,7 @@ async function buildProjectReview(approval: ApprovalRow): Promise<ProjectReview>
     const representedSources = new Set(cases.map((testCase) => testCase.sourceSheetName));
     const knownCaseIds = new Set(cases.map((testCase) => caseIdentity(testCase.id)));
     const unlinkedSheetCases: TestCase[] = googleWorkspace.sheets
-      .filter((sheet) => sheet.name.trim().toLowerCase() !== "testcase"
+      .filter((sheet) => !isProjectSummarySheet(sheet.name) && sheet.name.trim().toLowerCase() !== "testcase"
         && !representedSources.has(sheet.name)
         && !sheetCaseIds(sheet).some((id) => knownCaseIds.has(caseIdentity(id))))
       .map((sheet) => ({
@@ -295,6 +308,6 @@ async function buildProjectReview(approval: ApprovalRow): Promise<ProjectReview>
       environment: project.environment,
       googleSheetUrl: project.google_sheet_url ?? "",
     },
-    cases,
+    cases: cases.filter(item => !isProjectSummarySheet(item.sourceSheetName || item.id)),
   };
 }

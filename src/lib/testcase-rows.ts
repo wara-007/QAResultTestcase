@@ -1,4 +1,5 @@
 import type { TestCase, TestEvidence, TestStatus } from "./types";
+import { parseStepTestCases } from "./step-testcases";
 const normalize = (value: unknown) => String(value ?? "").toLowerCase().replace(/[\n\r*._()/-]+/g, " ").replace(/\s+/g, " ").trim();
 const statusFromValue = (value: unknown): TestStatus => {
   const status = normalize(value);
@@ -21,6 +22,8 @@ const evidenceFromValue = (value: unknown): TestEvidence[] => {
 };
 
 export function casesFromRows(rows: unknown[][]): TestCase[] {
+  const stepCases = parseStepTestCases(rows, "Testcase");
+  if (stepCases) return stepCases;
   const aliases: Record<string, string[]> = {
     id: ["testcase id", "test case id", "case id"], platform: ["platform"], condition: ["condition"], scenario: ["test scenario", "scenario"],
     name: ["test case name", "testcase name", "case name"], steps: ["test step description", "test step", "steps"], expected: ["expected result", "expected"],

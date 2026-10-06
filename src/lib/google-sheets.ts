@@ -7,6 +7,11 @@ import { parseFlexibleDate } from "@/lib/date-format";
 import { evidenceMimeFromUrl, evidenceSheetCell } from "@/lib/evidence-media";
 import { testCaseIdsFromSheetText, testCaseIdsMatchingSheetName, workbookSheetFromGoogleProperties } from "@/lib/sheet-mapping-model";
 import { casesFromRows } from "@/lib/testcase-rows";
+import { parseStepSheetResults } from "@/lib/step-sheet-results";
+import { isProjectSummarySheet } from "@/lib/sheet-mapping-model";
+import { parseCoverSnapshot } from "@/lib/workbook-validation";
+import { stepHeaderColumns } from "@/lib/step-testcases";
+import { buildStepSheetWritePlan, stepResultSnapshotRows } from "@/lib/step-sheet-sync";
 import { freeformTextFromCells, selectDetailSheets } from "@/lib/sheet-detail";
 import { sheetTextHighlights, type StyledSheetText } from "@/lib/result-preview";
 import { isProjectDefectSheet, projectDefectsFromRows, defectRecordsForSync } from "@/lib/project-defects";
@@ -119,10 +124,12 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
   const sheets = google.sheets({ version: "v4", auth });
   const [metadata, values] = await Promise.all([
     sheets.spreadsheets.get({ spreadsheetId, includeGridData: false, fields: "properties(title),sheets(properties(sheetId,title,index,hidden,gridProperties))" }),
-    sheets.spreadsheets.values.get({ spreadsheetId, range: "Testcase!A:AZ", valueRenderOption: "FORMATTED_VALUE", dateTimeRenderOption: "FORMATTED_STRING" }),
+    sheets.spreadsheets.values.get({ spreadsheetId, range: "'Testcase'", valueRenderOption: "FORMATTED_VALUE", dateTimeRenderOption: "FORMATTED_STRING" }),
   ]);
   const workbookSheets: WorkbookSheet[] = (metadata.data.sheets ?? []).map((sheet, order) => workbookSheetFromGoogleProperties(sheet.properties ?? {}, order));
   const cases = casesFromRows(values.data.values ?? []);
+  const coverSheet = workbookSheets.find(sheet => isProjectSummarySheet(sheet.name));
+  const coverSnapshot = coverSheet ? parseCoverSnapshot((await sheets.spreadsheets.values.get({ spreadsheetId, range: `'${coverSheet.name.replaceAll("'", "''")}'!A:AZ`, valueRenderOption: "FORMATTED_VALUE" })).data.values ?? [], coverSheet.name) : undefined;
   workbookSheets.forEach(sheet => { sheet.testCaseIds = testCaseIdsMatchingSheetName(sheet.name, cases); });
   await Promise.all(workbookSheets.filter(sheet => isProjectDefectSheet(sheet.name) && (options.summary || (!options.sheetName && !options.sheetNames && !options.testcaseId) || sheet.name === options.sheetName || options.sheetNames?.includes(sheet.name))).map(async sheet => {
     const response = await sheets.spreadsheets.values.get({ spreadsheetId, range: `'${sheet.name.replaceAll("'", "''")}'!A:AZ`, valueRenderOption: "FORMULA", dateTimeRenderOption: "FORMATTED_STRING" });
@@ -131,8 +138,8 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
   // Read every tab, not only tabs named exactly like a Test Case ID. Teams often
   // place evidence/results in tabs with names such as "Regression", "Run 1" or
   // "API logs". IDs are discovered from both the tab name and its cell content.
-  if (options.summary) return { title: metadata.data.properties?.title ?? "Google Sheet", cases, sheets: workbookSheets };
-  const detailSheets = selectDetailSheets(workbookSheets, options);
+  if (options.summary) return { title: metadata.data.properties?.title ?? "Google Sheet", cases, sheets: workbookSheets, coverSnapshot };
+  const detailSheets = selectDetailSheets(workbookSheets, options).filter(sheet => !isProjectSummarySheet(sheet.name) && !isProjectDefectSheet(sheet.name));
   const ranges = detailSheets.map(sheet => {
     const grid = metadata.data.sheets?.find(item => item.properties?.sheetId === sheet.sheetId)?.properties?.gridProperties;
     return `'${sheet.name.replaceAll("'", "''")}'!A1:${columnLetter((grid?.columnCount ?? 52) - 1)}${grid?.rowCount ?? 1000}`;
@@ -173,6 +180,17 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
         if (!testCase) {
           testCase = { id, sourceSheetName: name, sourceRow: 0, platform: "", condition: "", scenario: "", name, steps: "", expected: "", status: "Not Start", device: "", testData: "", appVersion: "", environment: "", resultReference: name, executedBy: "", executedDate: "", executedTime: "", remark: "", evidence: [], results: [], defects: [] };
           cases.push(testCase);
+        }
+        const stepResults = parseStepSheetResults(rows, testCase, name);
+        if (stepResults) {
+          stepResults.results.forEach(result => {
+            result.sheetSections?.forEach(section => section.rows.forEach(row => row.fields.forEach(field => {
+              field.highlights = sheetTextHighlights(field.value, styled.filter(cell => cell.ref === field.ref));
+            })));
+          });
+          testCase.results = [...(testCase.results ?? []), ...stepResults.results];
+          testCase.importIssues = [...(testCase.importIssues ?? []), ...stepResults.issues];
+          return;
         }
         const parsedResults = resultsFromRows(rows);
         const detailFields = detailFieldsFromRows(rows, name);
@@ -220,7 +238,7 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
       });
     });
   }
-  return { title: metadata.data.properties?.title ?? "Google Sheet", cases, sheets: workbookSheets };
+  return { title: metadata.data.properties?.title ?? "Google Sheet", cases, sheets: workbookSheets, coverSnapshot };
 }
 
 function resultsFromRows(rows: unknown[][]): TestResult[] {
@@ -380,7 +398,40 @@ export async function writeGoogleSheetResults(spreadsheetId: string, cases: Test
   const formulaText = (value: string) => value.replaceAll('"', '""');
   if (!cases.length) throw new Error("ไม่มี Testcase สำหรับซิงค์");
 
-  const metadata = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets(properties(sheetId,title))" });
+  const metadata = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets(properties(sheetId,title,gridProperties))" });
+  const registerRows = (await sheets.spreadsheets.values.get({ spreadsheetId, range: "'Testcase'", valueRenderOption: "FORMULA" })).data.values ?? [];
+  if (registerRows.some(row => stepHeaderColumns(row))) {
+    if (cases.some(testCase => testCase.sourceRow > 0 && (!testCase.sourceSheetName || testCase.sourceSheetName === "Testcase") && !testCase.stepDefinitions?.length)) throw new Error("Project นี้ใช้ตารางแบบ Step กรุณาโหลดจาก Sheets ให้ครบก่อนซิงค์");
+    const stepCases = cases.filter(testCase => testCase.stepDefinitions?.length);
+    if (!stepCases.length) throw new Error("ยังไม่มีข้อมูล Step ที่ตรวจสอบได้ กรุณาโหลดจาก Sheets ก่อนซิงค์");
+    const data = buildStepSheetWritePlan(stepCases, registerRows);
+    // Append owned snapshots beyond the existing grid, never over source text,
+    // drawings, formulas or formatting. Prior snapshots are retained as history;
+    // the reader selects the last complete snapshot.
+    const targets = stepCases.map(testCase => {
+      const matches = (metadata.data.sheets ?? []).filter(sheet => sheet.properties?.title === testCase.id);
+      if (matches.length !== 1) throw new Error(`ไม่พบแท็บรายละเอียด ${testCase.id} สำหรับซิงค์แบบปลอดภัย`);
+      const properties = matches[0].properties!;
+      const values = stepResultSnapshotRows(testCase);
+      const images = (testCase.results ?? []).filter(result => result.source !== "sheets" || result.editedLocally).flatMap(result => result.evidence.map(evidence => ({ resultId: result.id, evidence })));
+      const startRow = (properties.gridProperties?.rowCount ?? 1000) + 1;
+      const imageRows = images.map(item => ["QA evidence preview", item.resultId, item.evidence.name]);
+      return { testCase, properties, startRow, values: [...values, ...imageRows], images, firstImageRow: startRow + values.length };
+    });
+    const drive = google.drive({ version: "v3", auth });
+    const driveIds = [...new Set(targets.flatMap(target => target.images.map(item => item.evidence)).filter(evidence => !evidence.provider || evidence.provider === "google-drive").map(evidence => evidence.fileId))];
+    for (const fileId of driveIds) {
+      const permissions = await drive.permissions.list({ fileId, fields: "permissions(type,role)" });
+      if (!permissions.data.permissions?.some(permission => permission.type === "anyone" && permission.role === "reader")) await drive.permissions.create({ fileId, requestBody: { type: "anyone", role: "reader" } });
+    }
+    await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: targets.map(target => ({ appendDimension: { sheetId: target.properties.sheetId, dimension: "ROWS", length: target.values.length } })) } });
+    for (const target of targets) data.push({ range: `'${target.properties.title!.replaceAll("'", "''")}'!A${target.startRow}:H${target.startRow + target.values.length - 1}`, values: target.values });
+    const result = await sheets.spreadsheets.values.batchUpdate({ spreadsheetId, requestBody: { valueInputOption: "RAW", data } });
+    const imageData = targets.flatMap(target => target.images.map((item, index) => ({ range: `'${target.properties.title!.replaceAll("'", "''")}'!D${target.firstImageRow + index}`, values: [[evidenceSheetCell(item.evidence)]] })));
+    if (imageData.length) await sheets.spreadsheets.values.batchUpdate({ spreadsheetId, requestBody: { valueInputOption: "USER_ENTERED", data: imageData } });
+    return { updatedCells: result.data.totalUpdatedCells ?? 0, resultSheets: targets.length, defects: 0 };
+  }
+  if (cases.some(testCase => testCase.stepDefinitions?.length)) throw new Error("รูปแบบตาราง Step เปลี่ยน กรุณาโหลดจาก Sheets ใหม่ก่อนซิงค์");
   const existing = new Map((metadata.data.sheets ?? []).map((sheet) => [sheet.properties?.title ?? "", sheet.properties?.sheetId]));
   const registerName = [...existing.keys()].find(isProjectDefectSheet);
   const registeredDefects = registerName ? projectDefectsFromRows((await sheets.spreadsheets.values.get({ spreadsheetId, range: `'${registerName.replaceAll("'", "''")}'!A:AZ`, valueRenderOption: "FORMULA", dateTimeRenderOption: "FORMATTED_STRING" })).data.values ?? [], registerName) : [];

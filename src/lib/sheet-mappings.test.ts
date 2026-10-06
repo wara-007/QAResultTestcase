@@ -5,7 +5,16 @@ import {
   projectSheetMappingFromRow,
   validateGoogleSheetId,
   workbookSheetFromGoogleProperties,
+  isProjectSummarySheet,
 } from "./sheet-mapping-model";
+
+test("Cover is project summary metadata, never a testcase tab", () => {
+  for (const name of ["Cover", " Cover Page ", "cover_page"]) {
+    assert.equal(isProjectSummarySheet(name), true);
+    assert.equal(workbookSheetFromGoogleProperties({ sheetId: 3, title: name }).kind, "summary");
+  }
+  assert.equal(isProjectSummarySheet("TC-01 Cover validation"), false);
+});
 
 test("keeps exact Google tab titles including leading and trailing whitespace", () => {
   assert.equal(workbookSheetFromGoogleProperties({ sheetId: 42, title: " RC  TC-18 - พังที่แพ็กหลัก " }, 0).name, " RC  TC-18 - พังที่แพ็กหลัก ");

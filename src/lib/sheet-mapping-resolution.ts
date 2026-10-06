@@ -1,5 +1,5 @@
 import type { ProjectSheetMapping, TestCase, WorkbookSheet } from "./types";
-import { testCaseIdsMatchingSheetName } from "./sheet-mapping-model";
+import { testCaseIdsMatchingSheetName, isProjectSummarySheet } from "./sheet-mapping-model";
 
 const identity = (value: string) => value.trim().toLocaleUpperCase().replace(/[\s_-]+/g, "");
 const stableSheetKey = (sheet: WorkbookSheet) => sheet.sheetId == null ? `path:${sheet.path}` : `google:${sheet.sheetId}`;
@@ -30,6 +30,7 @@ export function resolveSheetAssociations(
   const invalidMappings: InvalidSheetMapping[] = [];
 
   for (const sheet of sheets) {
+    if (isProjectSummarySheet(sheet.name)) continue;
     const sheetKey = stableSheetKey(sheet);
     if (seen.has(sheetKey)) continue;
     seen.add(sheetKey);

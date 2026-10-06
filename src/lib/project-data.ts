@@ -45,7 +45,9 @@ type CaseRow = {
 };
 
 type StoredResultPayload = {
-  version: 1 | 2 | 3;
+  version: 1 | 2 | 3 | 4;
+  stepDefinitions?: TestCase["stepDefinitions"];
+  importIssues?: string[];
   resultReference: string;
   results: TestResult[];
   defects?: TestDefect[];
@@ -67,13 +69,15 @@ function normalizeDefect(defect: Partial<TestDefect>, fallbackId: string): TestD
   };
 }
 
-function parseStoredResults(value: string | undefined) {
+export function parseStoredResults(value: string | undefined) {
   if (!value?.startsWith("qa-results:")) return { resultReference: value ?? "", results: [] as TestResult[], defects: [] as TestDefect[], customFields: [] as TestCaseCustomField[], resultFieldDefinitions: [], persistedLocally: false };
   try {
     const payload = JSON.parse(value.slice("qa-results:".length)) as StoredResultPayload;
     const results = Array.isArray(payload.results) ? payload.results : [];
     const migratedDefects = results.flatMap((result) => (result.defects ?? []).map((defect, index) => normalizeDefect(defect, `${result.id}-defect-${index + 1}`)));
     return {
+      stepDefinitions: Array.isArray(payload.stepDefinitions) ? payload.stepDefinitions : undefined,
+      importIssues: Array.isArray(payload.importIssues) ? payload.importIssues : [],
       resultReference: typeof payload.resultReference === "string" ? payload.resultReference : "",
       results: results.map((result) => {
         const normalized = { ...result };
@@ -90,8 +94,8 @@ function parseStoredResults(value: string | undefined) {
   }
 }
 
-function serializeStoredResults(testCase: TestCase) {
-  const payload: StoredResultPayload = { version: 3, resultReference: testCase.resultReference, results: testCase.results ?? [], defects: testCase.defects ?? [], customFields: testCase.customFields ?? [], resultFieldDefinitions: testCase.resultFieldDefinitions ?? [] };
+export function serializeStoredResults(testCase: TestCase) {
+  const payload: StoredResultPayload = { version: 4, stepDefinitions: testCase.stepDefinitions, importIssues: testCase.importIssues, resultReference: testCase.resultReference, results: testCase.results ?? [], defects: testCase.defects ?? [], customFields: testCase.customFields ?? [], resultFieldDefinitions: testCase.resultFieldDefinitions ?? [] };
   return `qa-results:${JSON.stringify(payload)}`;
 }
 
@@ -183,6 +187,7 @@ export async function loadProjectWorkspace(projectId: string, options: { include
       key !== "sheetPath" && key !== "chunkCount" && key !== "sheets" && typeof value === "string",
     )) as Record<string, string>;
     source = {
+      coverSnapshot: mapping.coverSnapshot as WorkbookSource["coverSnapshot"],
       sheetImport: readSheetImportState(mapping.sheetImport),
       id: sourceRow.id,
       fileName: sourceRow.original_name,
@@ -209,6 +214,8 @@ export async function loadProjectWorkspace(projectId: string, options: { include
       recordId: row.id,
       executionId: execution?.id,
       persistedLocally: stored.persistedLocally,
+      stepDefinitions: stored.stepDefinitions,
+      importIssues: stored.importIssues,
       sourceRow: row.source_row ?? 0,
       platform: row.platform,
       condition: row.condition_text,
@@ -275,7 +282,7 @@ export async function persistImportedWorkbook(projectId: string, cases: TestCase
     storage_key: storageKey,
     byte_size: source.buffer.byteLength,
     sheet_name: source.sheetName,
-    column_mapping: { ...source.columns, sheetPath: source.sheetPath, chunkCount, sheets: source.sheets, sheetImport: source.sheetImport },
+    column_mapping: { ...source.columns, sheetPath: source.sheetPath, chunkCount, sheets: source.sheets, sheetImport: source.sheetImport, coverSnapshot: source.coverSnapshot },
     version_no: (versionResult.data?.version_no ?? 0) + 1,
     uploaded_by: userResult.user.id,
   });

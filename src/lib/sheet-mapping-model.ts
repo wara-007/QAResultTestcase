@@ -2,6 +2,10 @@ import type { ProjectSheetMapping, WorkbookSheet, WorkbookSheetKind } from "./ty
 
 const normalizeSheetName = (value: string) => value.toLowerCase().replace(/[\n\r*._()/-]+/g, " ").replace(/\s+/g, " ").trim();
 
+export function isProjectSummarySheet(name: string): boolean {
+  return /^(?:cover(?: page)?|summary(?: page)?|สรุป(?:ผล)?)$/.test(normalizeSheetName(name));
+}
+
 export const testCaseIdsFromSheetText = (name: string) => Array.from(name.matchAll(/\b(TC|DEF)[\s:_-]*(\d+)/gi), (match) => `${match[1].toUpperCase()}-${match[2].padStart(2, "0")}`)
   .filter((value, index, values) => values.indexOf(value) === index);
 
@@ -16,6 +20,7 @@ export function testCaseIdsMatchingSheetName(name: string, cases: readonly { id:
 
 export function workbookSheetKind(name: string): WorkbookSheetKind {
   const value = normalizeSheetName(name);
+  if (isProjectSummarySheet(name)) return "summary";
   if (value === "testcase" || value.includes("test case")) return "testcase";
   if (value.includes("summary")) return "summary";
   if (value.includes("defect")) return /def[\s:_-]*\d+/i.test(name) || value.startsWith("rc") ? "result" : "defect";

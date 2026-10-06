@@ -41,6 +41,7 @@ import { evidenceImageUrl } from "@/lib/evidence";
 import { ImageViewerGallery } from "@/components/image-viewer-gallery";
 import { ResultTextViewer } from "@/components/result-text-viewer";
 import { SheetResultSections } from "@/components/sheet-result-sections";
+import { isProjectSummarySheet } from "@/lib/sheet-mapping-model";
 import { isSheetPayloadLabel } from "@/lib/sheet-sections";
 import { loadRows, batchRowLoader, sheetRowState, caseDetailLoadKeys, canReuseSheetDetails, completeResultTabLoad, isImportedEvidenceDisplayed, type RowLoadState } from "@/lib/result-preview";
 import { selectDetailSheets } from "@/lib/sheet-detail";
@@ -64,6 +65,11 @@ import { clearProjectWorkbook, getProjectWorkbook } from "@/lib/workbook-cache";
 import { detectBootstrapCaseConflicts, detectThreeWayCaseConflicts, mergeCaseChoices, type CaseChoice, type CaseConflict } from "@/lib/sync/client-conflicts";
 import type { CanonicalProjectSnapshot } from "@/lib/sync/types";
 import { mergeWorkspaceAndGoogleCases } from "@/lib/sync/workspace-merge";
+import { TestCaseSteps, orderedStepResults, stepResultTitle } from "./test-case-steps";
+import { aggregateStepStatus } from "@/lib/step-testcases";
+import { WorkbookSummary } from "./workbook-summary";
+import { needsStepTemplateRefresh } from "@/lib/step-reconciliation";
+import { ResultStepMapping } from "./result-step-mapping";
 import { TEST_STATUSES, type CurrentUser, type Project, type ProjectSheetMapping, type TestCase, type TestCaseResultField, type TestDefect, type TestEvidence, type TestResult, type TestStatus, type WorkbookSheet, type WorkbookSheetContent, type WorkbookSource } from "@/lib/types";
 
 const statusMeta: Record<TestStatus, { label: string; className: string }> = {
@@ -625,6 +631,8 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
     };
   });
   const [actualResult, setActualResult] = useState("");
+  const [resultStepId, setResultStepId] = useState("");
+  const [resultStatus, setResultStatus] = useState<TestStatus>("Not Start");
   const [apiResponse, setApiResponse] = useState("");
   const [log, setLog] = useState("");
   const [resultCustomFields, setResultCustomFields] = useState<TestCaseResultField[]>(() => (value.resultFieldDefinitions ?? []).map((field) => ({ ...field, value: "" })));
@@ -681,6 +689,8 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
   });
   const rememberDefaults = (testCase: TestCase) => window.localStorage.setItem(`qa-test-defaults:${projectId}`, JSON.stringify({ platform: testCase.platform, environment: testCase.environment, device: testCase.device, appVersion: testCase.appVersion, executedBy: testCase.executedBy, testData: testCase.testData }));
   function resetResultForm() {
+    setResultStepId("");
+    setResultStatus("Not Start");
     setActualResult("");
     setApiResponse("");
     setLog("");
@@ -696,6 +706,10 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
     setDraft((current) => ({ ...current, evidence: [] }));
   }
   async function saveResult() {
+    if (draft.stepDefinitions?.length && !resultStepId && !editingResultId) {
+      setError("กรุณาเลือก Step ที่เป็นเจ้าของ Result");
+      return;
+    }
     if (!actualResult.trim() && !apiResponse.trim() && !log.trim() && !draft.evidence.length && !resultCustomFields.some((field) => field.value.trim())) {
       setError("กรุณาใส่ผลทดสอบ รูป API response หรือ log อย่างน้อยหนึ่งรายการ");
       return;
@@ -703,10 +717,12 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
     const createdAt = new Date().toISOString();
     const result: TestResult = {
       id: crypto.randomUUID(),
+      editedLocally: true,
+      stepId: resultStepId || undefined,
       testerName: draft.executedBy.trim() || currentUserName.trim(),
       source: 'web',
       sourceSheetName: focusedSheetName || undefined,
-      status: draft.status,
+      status: draft.stepDefinitions?.length ? resultStatus : draft.status,
       actualResult: actualResult.trim(),
       apiResponse: apiResponse.trim(),
       log: log.trim(),
@@ -716,11 +732,15 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
     };
     const next = withPassedTimestamp({
       ...draft,
+      ...(draft.stepDefinitions?.length ? (() => {
+        const stepDefinitions = draft.stepDefinitions.map(step => step.id === resultStepId ? { ...step, status: resultStatus, rawStatus: resultStatus, executedBy: draft.executedBy || currentUserName, executedDate: createdAt.slice(0, 10), device: draft.device, environment: draft.environment, appVersion: draft.appVersion } : step);
+        return { stepDefinitions, status: aggregateStepStatus(stepDefinitions) };
+      })() : {}),
       executedBy: draft.executedBy.trim() || currentUserName.trim(),
       remark: actualResult.trim() || draft.remark,
       evidence: [],
       results: editingResultId
-        ? (draft.results ?? []).map((item) => testResultIdentity(item) === editingResultId ? { ...result, id: item.id, sourceSheetName: item.sourceSheetName, source:item.source ?? (item.sourceSheetName ? 'sheets' : 'web'), createdAt: item.createdAt,origin:item.origin, testerName:item.testerName ?? item.origin?.authorName ?? result.testerName } : item)
+        ? (draft.results ?? []).map((item) => testResultIdentity(item) === editingResultId ? { ...item, ...result, id: item.id, sourceSheetName: item.sourceSheetName, source:item.source ?? (item.sourceSheetName ? 'sheets' : 'web'), createdAt: item.createdAt,origin:item.origin, testerName:item.testerName ?? item.origin?.authorName ?? result.testerName } : item)
         : [result, ...(draft.results ?? [])],
     });
     setSavingResult(true);
@@ -738,6 +758,8 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
   }
   function editResult(result: TestResult) {
     resetResultForm();
+    setResultStepId(result.stepId ?? "");
+    setResultStatus(result.status);
     setShowResultEntry(false);
     setEditingResultId(testResultIdentity(result));
     setActualResult(result.actualResult);
@@ -914,6 +936,7 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
   }
   function renderResultFields(submitLabel: string, onCancel?: () => void) {
     return <>
+      {!!draft.stepDefinitions?.length && <div className="two-column-fields"><label><span>Step ของ Result</span><select value={resultStepId} onChange={event => setResultStepId(event.target.value)}><option value="">{editingResultId ? "ผลที่ยังไม่ผูก Step" : "เลือก Step"}</option>{draft.stepDefinitions.map(step => <option key={step.id} value={step.id}>{step.name} · {step.description}</option>)}</select></label><label><span>สถานะ Result</span><select value={resultStatus} onChange={event => setResultStatus(event.target.value as TestStatus)}>{TEST_STATUSES.map(status => <option key={status}>{status}</option>)}</select></label></div>}
       <label className="text-field"><span>ผลที่พบ / Actual result</span><textarea rows={3} value={actualResult} onChange={(event) => setActualResult(event.target.value)} placeholder="รายละเอียดผลทดสอบรอบนี้" /></label>
       <div className="result-input-grid"><label className="text-field"><span>API response</span><textarea className="code-input" rows={7} value={apiResponse} onChange={(event) => setApiResponse(event.target.value)} placeholder="วาง response JSON หรือข้อความ" /></label>
       <label className="text-field"><span>Log</span><textarea className="code-input" rows={7} value={log} onChange={(event) => setLog(event.target.value)} placeholder="วาง application log" /></label></div>
@@ -940,15 +963,22 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
       <div className="result-editor-actions">{onCancel && <button className="secondary-button" type="button" onClick={onCancel} disabled={savingResult}>ยกเลิกการแก้ไข</button>}<button className="primary-button add-result-button" type="button" onClick={() => void saveDefect()} disabled={savingResult}>{savingResult ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}{submitLabel}</button></div>
     </>;
   }
+  const renderResults = (results: TestResult[], title = "ผลการทดสอบ") => (
+          results.length > 0 && <div className="result-preview-list">
+            <div className="result-sheet-heading"><span>{title}</span><strong>{results.length} รายการ</strong></div>
+            {results.map((result, index) => { const resultKey = testResultIdentity(result); return <article key={resultKey} className={editingResultId === resultKey ? "editing" : ""}><header><strong>{draft.stepDefinitions?.length ? stepResultTitle(draft, result) : `ผลที่ ${index + 1}`}</strong><StatusBadge status={result.status} /><time>{formatFlexibleDate(result.createdAt)}</time>{!readOnly && editingResultId !== resultKey && <><button type="button" className="secondary-button result-edit-button" onClick={() => editResult(result)}>แก้ไข</button><button type="button" className="danger-button result-delete-button" disabled={savingResult} onClick={() => void deleteResult(result)}><Trash2 size={13} />ลบ</button></>}</header>{draft.stepDefinitions?.length && !readOnly && <ResultStepMapping result={result} steps={draft.stepDefinitions} saving={savingResult} onSave={async (stepId) => { setSavingResult(true); setError(""); try { const next = { ...draft, results: (draft.results ?? []).map(item => testResultIdentity(item) === resultKey ? { ...item, stepId: stepId || undefined, stepMappingHistory: [...(item.stepMappingHistory ?? []), { fromStepId: item.stepId ?? null, toStepId: stepId || null, by: currentUserName, at: new Date().toISOString() }] } : item) }; setDraft(await onSaveResult(next)); } catch (reason) { setError(reason instanceof Error ? reason.message : "บันทึกการจับคู่ไม่สำเร็จ"); throw reason; } finally { setSavingResult(false); } }} />}{result.origin && <small className="result-origin-label">{result.origin.inferred ? 'Sprint ที่อนุมานจากข้อมูลเดิม/นำเข้า' : 'Sprint ต้นกำเนิด'}: {result.origin.sprintName} · {result.origin.year}{!result.origin.inferred && result.origin.authorName ? ` · ผู้บันทึก: ${result.origin.authorName}` : ' · ไม่ระบุผู้บันทึกต้นกำเนิด'}</small>}{editingResultId === resultKey ? <div className="result-entry-block inline-result-editor"><div className="result-form-heading"><div><span>{`แก้ไขผลที่ ${index + 1} ของ ${draft.id}`}</span><small>บันทึกแล้วจะแทนที่ Result รายการนี้</small></div></div>{renderResultFields("บันทึกการแก้ไข Result", resetResultForm)}</div> : <>{(result.sheetSections?.length ?? 0) > 0 && <SheetResultSections sections={result.sheetSections!} images={evidenceViewerImages(result.evidence)} sheetName={result.sourceSheetName ?? ""} />}{!result.sheetSections?.length && result.actualResult && <ResultTextViewer title="ผลการทดสอบ / ข้อมูลเพิ่มเติม" text={result.actualResult} highlights={result.textHighlights?.actualResult} />}{(result.customFields?.length ?? 0) > 0 && <dl className="result-custom-preview">{result.customFields?.map((field) => <div key={field.key}><dt>{field.label}</dt><dd><ResultTextViewer title={field.label} text={field.value || "—"} /></dd></div>)}</dl>}{!result.sheetSections?.length && result.apiResponse && <ResultTextViewer title="API response" text={result.apiResponse} highlights={result.textHighlights?.apiResponse} onSave={readOnly ? undefined : async (text, highlights) => { const next = { ...draft, results: (draft.results ?? []).map(item => testResultIdentity(item) === resultKey ? { ...item, apiResponse: text, textHighlights: { ...item.textHighlights, apiResponse: highlights } } : item) }; const saved = await onSaveResult(next); setDraft(saved); }} />}{!result.sheetSections?.length && result.log && <ResultTextViewer title="Log" text={result.log} highlights={result.textHighlights?.log} onSave={readOnly ? undefined : async (text, highlights) => { const next = { ...draft, results: (draft.results ?? []).map(item => testResultIdentity(item) === resultKey ? { ...item, log: text, textHighlights: { ...item.textHighlights, log: highlights } } : item) }; const saved = await onSaveResult(next); setDraft(saved); }} />}{!result.sheetSections?.length && <ImageViewerGallery className="drive-evidence-gallery result-evidence-gallery" images={evidenceViewerImages(result.evidence)} />}</>}</article>; })}
+          </div>
+  );
   return (
     <div className={`drawer-backdrop ${pageMode ? "case-route-backdrop" : ""}`} role="presentation" onMouseDown={pageMode ? undefined : onClose}>
       <aside className={`case-drawer ${pageMode ? "case-route-editor" : ""} ${readOnly ? "read-only-case" : ""}`} role="dialog" aria-modal="true" aria-labelledby="case-title" onMouseDown={(event) => event.stopPropagation()}>
         <header className="drawer-header">
           <div><span className="case-id">{draft.id}</span><h2 id="case-title">{draft.name}</h2></div>
-          <div className="case-header-actions">{readOnly && <span className="read-only-badge">ดูอย่างเดียว</span>}{!readOnly && !editingCaseDetails && <button type="button" className="secondary-button" onClick={() => setEditingCaseDetails(true)}>แก้ไข Test Case</button>}<button className="icon-button" onClick={onClose} aria-label="ปิด"><X size={20} /></button></div>
+          <div className="case-header-actions">{readOnly && <span className="read-only-badge">ดูอย่างเดียว</span>}{!readOnly && !editingCaseDetails && !draft.stepDefinitions?.length && <button type="button" className="secondary-button" onClick={() => setEditingCaseDetails(true)}>แก้ไข Test Case</button>}<button className="icon-button" onClick={onClose} aria-label="ปิด"><X size={20} /></button></div>
         </header>
         <div className="drawer-body">
           <div className="case-context"><span>{draft.platform || "ไม่ระบุ Platform"}</span><span>{draft.environment || "ไม่ระบุ Env"}</span><span>{draft.appVersion || "ไม่ระบุ Build"}</span></div>
+          <TestCaseSteps testCase={draft} readOnly={readOnly} onChange={setDraft} renderResults={renderResults} onAddResult={stepId => { resetResultForm(); setResultStepId(stepId); setShowResultEntry(true); }} />
           {editingCaseDetails ? <section className="testcase-details-editor">
             <div className="result-form-heading"><div><span>แก้ไข Test Case</span><small>การแก้ไขจะถูกบันทึกในระบบ และรอซิงค์กลับ Google Sheets</small></div></div>
             <div className="two-column-fields"><label><span>Test Case ID *</span><input value={draft.id} onChange={(event) => update("id", event.target.value)} /></label><label><span>Platform</span><input value={draft.platform} onChange={(event) => update("platform", event.target.value)} /></label></div>
@@ -962,8 +992,8 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
             {testCaseSourceSection(draft) && <section className="readonly-block"><p>Section จาก Sheets</p><div>{testCaseSourceSection(draft)}</div></section>}
             <section className="readonly-block"><p>Test Scenario</p><div className="multiline">{draft.scenario || "—"}</div></section>
             <section className="readonly-block"><p>เงื่อนไข</p><div>{draft.condition || "—"}</div></section>
-            <section className="readonly-block"><p>ขั้นตอนทดสอบ</p><div className="multiline">{draft.steps || "—"}</div></section>
-            <section className="readonly-block expected"><p>ผลลัพธ์ที่คาดหวัง</p><div className="multiline">{draft.expected || "—"}</div></section>
+            {!draft.stepDefinitions?.length && <><section className="readonly-block"><p>ขั้นตอนทดสอบ</p><div className="multiline">{draft.steps || "—"}</div></section>
+            <section className="readonly-block expected"><p>ผลลัพธ์ที่คาดหวัง</p><div className="multiline">{draft.expected || "—"}</div></section></>}
           </>}
           <fieldset className="read-only-fieldset" disabled={readOnly}>
           <div className="form-section-title"><span>{readOnly ? "ข้อมูลผลการทดสอบ" : "บันทึกผลการทดสอบ"}</span>{!readOnly && <span className="required-note">* จำเป็น</span>}</div>
@@ -987,10 +1017,7 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
             })}
           </section>}
           </fieldset>
-          {(draft.results?.length ?? 0) > 0 && <div className="result-preview-list">
-            <div className="result-sheet-heading"><span>Preview Results</span><strong>{draft.results?.length} รายการ</strong></div>
-            {draft.results?.map((result, index) => { const resultKey = testResultIdentity(result); return <article key={resultKey} className={editingResultId === resultKey ? "editing" : ""}><header><strong>ผลที่ {index + 1}</strong><StatusBadge status={result.status} /><time>{formatFlexibleDate(result.createdAt)}</time>{!readOnly && editingResultId !== resultKey && <><button type="button" className="secondary-button result-edit-button" onClick={() => editResult(result)}>แก้ไข</button><button type="button" className="danger-button result-delete-button" disabled={savingResult} onClick={() => void deleteResult(result)}><Trash2 size={13} />ลบ</button></>}</header>{result.origin && <small className="result-origin-label">{result.origin.inferred ? 'Sprint ที่อนุมานจากข้อมูลเดิม/นำเข้า' : 'Sprint ต้นกำเนิด'}: {result.origin.sprintName} · {result.origin.year}{!result.origin.inferred && result.origin.authorName ? ` · ผู้บันทึก: ${result.origin.authorName}` : ' · ไม่ระบุผู้บันทึกต้นกำเนิด'}</small>}{editingResultId === resultKey ? <div className="result-entry-block inline-result-editor"><div className="result-form-heading"><div><span>{`แก้ไขผลที่ ${index + 1} ของ ${draft.id}`}</span><small>บันทึกแล้วจะแทนที่ Result รายการนี้</small></div></div>{renderResultFields("บันทึกการแก้ไข Result", resetResultForm)}</div> : <>{(result.sheetSections?.length ?? 0) > 0 && <SheetResultSections sections={result.sheetSections!} images={evidenceViewerImages(result.evidence)} sheetName={result.sourceSheetName ?? ""} />}{!result.sheetSections?.length && result.actualResult && <ResultTextViewer title="ผลการทดสอบ / ข้อมูลเพิ่มเติม" text={result.actualResult} highlights={result.textHighlights?.actualResult} />}{(result.customFields?.length ?? 0) > 0 && <dl className="result-custom-preview">{result.customFields?.map((field) => <div key={field.key}><dt>{field.label}</dt><dd><ResultTextViewer title={field.label} text={field.value || "—"} /></dd></div>)}</dl>}{!result.sheetSections?.length && result.apiResponse && <ResultTextViewer title="API response" text={result.apiResponse} highlights={result.textHighlights?.apiResponse} onSave={readOnly ? undefined : async (text, highlights) => { const next = { ...draft, results: (draft.results ?? []).map(item => testResultIdentity(item) === resultKey ? { ...item, apiResponse: text, textHighlights: { ...item.textHighlights, apiResponse: highlights } } : item) }; const saved = await onSaveResult(next); setDraft(saved); }} />}{!result.sheetSections?.length && result.log && <ResultTextViewer title="Log" text={result.log} highlights={result.textHighlights?.log} onSave={readOnly ? undefined : async (text, highlights) => { const next = { ...draft, results: (draft.results ?? []).map(item => testResultIdentity(item) === resultKey ? { ...item, log: text, textHighlights: { ...item.textHighlights, log: highlights } } : item) }; const saved = await onSaveResult(next); setDraft(saved); }} />}{!result.sheetSections?.length && <ImageViewerGallery className="drive-evidence-gallery result-evidence-gallery" images={evidenceViewerImages(result.evidence)} />}</>}</article>; })}
-          </div>}
+          {renderResults(draft.stepDefinitions?.length ? orderedStepResults(draft).filter(result => !draft.stepDefinitions!.some(step => step.id === result.stepId)) : draft.results ?? [], draft.stepDefinitions?.length ? "ผลที่ยังไม่ได้ผูกกับ Step" : "Preview Results")}
           {focusedSheetName && loadingSheetDetails && <div className="result-preview-list sheet-result-evidence"><SheetContentShimmer /></div>}
           {focusedSheetName && !loadingSheetDetails && source && focusedEvidence.sheet && focusedEvidence.remaining > 0 && <div className="result-preview-list sheet-result-evidence"><div className="result-sheet-heading"><span>รูปหลักฐานเพิ่มเติมจาก {focusedSheetName}</span><strong>{focusedEvidence.remaining} รูป</strong></div>{source.bufferLoaded ? <ResultSheetViewer source={source} sheet={focusedEvidence.sheet} imagesOnly displayedEvidence={displayedResultEvidence} contentOverride={focusedEvidence.content} /> : <SheetContentShimmer />}</div>}
           {!readOnly && !showResultEntry && !editingResultId && !showDefectEntry && !editingDefectId && <div className="entry-type-actions"><button type="button" className="primary-button open-result-button" onClick={() => { resetResultForm(); setShowResultEntry(true); }}><PlusIcon />Add Result</button><button type="button" className="secondary-button add-defect-button" onClick={() => { resetResultForm(); setShowDefectEntry(true); }}><CircleAlert size={16} />Add Defect</button></div>}
@@ -1005,7 +1032,7 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
             {loadingSheetDetails || loadingWorkbook ? <SheetContentShimmer /> : <>{resultSheets.length ? <div className="result-sheet-list">{resultSheets.map((sheet) => <button className={viewingSheet?.path === sheet.path ? "active" : ""} onClick={() => { if (source?.bufferLoaded) return setViewingSheet(sheet); setLoadingWorkbook(true); void onEnsureWorkbook().then(() => setViewingSheet(sheet)).catch((reason) => setError(reason instanceof Error ? reason.message : "โหลดไฟล์ต้นฉบับไม่สำเร็จ")).finally(() => setLoadingWorkbook(false)); }} key={sheet.path}><FileSpreadsheet size={16} /><span><strong>{sheet.name}</strong><small>{sheet.imageCount ? `${sheet.imageCount} รูปหลักฐาน` : "ไม่มีรูปในชีต"}</small></span><ChevronRight size={15} /></button>)}</div> : <p className="no-result-sheet">ไม่พบชีตผลลัพธ์ที่อ้างอิง {value.id}</p>}{source?.bufferLoaded && resultSheets.map(sheet => <ResultSheetViewer key={sheet.path} source={source} sheet={sheet} imagesOnly displayedEvidence={displayedResultEvidence} />)}{viewingSheet && source?.bufferLoaded && <ResultSheetViewer key={viewingSheet.path} source={source} sheet={viewingSheet} displayedEvidence={displayedResultEvidence} showImages={false} />}</>}
           </div>}
           <label className="field-label">สถานะผลทดสอบ</label>
-          {readOnly ? <StatusBadge status={draft.status} /> : <div className="status-picker">
+          {readOnly || draft.stepDefinitions?.length ? <><StatusBadge status={draft.status} />{!!draft.stepDefinitions?.length && <small>คำนวณจากสถานะของทุก Step</small>}</> : <div className="status-picker">
             {TEST_STATUSES.map((status) => (
               <button type="button" key={status} className={draft.status === status ? "selected" : ""} onClick={() => setDraft((current) => ({ ...current, status }))}>
                 <span className={`picker-dot ${statusMeta[status].className}`} />{statusMeta[status].label}
@@ -1056,7 +1083,8 @@ export function QaWorkspace({
   const canEditProject = selectedProject?.canEdit === true;
   const canManageProject = selectedProject?.canManage === true;
   const requiresDetailedGoogleData = Boolean((testCaseId || sheetName) && selectedProject?.googleSheetId);
-  const [cases, setCases] = useState<TestCase[]>(() => cachedWorkspace?.cases ?? []);
+  const [workspaceCases, setCases] = useState<TestCase[]>(() => cachedWorkspace?.cases ?? []);
+  const cases = useMemo(() => workspaceCases.filter(item => !isProjectSummarySheet(item.sourceSheetName || item.id)), [workspaceCases]);
   const [source, setSource] = useState<WorkbookSource | null>(() => cachedWorkspace?.source ?? null);
   const [sheetMappings, setSheetMappings] = useState<ProjectSheetMapping[]>(() => cachedWorkspace?.sheetMappings ?? []);
   const [hasLoadedSheetMappings, setHasLoadedSheetMappings] = useState(cachedWorkspace?.hasLoadedSheetMappings ?? false);
@@ -1284,8 +1312,9 @@ export function QaWorkspace({
     if (!selectedProject) return;
     const cached = workspaceNavigationCache.get(selectedProject.id);
     const needsDetailedData = Boolean((testCaseId || sheetName) && selectedProject.googleSheetId);
-    if (cached && cached.hasLoadedSheetMappings && !needsDetailedData) return;
-    if (cached?.hasLoadedSheetMappings && needsDetailedData && cached.source) {
+    const upgradeCachedTemplate = cached && needsStepTemplateRefresh(cached.cases, cached.source);
+    if (cached && cached.hasLoadedSheetMappings && !needsDetailedData && !upgradeCachedTemplate) return;
+    if (cached?.hasLoadedSheetMappings && needsDetailedData && cached.source && !upgradeCachedTemplate) {
       const names = selectDetailSheets(cached.source.sheets, sheetName
         ? { sheetName: decodeURIComponent(sheetName) }
         : { testcaseId: decodeURIComponent(testCaseId!) }).map(sheet => sheet.name);
@@ -1298,7 +1327,7 @@ export function QaWorkspace({
     const googleRequest = selectedProject.googleSheetId
       ? workspaceRequest.then(async workspace => {
           const saved = readSheetImportState(workspace.source?.sheetImport, selectedProject.googleSheetId);
-          if (saved && !saved.refreshRequired && workspace.source) {
+          if (saved && !saved.refreshRequired && workspace.source && !needsStepTemplateRefresh(workspace.cases, workspace.source)) {
             const names = needsDetailedData ? selectDetailSheets(workspace.source.sheets, sheetName
               ? { sheetName: decodeURIComponent(sheetName) } : { testcaseId: decodeURIComponent(testCaseId!) }).map(sheet => sheet.name) : [];
             if (!needsDetailedData || sheetRowState(caseDetailLoadKeys(names, decodeURIComponent(testCaseId ?? "")), saved.states) === "loaded") return null;
@@ -1310,7 +1339,7 @@ export function QaWorkspace({
             return null;
           }
           if (!response.ok) throw new Error(data.error ?? "โหลด Google Sheet ไม่สำเร็จ");
-          return data as { cases: TestCase[]; sheets: WorkbookSource["sheets"] };
+          return data as { cases: TestCase[]; sheets: WorkbookSource["sheets"]; coverSnapshot?: WorkbookSource["coverSnapshot"] };
         })
       : Promise.resolve(null);
     const mappingsRequest = cached?.hasLoadedSheetMappings ? Promise.resolve(cached.sheetMappings) : selectedProject.googleSheetId
@@ -1353,12 +1382,14 @@ export function QaWorkspace({
         setCases(mergedCases);
         setSource(workspace.source ? {
           ...workspace.source,
+          coverSnapshot: googleWorkspace?.coverSnapshot ?? workspace.source.coverSnapshot,
           sheets: googleWorkspace
             ? mergeGoogleSheetsWithSource(workspace.source.sheets, googleWorkspace.sheets)
             : workspace.source.sheets,
         } : googleWorkspace ? {
           fileName: `${selectedProject.name}.xlsx`, buffer: new ArrayBuffer(0), bufferLoaded: false,
           sheetName: "Testcase", sheetPath: "", columns: {}, sheets: googleWorkspace.sheets,
+          coverSnapshot: googleWorkspace.coverSnapshot,
         } : workspace.source);
         setHasUnsyncedChanges(Boolean(googleWorkspace && localOnlyCases.length));
         if (mappingsResult.status === "fulfilled") {
@@ -1581,8 +1612,9 @@ export function QaWorkspace({
         return;
       }
       const imported = importTestCases(workbookBuffer, `${selectedProject.name}.xlsx`);
-      const importedImages = readWorkbookResultImages(imported.source);
-      const freeformResults = readWorkbookFreeformResults(imported.source);
+      imported.source.coverSnapshot = data.coverSnapshot ?? imported.source.coverSnapshot;
+      const importedImages = readWorkbookResultImages(imported.source, imported.cases);
+      const freeformResults = readWorkbookFreeformResults(imported.source, imported.cases);
       const storedCases = new Map(cases.map((testCase) => [testCaseIdentity(testCase.id), testCase]));
       let importedCases: TestCase[] = mergeWorkspaceAndGoogleCases(cases, googleCases, currentUser?.name ?? "").cases.map(testCase => ({ ...testCase, results: testCase.results?.map(result => ({ ...result, evidence: [...result.evidence] })) }));
       const importedSheetAssignments = new Map(resolveSheetAssociations(
@@ -1591,7 +1623,7 @@ export function QaWorkspace({
         sheetMappings,
       ).associations.map((association) => [association.sheet.name.trim().toLocaleLowerCase(), association.testCase.id]));
       for (const sheet of imported.source.sheets.filter((item) => item.name.trim().toLowerCase() !== "testcase")) {
-        if (isProjectDefectSheet(sheet.name)) continue;
+        if (isProjectDefectSheet(sheet.name) || isProjectSummarySheet(sheet.name)) continue;
         const sheetCaseId = importedSheetAssignments.get(sheet.name.trim().toLocaleLowerCase())
           ?? testCaseIdsFromSheet(sheet).find((id) => id.startsWith("TC-"))
           ?? sheet.name;
@@ -1633,6 +1665,8 @@ export function QaWorkspace({
         } else {
           testCase.results = [...(testCase.results ?? []), {
             id: importedResult.resultId,
+            stepId: importedResult.stepId,
+            sourceRange: importedResult.sourceRange,
             testerName: testCase.executedBy || '',
             source: 'sheets',
             sourceSheetName: importedResult.sheetName,
@@ -2082,6 +2116,7 @@ export function QaWorkspace({
             <StatCard icon={<Clock3 size={21} />} label="รอดำเนินการ" value={counts["Not Start"] + counts["In Progress"]} detail="ยังไม่สรุปผล" tone="amber" />
           </section>
 
+          {source && <WorkbookSummary cases={cases} source={source} />}
           <section className="overview-grid">
             <article className="panel progress-panel"><div className="panel-heading"><div><h2>ความคืบหน้า</h2><p>สถานะรวมของ Testcase</p></div><button className="icon-button"><MoreHorizontal size={19} /></button></div><div className="progress-content"><div className="progress-ring" style={{ "--progress": `${progress * 3.6}deg` } as React.CSSProperties}><div><strong>{progress}%</strong><span>ดำเนินการแล้ว</span></div></div><div className="progress-legend">{TEST_STATUSES.filter((status) => status !== "In Progress").map((status) => <button key={status} onClick={() => setStatusFilter(status)}><span className={`legend-dot ${statusMeta[status].className}`} /><span>{statusMeta[status].label}</span><strong>{counts[status]}</strong></button>)}</div></div></article>
             <article className="panel activity-panel"><div className="panel-heading"><div><h2>กิจกรรมล่าสุด</h2><p>การเปลี่ยนแปลงจากข้อมูลจริง</p></div></div><div className="empty-state compact-empty"><Clock3 size={24} /><strong>ยังไม่มีกิจกรรม</strong><span>กิจกรรมจะแสดงเมื่อเชื่อมการบันทึกผลกับ Supabase</span></div></article>

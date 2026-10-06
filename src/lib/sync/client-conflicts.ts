@@ -35,7 +35,7 @@ export function detectCaseConflicts(localCases: TestCase[], googleCases: TestCas
     const google = remote.get(id);
     if (!google) return [];
     const changedFields: string[] = comparedFields.filter((field) => local[field] !== google[field]);
-    for (const field of ["customFields", "results", "defects"] as const) {
+    for (const field of ["customFields", "results", "defects", "stepDefinitions"] as const) {
       if (JSON.stringify(local[field] ?? []) !== JSON.stringify(google[field] ?? [])) changedFields.push(field);
     }
     if (!changedFields.length && locallyCreated.has(id)) changedFields.push("เพิ่มใหม่ทั้งสองฝั่ง");

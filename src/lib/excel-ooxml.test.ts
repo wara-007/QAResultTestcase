@@ -2,11 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 import { strToU8, strFromU8, zipSync, unzipSync } from "fflate";
-import { exportTestCases, readWorkbookFreeformResults, readWorkbookResultImages, readWorkbookSheet } from "./excel-ooxml";
+import { exportTestCases, importTestCases, readWorkbookFreeformResults, readWorkbookResultImages, readWorkbookSheet } from "./excel-ooxml";
 import { casesFromRows } from "./testcase-rows";
 import type { WorkbookSource } from "./types";
 
 Object.assign(globalThis, { DOMParser });
+test("Excel imports retain original mapped labels and custom blank columns", () => {
+  const bytes = zipSync({
+    "xl/workbook.xml": strToU8('<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Testcase" r:id="r1"/></sheets></workbook>'),
+    "xl/_rels/workbook.xml.rels": strToU8('<Relationships><Relationship Id="r1" Target="worksheets/sheet1.xml"/></Relationships>'),
+    "xl/worksheets/sheet1.xml": strToU8('<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Test Case Id</t></is></c><c r="B1" t="inlineStr"><is><t>Condition*</t></is></c><c r="C1" t="inlineStr"><is><t>Custom note</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>TC01</t></is></c><c r="B2" t="inlineStr"><is><t>Member</t></is></c></row></sheetData></worksheet>'),
+  });
+  const item = importTestCases(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, "fixture.xlsx").cases[0];
+  assert.deepEqual(item.sourceFields?.map(field => [field.label, field.value]), [["Test Case Id", "TC01"], ["Condition*", "Member"], ["Custom note", ""]]);
+});
 test("combined result evidence remains accessible to both referenced cases", () => {
   const source = workbook([["A1", "API"], ["B1", "Response"], ["C1", "Log"], ["A2", "GET /shared"], ["B2", "ok"]]);
   source.sheets[0].name = "TC01, TC02";

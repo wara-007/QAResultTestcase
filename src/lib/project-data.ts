@@ -45,6 +45,7 @@ type CaseRow = {
 };
 
 type StoredResultPayload = {
+  sourceFields?: TestCase["sourceFields"];
   version: 1 | 2 | 3 | 4;
   stepDefinitions?: TestCase["stepDefinitions"];
   importIssues?: string[];
@@ -76,6 +77,7 @@ export function parseStoredResults(value: string | undefined) {
     const results = Array.isArray(payload.results) ? payload.results : [];
     const migratedDefects = results.flatMap((result) => (result.defects ?? []).map((defect, index) => normalizeDefect(defect, `${result.id}-defect-${index + 1}`)));
     return {
+      sourceFields: Array.isArray(payload.sourceFields) ? payload.sourceFields : undefined,
       stepDefinitions: Array.isArray(payload.stepDefinitions) ? payload.stepDefinitions : undefined,
       importIssues: Array.isArray(payload.importIssues) ? payload.importIssues : [],
       resultReference: typeof payload.resultReference === "string" ? payload.resultReference : "",
@@ -95,7 +97,7 @@ export function parseStoredResults(value: string | undefined) {
 }
 
 export function serializeStoredResults(testCase: TestCase) {
-  const payload: StoredResultPayload = { version: 4, stepDefinitions: testCase.stepDefinitions, importIssues: testCase.importIssues, resultReference: testCase.resultReference, results: testCase.results ?? [], defects: testCase.defects ?? [], customFields: testCase.customFields ?? [], resultFieldDefinitions: testCase.resultFieldDefinitions ?? [] };
+  const payload: StoredResultPayload = { version: 4, sourceFields: testCase.sourceFields, stepDefinitions: testCase.stepDefinitions, importIssues: testCase.importIssues, resultReference: testCase.resultReference, results: testCase.results ?? [], defects: testCase.defects ?? [], customFields: testCase.customFields ?? [], resultFieldDefinitions: testCase.resultFieldDefinitions ?? [] };
   return `qa-results:${JSON.stringify(payload)}`;
 }
 
@@ -235,6 +237,7 @@ export async function loadProjectWorkspace(projectId: string, options: { include
       remark: execution?.remark ?? "",
       evidence: [],
       customFields: stored.customFields,
+      sourceFields: stored.sourceFields,
       resultFieldDefinitions: stored.resultFieldDefinitions,
       results: stored.results,
       defects: stored.defects,

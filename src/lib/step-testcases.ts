@@ -44,8 +44,15 @@ export function parseStepTestCases(rows: unknown[][], sheetName: string): TestCa
     const get = (field: keyof typeof columns) => columns[field] >= 0 ? String(row[columns[field]] ?? "").trim() : "";
     if (!row.some(cell => String(cell ?? "").trim())) { current = undefined; continue; }
     const id = get("id");
+    const conditionColumn = headers.findIndex(value => ["condition", "เงื่อนไข"].includes(stepHeaderKey(value)));
     if (id) {
-      current = { id, sourceRow: index + 1, platform: "", condition: get("classification"), scenario: [get("scenario"), get("scenarioDescription")].filter(Boolean).join("\n"), name: get("name"), steps: "", expected: "", status: "Not Start", device: get("device"), testData: "", appVersion: get("appVersion"), environment: get("environment"), resultReference: get("resultReference"), executedBy: get("executedBy"), executedDate: get("executedDate"), executedTime: "", remark: get("remark"), evidence: [], stepDefinitions: [], importIssues: [] };
+      current = { id, sourceRow: index + 1, platform: "", condition: "", scenario: [get("scenario"), get("scenarioDescription")].filter(Boolean).join("\n"), name: get("name"), steps: "", expected: "", status: "Not Start", device: get("device"), testData: "", appVersion: get("appVersion"), environment: get("environment"), resultReference: get("resultReference"), executedBy: get("executedBy"), executedDate: get("executedDate"), executedTime: "", remark: get("remark"), evidence: [], stepDefinitions: [], importIssues: [] };
+      if (conditionColumn >= 0) current.condition = String(row[conditionColumn] ?? "").trim();
+      const caseColumns = new Set([columns.id, columns.scenario, columns.scenarioDescription, columns.name, conditionColumn].filter(column => column >= 0));
+      current.sourceFields = headers.flatMap((label, column) => caseColumns.has(column) ? [{
+        column, label: String(label).trim(), value: String(row[column] ?? "").trim(),
+        field: (column === columns.id ? "id" : column === columns.name ? "name" : column === conditionColumn ? "condition" : undefined) as keyof TestCase | undefined,
+      }] : []);
       cases.push(current);
     }
     if (!get("step") && !get("description") && !get("expected")) { current = undefined; continue; }
@@ -53,6 +60,7 @@ export function parseStepTestCases(rows: unknown[][], sheetName: string): TestCa
     const step: TestCaseStep = { id: `${sheetName}:${index + 1}`, sourceSheetName: sheetName, sourceRow: index + 1, name: get("step"), description: get("description"), expected: get("expected"), classification: get("classification"), rawStatus: get("status"), status: stepStatus(get("status")), device: get("device"), environment: get("environment"), appVersion: get("appVersion"), executedBy: get("executedBy"), executedDate: get("executedDate"), resultReference: get("resultReference"), remark: get("remark") };
     current.stepDefinitions!.push(step);
     const mappedColumns = new Set(Object.values(columns).filter(column => column >= 0));
+    if (conditionColumn >= 0) mappedColumns.add(conditionColumn);
     step.sourceFields = Array.from({ length: Math.max(headers.length, row.length) }, (_, column) => ({
       ref: `${stepColumnName(column)}${index + 1}`, column,
       label: String(headers[column] ?? "").trim() || `คอลัมน์ ${stepColumnName(column)}`,

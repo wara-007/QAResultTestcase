@@ -21,6 +21,7 @@ export function mergeWorkspaceAndGoogleCases(localCases: TestCase[], googleCases
     if (!local) return google;
     const hasLocalExecution = Boolean(local.persistedLocally || local.results?.length || local.defects?.length);
     const shared = {
+      sourceFields: google.sourceFields ?? local.sourceFields,
       ...(google.stepDefinitions || local.stepDefinitions ? (() => { const reconciled = reconcileStepCases(local, google).testCase; return { stepDefinitions: reconciled.stepDefinitions, importIssues: reconciled.importIssues }; })() : {}),
       recordId: local.recordId,
       executionId: local.executionId,

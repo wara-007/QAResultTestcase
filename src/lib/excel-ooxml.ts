@@ -1,7 +1,7 @@
 import { strFromU8, strToU8, unzipSync, zipSync, type Unzipped } from "fflate";
 import type { TestCase, TestStatus, WorkbookFreeformResult, WorkbookResultImage, WorkbookSheet, WorkbookSheetContent, WorkbookSheetKind, WorkbookSource } from "./types";
 import { freeformTextFromCells } from "./sheet-detail";
-import { parseStepTestCases } from "./step-testcases";
+import { parseStepTestCases, stepColumnName } from "./step-testcases";
 import { isProjectSummarySheet, testCaseIdsMatchingSheetName } from "./sheet-mapping-model";
 import { parseStepSheetResults } from "./step-sheet-results";
 import { parseCoverSnapshot } from "./workbook-validation";
@@ -264,7 +264,13 @@ export function importTestCases(buffer: ArrayBuffer, fileName: string) {
     const steps = get("steps", row) || previousSteps;
     if (scenario) previousScenario = scenario;
     if (steps) previousSteps = steps;
+    const sourceFields: NonNullable<TestCase["sourceFields"]> = Array.from({ length: Math.max(stepRows[headerRow - 1]?.length ?? 0, stepRows[row - 1]?.length ?? 0) }, (_, column) => {
+      const refColumn = stepColumnName(column);
+      return { column, label: values.get(`${refColumn}${headerRow}`)?.trim() || `คอลัมน์ ${column + 1}`, value: values.get(`${refColumn}${row}`)?.trim() ?? "", field: Object.entries(detectedColumns).find(([, name]) => name === refColumn)?.[0] as keyof TestCase | undefined };
+    }).filter(field => String(stepRows[headerRow - 1]?.[field.column] ?? "").trim() || field.value);
     cases.push({
+      sourceFields,
+      customFields: sourceFields.filter(field => !field.field).map(field => ({ key: `testcase:${normalize(field.label)}:${field.column}`, label: field.label, value: field.value, source: "testcase", sheetName: sheet.name, row, column: field.column })),
       id,
       sourceRow: row,
       platform: get("platform", row),

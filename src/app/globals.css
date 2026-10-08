@@ -1054,6 +1054,9 @@ details[open] .sync-chevron { transform: rotate(180deg); }
 .sheet-result-fields dt { font-weight:600;overflow-wrap:anywhere;margin-bottom:6px; }
 .sheet-result-fields dt small { color:#64748b;font-weight:400; }
 .sheet-result-fields dd { margin:0;min-width:0; }
+.testcase-source-details .sheet-result-fields { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.testcase-source-details dd { white-space:pre-wrap;overflow-wrap:anywhere; }
+@media (max-width:700px) { .testcase-source-details .sheet-result-fields { grid-template-columns:minmax(0,1fr); } }
 .sheet-field-prose { margin:0;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.65; }
 .review-result-content { font-size:13px;min-width:0; }
 .review-result-content .sheet-spatial-result > h4,

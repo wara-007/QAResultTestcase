@@ -77,6 +77,8 @@ export type TestCaseCustomField = {
 };
 
 export type TestCase = {
+  /** Original register columns, including mapped columns and empty cells. */
+  sourceFields?: Array<{ column: number; label: string; value: string; field?: keyof TestCase }>;
   stepDefinitions?: TestCaseStep[];
   importIssues?: string[];
   id: string;

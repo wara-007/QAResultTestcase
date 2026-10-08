@@ -66,6 +66,7 @@ import { detectBootstrapCaseConflicts, detectThreeWayCaseConflicts, mergeCaseCho
 import type { CanonicalProjectSnapshot } from "@/lib/sync/types";
 import { mergeWorkspaceAndGoogleCases } from "@/lib/sync/workspace-merge";
 import { TestCaseSteps, orderedStepResults, stepResultTitle } from "./test-case-steps";
+import { TestCaseSourceDetails } from "./test-case-source-details";
 import { aggregateStepStatus } from "@/lib/step-testcases";
 import { WorkbookSummary } from "./workbook-summary";
 import { needsStepTemplateRefresh } from "@/lib/step-reconciliation";
@@ -987,6 +988,7 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
         <div className="drawer-body">
           <div className="case-context"><span>{draft.platform || "ไม่ระบุ Platform"}</span><span>{draft.environment || "ไม่ระบุ Env"}</span><span>{draft.appVersion || "ไม่ระบุ Build"}</span></div>
           {sharedSheets.map(sheet => <SharedSheetDefinition key={sheet.path} caseId={draft.id} sheetName={sheet.name} caseIds={sheet.testCaseIds} table={draft.results?.find(result => result.sourceSheetName === sheet.name && result.sheetDefinitionTable)?.sheetDefinitionTable} />)}
+          {!editingCaseDetails && !sharedSheets.length && <TestCaseSourceDetails testCase={draft} />}
           {!sharedSheets.length && <TestCaseSteps testCase={draft} readOnly={readOnly} onChange={setDraft} renderResults={renderResults} onAddResult={stepId => { resetResultForm(); setResultStepId(stepId); setShowResultEntry(true); }} />}
           {editingCaseDetails ? <section className="testcase-details-editor">
             <div className="result-form-heading"><div><span>แก้ไข Test Case</span><small>การแก้ไขจะถูกบันทึกในระบบ และรอซิงค์กลับ Google Sheets</small></div></div>
@@ -997,13 +999,7 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
             <label className="text-field"><span>Test Step Description *</span><textarea rows={6} value={draft.steps} onChange={(event) => update("steps", event.target.value)} /></label>
             <label className="text-field"><span>Expected Result *</span><textarea rows={6} value={draft.expected} onChange={(event) => update("expected", event.target.value)} /></label>
             <div className="result-editor-actions"><button type="button" className="secondary-button" onClick={cancelCaseDetailsEdit} disabled={saving}>ยกเลิกการแก้ไข</button><button type="button" className="primary-button" onClick={() => void saveCaseDetails()} disabled={saving}>{saving ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}บันทึก Test Case</button></div>
-          </section> : !sharedSheets.length && <>
-            {testCaseSourceSection(draft) && <section className="readonly-block"><p>Section จาก Sheets</p><div>{testCaseSourceSection(draft)}</div></section>}
-            <section className="readonly-block"><p>Test Scenario</p><div className="multiline">{draft.scenario || "—"}</div></section>
-            <section className="readonly-block"><p>เงื่อนไข</p><div>{draft.condition || "—"}</div></section>
-            {!draft.stepDefinitions?.length && <><section className="readonly-block"><p>ขั้นตอนทดสอบ</p><div className="multiline">{draft.steps || "—"}</div></section>
-            <section className="readonly-block expected"><p>ผลลัพธ์ที่คาดหวัง</p><div className="multiline">{draft.expected || "—"}</div></section></>}
-          </>}
+          </section> : null}
           <fieldset className="read-only-fieldset" disabled={readOnly}>
           <div className="form-section-title"><span>{readOnly ? "ข้อมูลผลการทดสอบ" : "บันทึกผลการทดสอบ"}</span>{!readOnly && <span className="required-note">* จำเป็น</span>}</div>
           <div className="two-column-fields">

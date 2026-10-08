@@ -4,6 +4,17 @@ import { casesFromRows } from "./testcase-rows";
 
 export const stepHeaders = ["Test Scenario*", "Test Scenario Description*\n(High Level Test Case)", "Test Case\n(TC ID)*", "Test Case Name*", "Positive/Negative Case*", "Step#*", "Description Step*", "Expected Result*\nFN", "Status", "Device", "Env", "App V.", "Ref\n(Result Testing)", "Executed By", "Executed Date", "Spint", "Testcase", "REMARK"];
 const row = (id: string, step: string, status = "NotStart") => ["ENQ_01", "Enquiry balance", id, "Verify pay advance", "Positive", step, "Verify data", "Correct data", status, "iOS", "UAT", "1.0", "", "QA", "6/10/2026"];
+test("Step templates use Condition for testcase conditions, independently of Positive/Negative classification", () => {
+  const headers = [...stepHeaders, "Condition*"];
+  const data = [...row("TC01", "step 01")];
+  while (data.length < stepHeaders.length) data.push("");
+  const item = casesFromRows([headers, [...data, "Existing TOL customer"]])[0];
+  assert.equal(item.condition, "Existing TOL customer");
+  assert.equal(item.stepDefinitions![0].classification, "Positive");
+  assert.equal(item.stepDefinitions![0].sourceFields!.find(field => field.label === "Condition*")?.mapped, true);
+  assert.equal(casesFromRows([headers, [...data, ""]])[0].condition, "");
+  assert.equal(casesFromRows([stepHeaders, data])[0].condition, "");
+});
 test("Step source columns preserve unknown and duplicate titles, blank headers and continuation values", () => {
   const cases = casesFromRows([[...stepHeaders, "Extra", "Extra", ""], [...row("ENQ_01_TC_01", "step 01"), "66", "TC", "note", "first", "second", "last"], ["", "", "", "", "Positive", "step 02", "Verify", "Correct", "NotStart", "", "", "", "", "", "", "67"]]);
   const fields = cases[0].stepDefinitions?.[0].sourceFields;

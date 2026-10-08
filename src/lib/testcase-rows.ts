@@ -84,6 +84,11 @@ export function casesFromRows(rows: unknown[][]): TestCase[] {
     if (scenario) previousScenario = scenario;
     if (steps) previousSteps = steps;
     return [{
+      sourceFields: Array.from({ length: Math.max(header.length, row.length) }, (_, column) => ({
+        column, label: String(header[column] ?? "").trim() || `คอลัมน์ ${column + 1}`,
+        value: String(row[column] ?? "").trim(),
+        field: Object.entries(indexes).find(([field, index]) => index === column && field !== "evidence")?.[0] as keyof TestCase | undefined,
+      })).filter(field => String(header[field.column] ?? "").trim() || field.value),
       id, sourceRow, platform: get(row, "platform"), condition: get(row, "condition"), scenario,
       name: get(row, "name"), steps, expected: get(row, "expected"), status: statusFromValue(get(row, "status")), device: get(row, "device"),
       testData: get(row, "testData"), appVersion: get(row, "appVersion"), environment: get(row, "environment"), resultReference: get(row, "resultReference"),

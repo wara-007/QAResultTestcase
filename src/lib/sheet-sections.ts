@@ -7,7 +7,7 @@ export type SheetSection = {
   id: string;
   title: string;
   headers?: Array<{ ref: string; label: string }>;
-  rows: Array<{ row: number; fields: Array<{ ref: string; label: string; value: string; highlights?: TextHighlight[] }> }>;
+  rows: Array<{ row: number; fields: Array<{ ref: string; label: string; value: string; link?: string; highlights?: TextHighlight[] }> }>;
 };
 export type SheetDisplayMode = "table" | "log" | "fields" | "text";
 export type SheetDisplaySettings = { modes: Record<string, SheetDisplayMode>; groupTransactions?: boolean; joins?: Record<string, string> };
@@ -27,8 +27,13 @@ export function isSheetPayloadLabel(label: string): boolean {
 }
 
 export function isCodeSheetField(field: SheetField): boolean {
+  if (/^(?:[-–—]+|n\/?a)?$/i.test(field.value.trim())) return false;
+  if (field.link && /^https?:\/\//i.test(field.link) && !/[\r\n]/.test(field.value)) return false;
+  if (/^(?:result|screen\s*(?:recrod|record|recording))\s*[:：]*\s*$/i.test(field.value)) return false;
   if (inspectResultJson(field.value).isJsonLike) return true;
-  if (/\b(?:api|endpoint|response|request|logs?\d*)\b|บันทึก/i.test(field.label) || isLog(field.value)) return true;
+  // Generic column titles describe where QA put data, not its actual format.
+  if (isLog(field.value) || /^\s*Endpoint\s*:\s*\S+/i.test(field.label)) return true;
+  if (/^\s*(?:(?:\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}[^\n]*\b(?:INFO|DEBUG|ERROR|WARN|TRACE)\b)|(?:(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+\S+)|HTTP\/\d(?:\.\d)?\s+\d{3}|kubectl\s+.*\blogs\b)/im.test(field.value)) return true;
   if (/\bHTTP Inspector\b|^\s*(?:Endpoint\s*:|(?:Request|Response)\s+(?:body|headers?|status|content type|cookies|time|size)\s*:|curl\s+(?:-[\w-]+\b|["']?https?:\/\/))/im.test(field.value)) return true;
   try {
     const parsed: unknown = JSON.parse(field.value);

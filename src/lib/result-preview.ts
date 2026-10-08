@@ -1,5 +1,5 @@
 export type TextHighlight = { start: number; end: number; color?: string; background?: string; bold?: boolean };
-export type StyledSheetText = { ref?: string; value: string; color?: string; background?: string; bold?: boolean; runs?: Array<{ start: number; color?: string; bold?: boolean }> };
+export type StyledSheetText = { ref?: string; value: string; link?: string; color?: string; background?: string; bold?: boolean; runs?: Array<{ start: number; color?: string; bold?: boolean }> };
 
 export function sheetTextHighlights(text: string, cells: StyledSheetText[]): TextHighlight[] {
   const marks: TextHighlight[] = [];

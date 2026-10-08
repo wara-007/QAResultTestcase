@@ -18,7 +18,9 @@ export function SheetResultSections({ sections, images = EMPTY_IMAGES, sheetName
       <dl className="sheet-result-fields">
         {sectionFieldsForDisplay(section).map(field => <div key={field.ref}>
           {sheetFieldDisplayLabel(field) && <dt>{sheetFieldDisplayLabel(field)}</dt>}
-          <dd>{isCodeSheetField(field)
+          <dd>{field.link && /^https?:\/\//i.test(field.link) && !isCodeSheetField(field)
+            ? <a href={field.link} target="_blank" rel="noopener noreferrer">{splitHighlightedText(field.value, field.highlights).map((part, index) => <span key={index} style={{ color: part.color, backgroundColor: part.background, fontWeight: part.bold ? 700 : undefined }}>{part.text}</span>)}</a>
+            : isCodeSheetField(field)
             ? <ResultTextViewer title={sheetFieldDisplayLabel(field) || "ข้อมูล"} text={field.value} highlights={field.highlights} />
             : <p className="sheet-field-prose">{splitHighlightedText(field.value, field.highlights).map((part, index) => <span key={index} style={{ color: part.color, backgroundColor: part.background, fontWeight: part.bold ? 700 : undefined }}>{part.text}</span>)}</p>}</dd>
         </div>)}

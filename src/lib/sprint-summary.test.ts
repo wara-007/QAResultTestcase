@@ -24,3 +24,16 @@ test("counts the latest attempt once per case and open defects from saved Result
 test("an empty sprint has no fabricated progress", () => {
   assert.equal(summarizeSprint([]).progress, 0);
 });
+test("excludes Cover and unmapped sheet placeholders but keeps real cases with unassigned Step results", () => {
+  const cases = [
+    { testcaseKey: "Cover", sourceRow: 2, steps: "Summary", executions: [] },
+    { testcaseKey: "Unmatched tab", sourceRow: 0, steps: "", expected: "", executions: [{ attempt_no: 1, status: "Failed", result_reference: "" }] },
+    { testcaseKey: "ENQ_01_TC_01", sourceRow: 2, executions: [{ attempt_no: 1, status: "In Progress", result_reference: 'qa-results:{"results":[{"id":"unassigned"}]}' }] },
+    { testcaseKey: "ENQ_01_TC_02", sourceRow: 0, executions: [] },
+    { testcaseKey: "Web case", sourceRow: 0, steps: "Login", expected: "Success", executions: [] },
+  ];
+  const summary = summarizeSprint([{ id: "p", cases, approvals: [] }]);
+  assert.equal(summary.totalCases, 3);
+  assert.equal(summary.failed, 0);
+  assert.equal(summary.inProgress, 1);
+});

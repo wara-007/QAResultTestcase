@@ -7,6 +7,47 @@ const header = ["Test Scenario*", "Test Scenario Description*\n(High Level Test 
 const definition = ["ENQ_01", "Enquiry", "ENQ_01_TC_01", "Payment", "Positive", "step 01", "Landing page", "Correct"];
 const next = ["", "", "", "", "Positive", "step 02", "Coin", "Updated"];
 const main = parseStepTestCases([header, definition, next], "Testcase")![0];
+test("API Response Log matrix separates rows, uses real titles and maps names without comparing response to expected", () => {
+  const rows = [header, definition, next, [], ["Result"], ["", "API ::", "Response::", "Log::"], ["step 02", "GET /coins", '{"coin":1}', "request log"], ["", "", "continued"], ["step 01", "GET /home", "ok"]];
+  const parsed = parseStepSheetResults(rows, main, "TC01")!;
+  assert.equal(parsed.results.length, 2);
+  assert.equal(parsed.results[0].stepId, main.stepDefinitions![1].id);
+  const fields = parsed.results[0].sheetSections![0].rows.flatMap(row => row.fields);
+  assert.ok(fields.some(field => field.label === "Response::" && field.value === '{"coin":1}'));
+  assert.ok(fields.some(field => field.label === "Log::" && field.value === "request log"));
+  assert.ok(fields.some(field => field.value === "continued"));
+  assert.ok(!fields.some(field => field.label === "Expected Result"));
+});
+test("shared detail matrix does not attach another case's unique Step or guess duplicate Step01", () => {
+  const otherDefinition = [...definition]; otherDefinition[2] = "TC02";
+  const register = parseStepTestCases([header, definition, next, otherDefinition], "Testcase")!;
+  const rows = [header, definition, next, otherDefinition, ["Result"], ["", "API", "Response", "Log"], ["step 01", "/home", "ok"], ["step 02", "/coins", "ok"]];
+  const first = parseStepSheetResults(rows, register[0], "TC01, TC02")!;
+  const second = parseStepSheetResults(rows, register[1], "TC01, TC02")!;
+  assert.equal(first.results.length, 2);
+  assert.equal(first.results[0].stepId, undefined);
+  assert.equal(first.results[1].stepId, register[0].stepDefinitions![1].id);
+  assert.equal(second.results.length, 0);
+  assert.ok(first.issues.some(issue => issue.includes("หลาย Test Case")));
+});
+test("matrix without Steps retains separate API rows and every extra column", () => {
+  const plain = { ...main, stepDefinitions: undefined };
+  const parsed = parseStepSheetResults([["Test case No.", "Test case name"], [main.id, "Payment"], ["Result"], ["API ::", "Response::", "Log::", "QA note"], ["GET /one", '{"a":', "first log", "note"], ["GET /two", "text", "second log"]], plain, "TC01, TC02", [plain, { ...plain, id: "TC02" }])!;
+  assert.equal(parsed.results.length, 2);
+  const fields = parsed.results[0].sheetSections![0].rows[0].fields;
+  assert.ok(fields.some(field => field.label === "QA note" && field.value === "note"));
+  assert.ok(fields.some(field => field.label === "Response::" && field.value === '{"a":'));
+  assert.ok(!fields.some(field => field.value === "Test case No."));
+});
+test("matrix preserves Test data above its header without repeating definitions", () => {
+  const parsed = parseStepSheetResults([header, definition, ["Result"], ["Data test:", "subscriber 123"], ["API", "Response", "Log"], ["GET /home", "ok"]], main, "TC01")!;
+  assert.ok(parsed.results.some(result => result.sheetSections?.some(section => section.rows.some(row => row.fields.some(field => field.value === "subscriber 123")))));
+});
+test("a Result description inside a Step definition is not the Result section boundary", () => {
+  const parsed = parseStepSheetResults([header, definition, ["", "", "", "", "", "step 02", "Result ::"], ["", "", "", "", "", "step 03", "Screen recording ::"], ["Result"], ["", "API", "Response", "Log"], ["step 02", "Result ::", "proof"]], main, "TC01")!;
+  assert.equal(parsed.results.length, 1);
+  assert.ok(!parsed.results[0].sheetSections![0].rows.some(row => row.fields.some(field => field.value === "Screen recording ::")));
+});
 test("Result columns use their own nearby table titles instead of the definition register titles", () => {
   const parsed = parseStepSheetResults([header, definition, ["Result Testing"], ["Step#", "Description Step", "Expected Result", "API response", "Log"], ["step 01", "Landing page", "Correct", '{"status":"S"}', "log entry"]], main, main.id)!;
   const fields = parsed.results.find(result => result.stepId)?.sheetSections?.flatMap(section => section.rows.flatMap(row => row.fields));

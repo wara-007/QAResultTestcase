@@ -69,6 +69,7 @@ import { TestCaseSteps, orderedStepResults, stepResultTitle } from "./test-case-
 import { aggregateStepStatus } from "@/lib/step-testcases";
 import { WorkbookSummary } from "./workbook-summary";
 import { needsStepTemplateRefresh } from "@/lib/step-reconciliation";
+import { refreshCaseDraft } from "@/lib/case-draft-refresh";
 import { ResultStepMapping } from "./result-step-mapping";
 import { TEST_STATUSES, type CurrentUser, type Project, type ProjectSheetMapping, type TestCase, type TestCaseResultField, type TestDefect, type TestEvidence, type TestResult, type TestStatus, type WorkbookSheet, type WorkbookSheetContent, type WorkbookSource } from "@/lib/types";
 
@@ -630,6 +631,11 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
       testData: projectDefault(value.testData, remembered.testData),
     };
   });
+  const [lastIncomingCase, setLastIncomingCase] = useState(value);
+  if (value !== lastIncomingCase) {
+    setLastIncomingCase(value);
+    setDraft(current => refreshCaseDraft(current, lastIncomingCase, value));
+  }
   const [actualResult, setActualResult] = useState("");
   const [resultStepId, setResultStepId] = useState("");
   const [resultStatus, setResultStatus] = useState<TestStatus>("Not Start");
@@ -1639,7 +1645,9 @@ export function QaWorkspace({
           remark: `นำเข้าจาก tab ${sheet.name}`, evidence: [], results: [], defects: [],
         });
       }
-      importedCases = mergeCaseChoices(cases, importedCases, conflictChoices ?? {});
+      // Conflict choices govern case metadata, not whether fresh imported
+      // results/Step definitions are discarded by the default "keep local".
+      importedCases = mergeWorkspaceAndGoogleCases(mergeCaseChoices(cases, importedCases, conflictChoices ?? {}), importedCases, currentUser?.name ?? "").cases;
       const changedCaseIds = new Set<string>();
       let attachedImageCount = 0;
       let skippedImageCount = 0;

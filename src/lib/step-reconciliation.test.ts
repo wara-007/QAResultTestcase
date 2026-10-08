@@ -4,8 +4,32 @@ import { casesFromRows } from "./testcase-rows";
 import { mergeWorkspaceAndGoogleCases } from "./sync/workspace-merge";
 import { parseStoredResults, serializeStoredResults } from "./project-data";
 import { needsStepTemplateRefresh } from "./step-reconciliation";
+import { mergeCaseChoices } from "./sync/client-conflicts";
 
 const makeCase = () => casesFromRows([["Test Case (TC ID)", "Step#", "Description Step", "Expected Result", "Status"], ["ENQ_01_TC_01", "step 01", "Landing", "Correct", "NotStart"]])[0];
+test("refresh does not assign importer to Sheet Skip with no EXECUTED BY", () => {
+  const incoming = makeCase(); incoming.status = "Skip"; incoming.executedBy = "";
+  incoming.stepDefinitions![0].status = "Skip";
+  incoming.stepDefinitions![0].executedBy = "";
+  const local = { ...incoming, persistedLocally: true, executedBy: "wara pp" };
+  assert.equal(mergeWorkspaceAndGoogleCases([local], [incoming], "wara pp").cases[0].executedBy, "");
+});
+test("API matrix refresh replaces legacy whole-tab preview even without Step definitions", () => {
+  const local = makeCase(); delete local.stepDefinitions;
+  local.results = [{ id: "SHEET-IMPORT-TC01", source: "sheets", sourceSheetName: "TC01", status: "Not Start", actualResult: "old entire tab", apiResponse: "", log: "", evidence: [], createdAt: "" }];
+  const fresh = { ...local, results: [{ ...local.results[0], id: "SHEET-IMPORT-TC01-API-10", sourceRange: { startRow: 10, endRow: 10 }, actualResult: "new row" }] };
+  assert.equal(mergeWorkspaceAndGoogleCases([local], [fresh], "QA").cases[0].results!.length, 1);
+  local.results[0].editedLocally = true;
+  assert.equal(mergeWorkspaceAndGoogleCases([local], [fresh], "QA").cases[0].results!.length, 2);
+});
+test("default import conflict choices do not undo refreshed Steps and imported Results", () => {
+  const local = makeCase();
+  const incoming = makeCase();
+  incoming.stepDefinitions!.push({ ...incoming.stepDefinitions![0], id: "Testcase:3", name: "step 02" });
+  const refreshed = mergeWorkspaceAndGoogleCases([local], [incoming], "QA").cases;
+  const selected = mergeCaseChoices([local], refreshed, {});
+  assert.equal(mergeWorkspaceAndGoogleCases(selected, refreshed, "QA").cases[0].stepDefinitions!.length, 2);
+});
 test("refresh updates imported text but retains QA Step mapping and its history", () => {
   const local = makeCase();
   const result = { id: "SHEET-IMPORT-ENQ-STEP-19", sourceSheetName: "ENQ", status: "Pass" as const, actualResult: "Old", apiResponse: "", log: "", evidence: [], createdAt: "", stepId: "Testcase:2", stepMappingHistory: [{ fromStepId: null, toStepId: "Testcase:2", by: "QA", at: "2026-10-06T10:00:00Z" }] };

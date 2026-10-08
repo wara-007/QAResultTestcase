@@ -1,6 +1,7 @@
 import type { TestCase, TestCaseCustomField } from "../types";
 import { normalizedCaseId } from "./client-conflicts";
 import { reconcileStepCases, replaceLegacyStepPreviews } from "../step-reconciliation";
+import { isUnnamedSheetSkip } from "../sheet-skip-tester";
 
 function fieldIdentity(field: TestCaseCustomField) {
   return `${field.source}:${field.sheetName.trim().toLowerCase()}:${field.label.trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()}`;
@@ -12,6 +13,8 @@ function mergeFields(googleFields: TestCaseCustomField[] = [], localFields: Test
 }
 
 export function mergeWorkspaceAndGoogleCases(localCases: TestCase[], googleCases: TestCase[], currentUserName: string) {
+  // Kept for existing callers; an importer is not an executed-by fallback.
+  void currentUserName;
   const localById = new Map(localCases.map((item) => [normalizedCaseId(item.id), item]));
   const mergedGoogleCases = googleCases.map((google) => {
     const local = localById.get(normalizedCaseId(google.id));
@@ -23,7 +26,7 @@ export function mergeWorkspaceAndGoogleCases(localCases: TestCase[], googleCases
       executionId: local.executionId,
       persistedLocally: local.persistedLocally,
       results: (() => {
-        const localResults = google.stepDefinitions?.length ? replaceLegacyStepPreviews(local.results ?? [], google.results ?? []) : local.results ?? [];
+        const localResults = replaceLegacyStepPreviews(local.results ?? [], google.results ?? []);
         const refreshed = new Map((google.results ?? []).map(result => [`${result.sourceSheetName ?? ""}:${result.id}`, result]));
         const merged = localResults.map(result => {
           const key = `${result.sourceSheetName ?? ""}:${result.id}`;
@@ -46,7 +49,7 @@ export function mergeWorkspaceAndGoogleCases(localCases: TestCase[], googleCases
       ...google,
       ...local,
       ...shared,
-      executedBy: local.executedBy || currentUserName || google.executedBy,
+      executedBy: google.status === "Skip" && isUnnamedSheetSkip(google.stepDefinitions, local.results) ? "" : local.executedBy || google.executedBy,
     };
   });
   const googleIds = new Set(googleCases.map((item) => normalizedCaseId(item.id)));

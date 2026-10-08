@@ -53,6 +53,14 @@ function workbook(cells: Array<[string, string]>): WorkbookSource {
   };
 }
 
+test("workbook matrix fallback uses the same row result IDs instead of importing the entire tab again", () => {
+  const source = workbook([["A1", "Result"], ["A2", "API"], ["B2", "Response"], ["C2", "Log"], ["A3", "GET /home"], ["B3", '{"ok":true}'], ["A4", "GET /usage"], ["B4", "usage response"]]);
+  const owner = casesFromRows([["Test Case Id", "Test Case Name"], ["TC-27", "Home"]])[0];
+  const results = readWorkbookFreeformResults(source, [owner]);
+  assert.deepEqual(results.map(result => result.resultId), ["SHEET-IMPORT-RC TC-27-API-3", "SHEET-IMPORT-RC TC-27-API-4"]);
+  assert.ok(results[0].sheetSections?.[0].rows[0].fields.some(field => field.label === "Response" && field.value === '{"ok":true}'));
+});
+
 test("freeform import preserves unclassified cells with their coordinates, including repeated text", () => {
   const source = workbook([["A1", "Test Case Id"], ["A2", "TC-27"], ["A34", 'CommonBE_trueapp_Endpoint.log:188:{"level":"INFO"}'], ["B35", "ข้อความไม่ตรงรูปแบบ"], ["C35", "ข้อความไม่ตรงรูปแบบ"], ["D36", "Endpoint: /example"]]);
   const [result] = readWorkbookFreeformResults(source);

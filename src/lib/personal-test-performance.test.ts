@@ -6,6 +6,14 @@ const members = [{userId:'a',name:'Ann',email:'ann@example.com',role:'qa'}, {use
 const result = (id:string, testerName:string, status:string, order=1): PersonalResult => ({id,testerName,status,order,source:'web',sourceSheet:'',recordedAt:'',inferred:false,originSprintId:'s1'});
 const row = (results:PersonalResult[]=[], assignedUserIds:string[]=[], sourceRowKey='base'): PersonalCase => ({projectId:'p',projectName:'Project',currentSprintId:'s1',caseId:'TC-18',caseName:'Checkout',sourceRowKey,detailPath:'/case',assignedUserIds,results});
 const build = (cases:PersonalCase[], filters={}) => buildPersonalPerformance({sprintId:'s1',members,cases,filters});
+test('Skip without EXECUTED BY stays unknown and does not create pending work for assigned QA', () => {
+  const data = build([row([{ ...result('skip', '', 'Skip'), source: 'sheets', inferred: true }], ['a'])]);
+  assert.equal(data.length, 1);
+  assert.equal(data[0].key, 'unknown');
+  assert.equal(data[0].name, 'ไม่ระบุผู้ทดสอบ');
+  assert.equal(data[0].skip, 1);
+  assert.equal(data[0].notStart, 0);
+});
 
 test('latest per-tester outcome replaces retests without merging separate source rows', () => {
   const data=build([row([result('r1','Ann','Failed',1),result('r2','Ann','Passed',2),result('r3','Ben','fail',3)]),row([result('r4','Ann','Pass')],[],'RC TC-18 broken')]);

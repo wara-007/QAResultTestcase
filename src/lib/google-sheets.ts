@@ -1,4 +1,5 @@
 import "server-only";
+import { sheetCellLink } from "./sheet-cell-link";
 
 import { google } from "googleapis";
 import { isSheetPayloadLabel } from "@/lib/sheet-sections";
@@ -147,7 +148,7 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
   if (ranges.length) {
     const [resultValues, formatting] = await Promise.all([
       sheets.spreadsheets.values.batchGet({ spreadsheetId, ranges, valueRenderOption: "FORMULA" }),
-      sheets.spreadsheets.get({ spreadsheetId, ranges, fields: "properties(spreadsheetTheme),sheets(properties(sheetId),data(startRow,startColumn,rowData(values(formattedValue,effectiveFormat(backgroundColorStyle,backgroundColor,textFormat),textFormatRuns))))" }),
+      sheets.spreadsheets.get({ spreadsheetId, ranges, fields: "properties(spreadsheetTheme),sheets(properties(sheetId),data(startRow,startColumn,rowData(values(formattedValue,hyperlink,chipRuns,userEnteredValue,effectiveFormat(backgroundColorStyle,backgroundColor,textFormat),textFormatRuns))))" }),
     ]);
     const theme = formatting.data.properties?.spreadsheetTheme?.themeColors ?? [];
     const color = (style: { rgbColor?: { red?: number | null; green?: number | null; blue?: number | null } | null; themeColor?: string | null } | null | undefined, fallback?: { red?: number | null; green?: number | null; blue?: number | null } | null) => {
@@ -163,8 +164,9 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
       const styled: StyledSheetText[] = (formatting.data.sheets?.find(item => item.properties?.sheetId === detailSheets[index].sheetId)?.data ?? []).flatMap(grid => (grid.rowData ?? []).flatMap((row, rowIndex) => (row.values ?? []).flatMap((cell, colIndex) => {
         if (!cell.formattedValue) return [];
         const textFormat = cell.effectiveFormat?.textFormat;
+        const link = sheetCellLink(cell);
         const background = color(cell.effectiveFormat?.backgroundColorStyle, cell.effectiveFormat?.backgroundColor);
-        return [{ ref: `${columnLetter((grid.startColumn ?? 0) + colIndex)}${(grid.startRow ?? 0) + rowIndex + 1}`, value: cell.formattedValue, background: background === "#ffffff" ? undefined : background, color: color(textFormat?.foregroundColorStyle, textFormat?.foregroundColor), bold: textFormat?.bold ?? undefined, runs: (cell.textFormatRuns ?? []).map(run => ({ start: run.startIndex ?? 0, color: color(run.format?.foregroundColorStyle, run.format?.foregroundColor), bold: run.format?.bold ?? undefined })) }];
+        return [{ ref: `${columnLetter((grid.startColumn ?? 0) + colIndex)}${(grid.startRow ?? 0) + rowIndex + 1}`, value: cell.formattedValue, link, background: background === "#ffffff" ? undefined : background, color: color(textFormat?.foregroundColorStyle, textFormat?.foregroundColor), bold: textFormat?.bold ?? undefined, runs: (cell.textFormatRuns ?? []).map(run => ({ start: run.startIndex ?? 0, color: color(run.format?.foregroundColorStyle, run.format?.foregroundColor), bold: run.format?.bold ?? undefined })) }];
       })));
       const contentIds = Array.from(new Set(rows.flat().flatMap((cell) => testCaseIdsFromSheetText(String(cell ?? "")))));
       // A Test Case ID in the tab name is authoritative. Result tabs commonly
@@ -181,11 +183,14 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
           testCase = { id, sourceSheetName: name, sourceRow: 0, platform: "", condition: "", scenario: "", name, steps: "", expected: "", status: "Not Start", device: "", testData: "", appVersion: "", environment: "", resultReference: name, executedBy: "", executedDate: "", executedTime: "", remark: "", evidence: [], results: [], defects: [] };
           cases.push(testCase);
         }
-        const stepResults = parseStepSheetResults(rows, testCase, name);
+        const stepResults = parseStepSheetResults(rows, testCase, name, cases.filter(item => ids.some(id => caseIdentity(id) === caseIdentity(item.id))));
         if (stepResults) {
           stepResults.results.forEach(result => {
             result.sheetSections?.forEach(section => section.rows.forEach(row => row.fields.forEach(field => {
               field.highlights = sheetTextHighlights(field.value, styled.filter(cell => cell.ref === field.ref));
+              const linkedCell = styled.find(cell => cell.ref === field.ref);
+              field.link = linkedCell?.link;
+              if (field.link && linkedCell) field.value = linkedCell.value;
             })));
           });
           testCase.results = [...(testCase.results ?? []), ...stepResults.results];
@@ -228,6 +233,9 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
           const text = freeformTextFromCells(rows.flatMap((row, rowIndex) => row.flatMap((value, colIndex) => String(value ?? "").trim() ? [{ ref: `${columnLetter(colIndex)}${rowIndex + 1}`, value: String(value) }] : [])), represented, representedRefs);
           text.sheetSections.forEach(section => section.rows.forEach(row => row.fields.forEach(field => {
             field.highlights = sheetTextHighlights(field.value, styled.filter(cell => cell.ref === field.ref));
+            const linkedCell = styled.find(cell => cell.ref === field.ref);
+            field.link = linkedCell?.link;
+            if (field.link && linkedCell) field.value = linkedCell.value;
           })));
           if (text.actualResult || text.apiResponse || text.log) parsedResults.push({ id: `SHEET-IMPORT-${name}`, source: "sheets", sourceSheetName: name, status: testCase.status, ...text, evidence: [], createdAt: "" });
         }

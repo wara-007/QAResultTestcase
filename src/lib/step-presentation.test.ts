@@ -4,6 +4,21 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { TestCaseSteps, stepResultTitle } from "../components/test-case-steps";
 import { casesFromRows } from "./testcase-rows";
+test("shared Step metadata renders once while empty descriptions disappear and differences remain", () => {
+  const testCase = casesFromRows([["Test Case (TC ID)", "Step#", "Description Step", "Expected Result", "Device", "Sprint", "Ref (Result Testing)"], ["TC01", "Step01", "", "", "Android", "67", "TC01"], ["", "Step02", "Actual description", "", "Android", "67", "TC01"]])[0];
+  for (const readOnly of [true, false]) {
+    const html = renderToStaticMarkup(React.createElement(TestCaseSteps, { testCase, readOnly }));
+    const visible = html.replace(/<details><summary>กำหนดข้อมูลเฉพาะ Step นี้<\/summary>[\s\S]*?<\/details>/g, "");
+    assert.equal((visible.match(/Android/g) ?? []).length, 1);
+    assert.equal((html.match(/>67</g) ?? []).length, 1);
+    assert.ok(!html.includes("—"));
+    assert.match(html, /Actual description/);
+  }
+  testCase.stepDefinitions![1].device = "iOS";
+  const html = renderToStaticMarkup(React.createElement(TestCaseSteps, { testCase, readOnly: true }));
+  assert.match(html, /Android/);
+  assert.match(html, /iOS/);
+});
 test("Step results render once inside their owning Step with a per-Step add action", () => {
   const testCase = casesFromRows([["Test Case (TC ID)", "Step#", "Description Step", "Expected Result"], ["ENQ_01_TC_01", "step 01", "Landing", "Correct"]])[0];
   testCase.results = [{ id: "result-1", stepId: "Testcase:2", status: "Pass", actualResult: "Evidence content", apiResponse: "", log: "", evidence: [], createdAt: "" }];
@@ -12,7 +27,8 @@ test("Step results render once inside their owning Step with a per-Step add acti
   assert.match(html, /Evidence content/);
   assert.equal((html.match(/Evidence content/g) ?? []).length, 1);
   assert.match(html, /เพิ่ม Result ให้ step 01/);
-  assert.ok(html.indexOf("Evidence content") < html.indexOf("</details>"));
+  const stepMarkup = html.replace(/<details><summary>กำหนดข้อมูลเฉพาะ Step นี้<\/summary>[\s\S]*?<\/details>/g, "");
+  assert.ok(stepMarkup.indexOf("Evidence content") < stepMarkup.indexOf("</details>"));
 });
 test("QA and PO show additional titled Step columns without duplicating mapped Device values", () => {
   const testCase = casesFromRows([["Test Case (TC ID)", "Step#", "Description Step", "Expected Result", "Device", "Sprint", ""], ["ENQ_01_TC_01", "step 01", "Landing", "Correct", "Android", "66", "Other data"]])[0];
@@ -22,7 +38,8 @@ test("QA and PO show additional titled Step columns without duplicating mapped D
     assert.match(html, /66/);
     assert.match(html, /คอลัมน์ G/);
     assert.match(html, /Other data/);
-    assert.equal((html.match(/Android/g) ?? []).length, 1);
+    const visible = html.replace(/<details><summary>กำหนดข้อมูลเฉพาะ Step นี้<\/summary>[\s\S]*?<\/details>/g, "");
+    assert.equal((visible.match(/Android/g) ?? []).length, 1);
   }
 });
 

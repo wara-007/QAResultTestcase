@@ -356,12 +356,16 @@ export function readWorkbookResultImages(source: WorkbookSource, cases: TestCase
   const imported: WorkbookResultImage[] = [];
   for (const sheet of source.sheets.filter((item) => item.kind !== "testcase" && item.kind !== "summary" && item.kind !== "defect")) {
     const ownerCase = cases.find(item => sheet.testCaseIds.includes(item.id) || item.id === sheet.name);
-    if (ownerCase?.stepDefinitions?.length) {
-      const content = readWorkbookSheet(source, sheet);
-      const parsed = parseStepSheetResults(contentRows(content), ownerCase, sheet.name)!;
-      content.images.forEach(image => {
-        const result = parsed.results.find(result => result.sourceRange && image.row >= result.sourceRange.startRow && image.row <= result.sourceRange.endRow);
-        imported.push({ ...image, sheetName: sheet.name, testCaseId: ownerCase.id, resultId: result?.id ?? `SHEET-IMPORT-${sheet.name}-UNASSIGNED` });
+    const sheetOwners = cases.filter(item => sheet.testCaseIds.includes(item.id) || item.id === sheet.name);
+    const content = ownerCase ? readWorkbookSheet(source, sheet) : undefined;
+    const structured = content ? sheetOwners.flatMap(owner => {
+      const parsed = parseStepSheetResults(contentRows(content), owner, sheet.name, sheetOwners);
+      return parsed ? [{ owner, parsed }] : [];
+    }) : [];
+    if (structured.length) {
+      content!.images.forEach(image => {
+        const match = structured.flatMap(({ owner, parsed }) => parsed.results.map(result => ({ owner, result }))).find(({ result }) => result.sourceRange && image.row >= result.sourceRange.startRow && image.row <= result.sourceRange.endRow);
+        imported.push({ ...image, sheetName: sheet.name, testCaseId: match?.owner.id ?? ownerCase!.id, resultId: match?.result.id ?? `SHEET-IMPORT-${sheet.name}-UNASSIGNED` });
       });
       continue;
     }
@@ -422,9 +426,13 @@ export function readWorkbookFreeformResults(source: WorkbookSource, cases: TestC
 
   for (const sheet of source.sheets.filter((item) => item.kind !== "testcase" && item.kind !== "summary" && item.kind !== "defect")) {
     const ownerCase = cases.find(item => sheet.testCaseIds.includes(item.id) || item.id === sheet.name);
-    if (ownerCase?.stepDefinitions?.length) {
-      const parsed = parseStepSheetResults(contentRows(readWorkbookSheet(source, sheet)), ownerCase, sheet.name)!;
-      results.push(...parsed.results.map(result => ({ ...result, sheetName: sheet.name, testCaseId: ownerCase.id, resultId: result.id })));
+    const sheetOwners = cases.filter(item => sheet.testCaseIds.includes(item.id) || item.id === sheet.name);
+    const structured = ownerCase ? sheetOwners.flatMap(owner => {
+      const parsed = parseStepSheetResults(contentRows(readWorkbookSheet(source, sheet)), owner, sheet.name, sheetOwners);
+      return parsed ? [{ owner, parsed }] : [];
+    }) : [];
+    if (structured.length) {
+      results.push(...structured.flatMap(({ owner, parsed }) => parsed.results.map(result => ({ ...result, sheetName: sheet.name, testCaseId: owner.id, resultId: result.id }))));
       continue;
     }
     const document = parseXml(files[sheet.path]);

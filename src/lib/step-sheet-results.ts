@@ -2,6 +2,7 @@ import type { TestCase, TestResult } from "./types";
 import { stepHeaderKey, stepHeaderColumns, parseStepTestCases } from "./step-testcases";
 import { freeformTextFromCells } from "./sheet-detail";
 import { readStepResultSnapshots, STEP_SNAPSHOT_START } from "./step-sheet-sync";
+import { parseApiLogSheetResults } from "./api-log-sheet-results";
 
 export const sheetColumn = (index: number) => {
   let value = index + 1, result = "";
@@ -13,11 +14,13 @@ const stepNumber = (name: string) => {
   return digits?.replace(/^0+(?=\d)/, "");
 };
 const resultColumnHeaders = (row: unknown[]) => row.some(cell => stepHeaderKey(cell) === "step") && !row.some(cell => /^step\s*\d+\b/i.test(String(cell ?? "").trim()));
-export function parseStepSheetResults(rows: unknown[][], testCase: TestCase, sheetName: string): { results: TestResult[]; issues: string[]; representedCells: Set<string> } | null {
-  if (!testCase.stepDefinitions?.length) return null;
+export function parseStepSheetResults(rows: unknown[][], testCase: TestCase, sheetName: string, cases?: TestCase[]): { results: TestResult[]; issues: string[]; representedCells: Set<string> } | null {
   const ownedResults = readStepResultSnapshots(rows, testCase.id);
   const ownedStart = rows.findIndex(row => row[0] === STEP_SNAPSHOT_START);
   if (ownedStart >= 0) rows = rows.slice(0, ownedStart);
+  const matrix = parseApiLogSheetResults(rows, testCase, sheetName, cases);
+  if (matrix) return { ...matrix, results: [...matrix.results, ...ownedResults] };
+  if (!testCase.stepDefinitions?.length) return null;
   const start = rows.findIndex(row => row.some(value => stepHeaderKey(value) === "resulttesting"));
   const headers = rows.slice(0, start < 0 ? rows.length : start).find(row => stepHeaderColumns(row)) ?? [];
   const detailSteps = parseStepTestCases(rows.slice(0, start < 0 ? rows.length : start), sheetName)?.flatMap(item => item.stepDefinitions ?? []) ?? [];

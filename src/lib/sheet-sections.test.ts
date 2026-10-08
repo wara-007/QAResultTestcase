@@ -1,5 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { isCodeSheetField as classifyLinkedField } from "./sheet-sections";
+
+test("linked evidence under Response is a file, not API code", () => {
+  assert.equal(classifyLinkedField({ ref: "C30", label: "Response::", value: "entertainment shelf_TVS partner", link: "https://drive.google.com/open?id=proof" }), false);
+});
+test("Result and Screen Recrod markers under API are not code", () => {
+  assert.equal(isCodeSheetField({ ref: "B30", label: "API ::", value: "Result ::" }), false);
+  assert.equal(isCodeSheetField({ ref: "B31", label: "API ::", value: "Screen Recrod ::" }), false);
+});
+test("empty log placeholders do not create a code editor", () => {
+  assert.equal(isCodeSheetField({ ref: "D30", label: "Log::", value: "--" }), false);
+});
+test("an embedded URL inside a multiline request does not turn the whole log into a link", () => {
+  assert.equal(isCodeSheetField({ ref: "C32", label: "Response::", value: "Request\nGET /api HTTP/1.1\nResponse\n{}", link: "https://example.test/api" }), true);
+});
 import { sheetSectionsFromCells, sectionLogGroups, combineSheetFields, sectionsForDisplay, sectionFieldsForDisplay, isCodeSheetField, groupSheetResultSections, evidenceSectionIndex } from "./sheet-sections";
 import { sheetFieldDisplayLabel, isSheetPayloadLabel } from "./sheet-sections";
 
@@ -125,11 +140,19 @@ test("spatial sections separate repeated endpoints and keep nearby headings with
 
 test("ordinary sheet text uses prose while API, logs and JSON keep the code viewer", () => {
   assert.equal(isCodeSheetField({ ref: "A1", label: "Case", value: "Buy package success\nDtac staff" }), false);
-  assert.equal(isCodeSheetField({ ref: "A2", label: "log1", value: "request completed" }), true);
+  assert.equal(isCodeSheetField({ ref: "A2", label: "log1", value: "request completed" }), false);
   assert.equal(isCodeSheetField({ ref: "A3", label: "Endpoint: /package/api/v1", value: "response success" }), true);
   assert.equal(isCodeSheetField({ ref: "A4", label: "ข้อมูล", value: '{"status":"success"}' }), true);
   assert.equal(isCodeSheetField({ ref: "A5", label: "ข้อมูล", value: 'service_Debug.log:1:hello' }), true);
   assert.equal(isCodeSheetField({ ref: "F23", label: "ข้อมูลจาก F23", value: '{\n "status": {"code": 200}' }), true);
+});
+test("plain prose stays text even under API Response or Log headers", () => {
+  for (const label of ["API ::", "Response::", "Log::"]) {
+    assert.equal(isCodeSheetField({ ref: "C30", label, value: "ทดสอบแล้วแสดงข้อมูลถูกต้อง" }), false);
+    assert.equal(isCodeSheetField({ ref: "C31", label, value: "Expected screen\nActual screen matches" }), false);
+  }
+  assert.equal(isCodeSheetField({ ref: "C32", label: "Response", value: '{"status":' }), true);
+  assert.equal(isCodeSheetField({ ref: "C33", label: "Notes", value: "2026-10-07 14:00:00 INFO request completed" }), true);
 });
 
 test("HTTP Inspector exports and mixed API logs use code even with generic cell labels", () => {

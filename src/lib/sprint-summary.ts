@@ -1,6 +1,7 @@
+import { isProjectSummarySheet } from "./sheet-mapping-model";
 export type SprintProjectStatsInput = {
   id: string;
-  cases: { executions: { attempt_no: number; status: string; result_reference: string }[] }[];
+  cases: { testcaseKey?: string; sourceRow?: number; steps?: string; expected?: string; executions: { attempt_no: number; status: string; result_reference: string }[] }[];
   approvals: { status: string }[];
 };
 export function summarizeSprint(projects: SprintProjectStatsInput[]) {
@@ -9,6 +10,11 @@ export function summarizeSprint(projects: SprintProjectStatsInput[]) {
     if (project.approvals.some((item) => item.status === "pending")) summary.pendingApprovalProjects++;
     else if (project.approvals.some((item) => item.status === "approved")) summary.approvedProjects++;
     for (const testCase of project.cases) {
+      if (isProjectSummarySheet(testCase.testcaseKey ?? "")) continue;
+      // Sheet-only placeholders have no register row or authored definition.
+      // Do not use Result/Step mapping as a proxy for testcase membership.
+      const recognizedCaseKey = /(?:^|[\s_-])TC[\s_-]*\d+$/i.test(testCase.testcaseKey ?? "");
+      if (testCase.sourceRow === 0 && !recognizedCaseKey && !testCase.steps?.trim() && !testCase.expected?.trim()) continue;
       summary.totalCases++;
       const latest = [...testCase.executions].sort((a, b) => b.attempt_no - a.attempt_no)[0];
       const fields: Record<string, "pass" | "failed" | "inProgress" | "skip"> = { Pass: "pass", Failed: "failed", "In Progress": "inProgress", Skip: "skip" };

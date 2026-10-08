@@ -56,6 +56,9 @@ export function buildPersonalPerformance(input: PersonalPerformanceInput): Perso
       started.add(personKey);add(person,entry(status,result.source,result.inferred));
     }
     if(item.currentSprintId!==input.sprintId) continue;
+    // A recorded Skip is not pending work. An assignment is not proof of who
+    // skipped the case when the source has no EXECUTED BY.
+    if ([...latest.values()].some(({ person, result }) => person.key === 'unknown' && statusOf(result.status) === 'Skip')) continue;
     for(const userId of new Set(item.assignedUserIds)) if(!started.has(userId)) {
       const member=input.members.find(m=>m.userId===userId);
       add({key:userId,name:member?.name ?? 'อดีตผู้รับผิดชอบ',email:member?.email ?? '',unresolved:false},entry('Not Start','pending'));

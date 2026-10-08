@@ -49,6 +49,19 @@ const mapping = (sheetId: number, sheetName: string, testcaseKey: string): Proje
   updatedAt: "2026-09-29T00:00:00.000Z",
 });
 
+test("a combined result tab is accessible from every referenced register case", () => {
+  const result = resolveSheetAssociations([sheet(10, "TC01, TC02, TC03, TC04")],
+    [testCase("TC01"), testCase("TC02"), testCase("TC03"), testCase("TC04"), testCase("TC05")], []);
+  assert.deepEqual(result.associations.map(item => item.testCase.id), ["TC01", "TC02", "TC03", "TC04"]);
+  assert.deepEqual(result.unmapped, []);
+});
+
+test("validated compact definition owners can access a tab even when omitted from its title", () => {
+  const source = { ...sheet(10, "TC05, TC06", ["TC05", "TC06", "TC15"]), definitionCaseIds: ["TC05", "TC06", "TC15"] };
+  const result = resolveSheetAssociations([source], [testCase("TC05"), testCase("TC06"), testCase("TC15")], []);
+  assert.deepEqual(result.associations.map(item => item.testCase.id), ["TC05", "TC06", "TC15"]);
+});
+
 test("a persisted mapping wins over automatic inference", () => {
   const result = resolveSheetAssociations(
     [sheet(10, "RC TC-01", ["TC-01"])],

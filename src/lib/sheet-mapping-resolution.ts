@@ -46,10 +46,10 @@ export function resolveSheetAssociations(
     // References inside a sheet can mention many unrelated Test Cases (for
     // example the Defected summary). Only the tab name is safe to infer from;
     // content-only references stay unmapped until QA chooses the target.
-    const inferredCase = testCaseIdsMatchingSheetName(sheet.name, cases)
+    const inferredCases = [...new Set([...testCaseIdsMatchingSheetName(sheet.name, cases), ...(sheet.definitionCaseIds ?? [])])]
       .map((testCaseId) => casesByIdentity.get(identity(testCaseId)))
-      .find((testCase): testCase is TestCase => Boolean(testCase));
-    if (inferredCase) associations.push({ sheet, testCase: inferredCase, source: "automatic" });
+      .filter((testCase): testCase is TestCase => Boolean(testCase));
+    if (inferredCases.length) associations.push(...inferredCases.map(testCase => ({ sheet, testCase, source: "automatic" as const })));
     else unmapped.push(sheet);
   }
 

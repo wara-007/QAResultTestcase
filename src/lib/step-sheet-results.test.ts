@@ -7,6 +7,41 @@ const header = ["Test Scenario*", "Test Scenario Description*\n(High Level Test 
 const definition = ["ENQ_01", "Enquiry", "ENQ_01_TC_01", "Payment", "Positive", "step 01", "Landing page", "Correct"];
 const next = ["", "", "", "", "Positive", "step 02", "Coin", "Updated"];
 const main = parseStepTestCases([header, definition, next], "Testcase")![0];
+const compactRows = [["Test case No.", "TestCase", "Test Steps", "Expected Result "],
+  ["TC05", "Login", "Click Login Home page", "Login successfully"],
+  ["TC06", "Login", "Click Login TOL Landing page", "Login successfully"],
+  ["TC07", "Login", "Deeplink :: trueapp://app.true.th/login-tolqr", "Login successfully"],
+  ["TC08", "Login", "QR", "Login successfully"],
+  ["TC15", "Feature", "Validate Feature TOL", "Works"], [], ["Result"], [],
+  ["Click Login Home page", "Home page_Login TOL"],
+  ["Click Login TOL Landing page\nand\nValidate Feature TOL", "TOL landing_Login TOL"],
+  ["Deeplink :: trueapp://app.true.th/login-tolqr", "Deeplink"], ["scan QR code", "scan QR code"]];
+test("compact Result rows retain proof fields, definition columns and original evidence ranges", () => {
+  const cases = ["TC05", "TC06", "TC07", "TC08", "TC15"].map(id => ({ ...main, id }));
+  const parsed = parseStepSheetResults(compactRows, cases[0], "TC05, TC06, TC07, TC08", cases)!;
+  assert.equal(parsed.results.length, 4);
+  assert.equal(parsed.results[0].sheetSections![0].title.split(" · ผลร่วม:")[0], "Click Login Home page");
+  assert.equal(parsed.results[0].sheetSections![0].rows[0].fields[0].value, "Home page_Login TOL");
+  assert.equal(parsed.results[0].sheetSections![0].rows[0].fields[0].ref, "B10");
+  assert.deepEqual(parsed.results[0].sourceRange, { startRow: 10, endRow: 10 });
+  assert.equal(parsed.results[0].sheetDefinitionTable!.rows.length, 5);
+  assert.deepEqual(parsed.issues, []);
+  assert.equal(parsed.results[0].status, "Not Start");
+});
+test("every compact combined-tab case receives all four source results, not only description matches", () => {
+  const cases = ["TC05", "TC06", "TC07", "TC08", "TC15"].map(id => ({ ...main, id }));
+  for (const id of ["TC05", "TC06", "TC07", "TC08", "TC15"]) {
+    const parsed = parseStepSheetResults(compactRows, cases.find(item => item.id === id)!, "TC05, TC06, TC07, TC08", cases)!;
+    assert.equal(parsed.results.length, 4, id);
+    assert.deepEqual(parsed.results.map(result => result.sheetSections![0].rows[0].fields[0].value), ["Home page_Login TOL", "TOL landing_Login TOL", "Deeplink", "scan QR code"], id);
+    assert.ok(parsed.results.every(result => result.status === "Not Start" && result.stepId === undefined));
+  }
+});
+test("compact parser is opt-in and does not reinterpret ordinary definition or Result Testing layouts", () => {
+  const result = parseStepSheetResults([header, definition, next], main, main.id)!;
+  assert.equal(result.results.length, 0);
+  assert.ok(result.issues.some(issue => issue.includes("Result Testing")));
+});
 test("API Response Log matrix separates rows, uses real titles and maps names without comparing response to expected", () => {
   const rows = [header, definition, next, [], ["Result"], ["", "API ::", "Response::", "Log::"], ["step 02", "GET /coins", '{"coin":1}', "request log"], ["", "", "continued"], ["step 01", "GET /home", "ok"]];
   const parsed = parseStepSheetResults(rows, main, "TC01")!;
@@ -18,17 +53,51 @@ test("API Response Log matrix separates rows, uses real titles and maps names wi
   assert.ok(fields.some(field => field.value === "continued"));
   assert.ok(!fields.some(field => field.label === "Expected Result"));
 });
-test("shared detail matrix does not attach another case's unique Step or guess duplicate Step01", () => {
+test("shared detail matrix does not infer exclusive ownership from Step numbers", () => {
   const otherDefinition = [...definition]; otherDefinition[2] = "TC02";
   const register = parseStepTestCases([header, definition, next, otherDefinition], "Testcase")!;
   const rows = [header, definition, next, otherDefinition, ["Result"], ["", "API", "Response", "Log"], ["step 01", "/home", "ok"], ["step 02", "/coins", "ok"]];
-  const first = parseStepSheetResults(rows, register[0], "TC01, TC02")!;
-  const second = parseStepSheetResults(rows, register[1], "TC01, TC02")!;
+  const first = parseStepSheetResults(rows, register[0], "ENQ_01_TC_01, TC02", register)!;
+  const second = parseStepSheetResults(rows, register[1], "ENQ_01_TC_01, TC02", register)!;
   assert.equal(first.results.length, 2);
   assert.equal(first.results[0].stepId, undefined);
-  assert.equal(first.results[1].stepId, register[0].stepDefinitions![1].id);
-  assert.equal(second.results.length, 0);
-  assert.ok(first.issues.some(issue => issue.includes("หลาย Test Case")));
+  assert.equal(first.results[1].stepId, undefined);
+  assert.equal(second.results.length, 2);
+  assert.equal(second.results[0].stepId, undefined);
+  assert.equal(second.results[0].sourceRange?.startRow, 7);
+  assert.deepEqual(first.issues, []);
+});
+
+test("combined results preserve the definition table's original columns separately from Results", () => {
+  const first = { ...main, id: "TC01" };
+  const second = { ...main, id: "TC02" };
+  const rows = [["Test Case Id", "Custom QA title", "Step#", "Description Step", "Expected Result", "QA note"],
+    ["TC01", "One", "Step01", "Open", "Shown", "first note"],
+    ["TC02", "Two", "Step01", "Check", "Correct", "second note"],
+    ["Result"], ["", "API", "Response", "Log"], ["Step02 Result", "proof", "ok", "--"], ["Step03 Screen Record", "record", "video", "--"]];
+  const parsed = parseStepSheetResults(rows, second, "TC01, TC02", [first, second])!;
+  assert.deepEqual((parsed.results[0] as typeof parsed.results[0] & { sheetDefinitionTable?: unknown }).sheetDefinitionTable,
+    { headers: ["Test Case Id", "Custom QA title", "Step#", "Description Step", "Expected Result", "QA note"], rows: [["TC01", "One", "Step01", "Open", "Shown", "first note"], ["TC02", "Two", "Step01", "Check", "Correct", "second note"]] });
+  assert.equal(parsed.results.length, 2);
+  assert.deepEqual(parsed.issues, []);
+});
+
+test("an explicit case heading still scopes a result inside a combined tab", () => {
+  const first = { ...main, id: "TC01" };
+  const second = { ...main, id: "TC02" };
+  const rows = [["API", "Response", "Log"], ["TC01 Result", "first proof"], ["TC02 Result", "second proof"]];
+  const parsed = parseStepSheetResults(rows, second, "TC01, TC02", [first, second])!;
+  assert.equal(parsed.results.length, 1);
+  assert.equal(parsed.results[0].sourceRange?.startRow, 3);
+});
+
+test("unpartitioned combined API results appear for TC02 without adopting another case status", () => {
+  const other = { ...main, id: "TC02", status: "Skip" as const, stepDefinitions: undefined };
+  const parsed = parseStepSheetResults([["API", "Response", "Log"], ["GET /shared", '{"data":1}', "shared log"]], other, "TC01, TC02", [{ ...main, id: "TC01" }, other])!;
+  assert.equal(parsed.results.length, 1);
+  assert.equal(parsed.results[0].status, "Not Start");
+  assert.ok(parsed.results[0].sheetSections?.[0].title.includes("ผลร่วม"));
+  assert.ok(parsed.results[0].sheetSections?.[0].rows[0].fields.some(field => field.value === "shared log"));
 });
 test("matrix without Steps retains separate API rows and every extra column", () => {
   const plain = { ...main, stepDefinitions: undefined };

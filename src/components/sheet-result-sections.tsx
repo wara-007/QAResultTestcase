@@ -1,5 +1,6 @@
 "use client";
 
+import { ExternalLink } from "lucide-react";
 import { ResultTextViewer } from "./result-text-viewer";
 import { evidenceSectionIndex, groupSheetResultSections, isCodeSheetField, sectionFieldsForDisplay, sheetFieldDisplayLabel, type SheetSection } from "@/lib/sheet-sections";
 import { splitHighlightedText } from "@/lib/result-preview";
@@ -14,12 +15,13 @@ export function SheetResultSections({ sections, images = EMPTY_IMAGES, sheetName
   return <div className="sheet-result-sections">
     {groups.map((group, index) => <section className="sheet-spatial-result" key={group.sections[0].id}>
       <h4>ชุดผลการทดสอบ {index + 1}</h4>
+      {[...new Set(group.sections.map(section => section.title.match(/ผลร่วม: .+$/)?.[0]).filter(Boolean))].map(title => <small className="result-origin-label" key={title}>{title}</small>)}
       {group.sections.map(section => <div className="sheet-result-section" key={section.id}>
       <dl className="sheet-result-fields">
         {sectionFieldsForDisplay(section).map(field => <div key={field.ref}>
           {sheetFieldDisplayLabel(field) && <dt>{sheetFieldDisplayLabel(field)}</dt>}
           <dd>{field.link && /^https?:\/\//i.test(field.link) && !isCodeSheetField(field)
-            ? <a href={field.link} target="_blank" rel="noopener noreferrer">{splitHighlightedText(field.value, field.highlights).map((part, index) => <span key={index} style={{ color: part.color, backgroundColor: part.background, fontWeight: part.bold ? 700 : undefined }}>{part.text}</span>)}</a>
+            ? <a className="sheet-external-link" href={field.link} target="_blank" rel="noopener noreferrer" title="เปิดในแท็บใหม่">{splitHighlightedText(field.value, field.highlights).map((part, index) => <span key={index} style={{ color: part.color, backgroundColor: part.background, fontWeight: part.bold ? 700 : undefined }}>{part.text}</span>)}<ExternalLink size={14} aria-hidden="true" /><span className="sr-only"> (เปิดในแท็บใหม่)</span></a>
             : isCodeSheetField(field)
             ? <ResultTextViewer title={sheetFieldDisplayLabel(field) || "ข้อมูล"} text={field.value} highlights={field.highlights} />
             : <p className="sheet-field-prose">{splitHighlightedText(field.value, field.highlights).map((part, index) => <span key={index} style={{ color: part.color, backgroundColor: part.background, fontWeight: part.bold ? 700 : undefined }}>{part.text}</span>)}</p>}</dd>

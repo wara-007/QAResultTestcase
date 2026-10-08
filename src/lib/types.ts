@@ -31,6 +31,8 @@ export type TestDefect = {
 };
 
 export type TestResult = {
+  sharedSheetMappingVersion?: 1 | 2 | 3 | 4;
+  sheetDefinitionTable?: { headers: string[]; rows: string[][] };
   editedLocally?: boolean;
   stepId?: string;
   stepMappingHistory?: { fromStepId: string | null; toStepId: string | null; by: string; at: string }[];
@@ -142,6 +144,7 @@ export type WorkbookSource = {
 export type WorkbookSheetKind = "testcase" | "result" | "defect" | "summary" | "data" | "other";
 
 export type WorkbookSheet = {
+  definitionCaseIds?: string[];
   defects?: TestDefect[];
   sheetId?: number;
   name: string;

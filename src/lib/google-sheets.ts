@@ -9,6 +9,7 @@ import { evidenceMimeFromUrl, evidenceSheetCell } from "@/lib/evidence-media";
 import { testCaseIdsFromSheetText, testCaseIdsMatchingSheetName, workbookSheetFromGoogleProperties } from "@/lib/sheet-mapping-model";
 import { casesFromRows } from "@/lib/testcase-rows";
 import { parseStepSheetResults } from "@/lib/step-sheet-results";
+import { compactResultCaseIds } from "@/lib/compact-sheet-results";
 import { isProjectSummarySheet } from "@/lib/sheet-mapping-model";
 import { parseCoverSnapshot } from "@/lib/workbook-validation";
 import { stepHeaderColumns } from "@/lib/step-testcases";
@@ -173,10 +174,11 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
       // mention several other cases in their cells (references, defects, RCs),
       // which must not make those cases aliases of the same tab.
       const nameIds = testCaseIdsMatchingSheetName(name, cases);
-      const ids = nameIds.length ? nameIds : contentIds;
+      const definitionIds = compactResultCaseIds(rows, cases);
+      const ids = definitionIds.length ? [...new Set([...nameIds, ...definitionIds])] : nameIds.length ? nameIds : contentIds;
       if (!ids.length) ids.push(name);
       const sheetIndex = sheetIndexes.get(name);
-      if (sheetIndex != null) workbookSheets[sheetIndex] = { ...workbookSheets[sheetIndex], testCaseIds: ids };
+      if (sheetIndex != null) workbookSheets[sheetIndex] = { ...workbookSheets[sheetIndex], testCaseIds: ids, ...(definitionIds.length ? { definitionCaseIds: definitionIds } : {}) };
       ids.forEach((id) => {
         let testCase = cases.find((item) => caseIdentity(item.id) === caseIdentity(id));
         if (!testCase) {

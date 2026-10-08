@@ -5,8 +5,30 @@ import { mergeWorkspaceAndGoogleCases } from "./sync/workspace-merge";
 import { parseStoredResults, serializeStoredResults } from "./project-data";
 import { needsStepTemplateRefresh } from "./step-reconciliation";
 import { mergeCaseChoices } from "./sync/client-conflicts";
+import { workbookSheetFromGoogleProperties } from "./sheet-mapping-model";
 
 const makeCase = () => casesFromRows([["Test Case (TC ID)", "Step#", "Description Step", "Expected Result", "Status"], ["ENQ_01_TC_01", "step 01", "Landing", "Correct", "NotStart"]])[0];
+test("cached compact results filtered to one proof must be refreshed for every shared owner", () => {
+  const sheet = workbookSheetFromGoogleProperties({ title: "TC05, TC06", sheetId: 1 });
+  const source = { fileName: "compact.xlsx", buffer: new ArrayBuffer(0), bufferLoaded: false, sheetName: "Testcase", sheetPath: "", columns: {}, sheets: [sheet] };
+  const cases = ["TC05", "TC06"].map(id => ({ ...makeCase(), id, results: [{ id: `SHEET-IMPORT-${sheet.name}-ROW-10`, sharedSheetMappingVersion: 3 as const, sourceSheetName: sheet.name, status: "Not Start" as const, actualResult: "old filtered proof", apiResponse: "", log: "", evidence: [], createdAt: "" }] }));
+  assert.equal(needsStepTemplateRefresh(cases, source), true);
+});
+test("a loaded combined tab cannot hide missing results of its other register cases", () => {
+  const first = { ...makeCase(), id: "TC01" };
+  const second = { ...makeCase(), id: "TC02" };
+  const sheet = workbookSheetFromGoogleProperties({ title: "TC01, TC02", sheetId: 1 });
+  const source = { fileName: "shared.xlsx", buffer: new ArrayBuffer(0), bufferLoaded: false, sheetName: "Testcase", sheetPath: "", columns: {}, sheets: [sheet] };
+  first.results = [{ id: "SHEET-IMPORT-TC01, TC02-API-2", sharedSheetMappingVersion: 3, sourceSheetName: sheet.name, status: "Not Start", actualResult: "shared result", apiResponse: "", log: "", evidence: [], createdAt: "" }];
+  assert.equal(needsStepTemplateRefresh([first, second], source), true);
+  second.results = [...first.results];
+  assert.equal(needsStepTemplateRefresh([first, second], source), false);
+  second.results = [{ ...first.results[0], sharedSheetMappingVersion: undefined }];
+  assert.equal(needsStepTemplateRefresh([first, second], source), true);
+  source.sheets = [workbookSheetFromGoogleProperties({ title: "TC02", sheetId: 1 })];
+  second.results = [];
+  assert.equal(needsStepTemplateRefresh([first, second], source), false);
+});
 test("refresh does not assign importer to Sheet Skip with no EXECUTED BY", () => {
   const incoming = makeCase(); incoming.status = "Skip"; incoming.executedBy = "";
   incoming.stepDefinitions![0].status = "Skip";

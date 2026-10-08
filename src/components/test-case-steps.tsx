@@ -7,7 +7,8 @@ const sourceLabel = (step: TestCaseStep, field: keyof NonNullable<ReturnType<typ
   return column !== undefined && column >= 0 ? step.sourceFields?.[column]?.label || fallback : fallback;
 };
 
-export function stepResultTitle(testCase: TestCase, result: Pick<TestResult, "stepId">) {
+export function stepResultTitle(testCase: TestCase, result: Pick<TestResult, "stepId" | "sharedSheetMappingVersion" | "sheetSections">) {
+  if (result.sharedSheetMappingVersion) return result.sheetSections?.[0]?.title.split(" · ผลร่วม:")[0] || "ผลจากแท็บรวม";
   const step = testCase.stepDefinitions?.find(step => step.id === result.stepId);
   return step ? `${step.name} · ${step.description}` : "ผลที่ยังไม่ผูก Step";
 }

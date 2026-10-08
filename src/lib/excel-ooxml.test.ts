@@ -2,11 +2,27 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 import { strToU8, strFromU8, zipSync, unzipSync } from "fflate";
-import { exportTestCases, readWorkbookFreeformResults, readWorkbookSheet } from "./excel-ooxml";
+import { exportTestCases, readWorkbookFreeformResults, readWorkbookResultImages, readWorkbookSheet } from "./excel-ooxml";
 import { casesFromRows } from "./testcase-rows";
 import type { WorkbookSource } from "./types";
 
 Object.assign(globalThis, { DOMParser });
+test("combined result evidence remains accessible to both referenced cases", () => {
+  const source = workbook([["A1", "API"], ["B1", "Response"], ["C1", "Log"], ["A2", "GET /shared"], ["B2", "ok"]]);
+  source.sheets[0].name = "TC01, TC02";
+  source.sheets[0].testCaseIds = ["TC01", "TC02"];
+  const files = unzipSync(new Uint8Array(source.buffer));
+  files["xl/worksheets/sheet1.xml"] = strToU8(strFromU8(files["xl/worksheets/sheet1.xml"]).replace("<worksheet>", '<worksheet xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">').replace("</worksheet>", '<drawing r:id="draw1"/></worksheet>'));
+  files["xl/worksheets/_rels/sheet1.xml.rels"] = strToU8('<Relationships><Relationship Id="draw1" Target="../drawings/drawing1.xml"/></Relationships>');
+  files["xl/drawings/drawing1.xml"] = strToU8('<drawing xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><oneCellAnchor><from><row>1</row><col>1</col></from><blip r:embed="img1"/></oneCellAnchor></drawing>');
+  files["xl/drawings/_rels/drawing1.xml.rels"] = strToU8('<Relationships><Relationship Id="img1" Target="../media/proof.png"/></Relationships>');
+  files["xl/media/proof.png"] = new Uint8Array([137, 80, 78, 71]);
+  const bytes = zipSync(files);
+  source.buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  const cases = casesFromRows([["Test Case Id", "Test Case Name"], ["TC01", "First"], ["TC02", "Second"]]);
+  const images = readWorkbookResultImages(source, cases);
+  assert.deepEqual(images.map(image => [image.testCaseId, image.resultId]), [["TC01", "SHEET-IMPORT-TC01, TC02-API-2"], ["TC02", "SHEET-IMPORT-TC01, TC02-API-2"]]);
+});
 test("Step export preserves formula cells, original Cover and detail definitions", () => {
   Object.assign(globalThis, { XMLSerializer });
   const rows = [["Test Case (TC ID)", "Step#", "Description Step", "Expected Result", "Status"], ["ENQ_01_TC_01", "step 01", "Landing", "Correct", "TESTING"]];

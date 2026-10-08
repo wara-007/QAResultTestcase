@@ -3,6 +3,7 @@ import { stepHeaderKey, stepHeaderColumns, parseStepTestCases } from "./step-tes
 import { freeformTextFromCells } from "./sheet-detail";
 import { readStepResultSnapshots, STEP_SNAPSHOT_START } from "./step-sheet-sync";
 import { parseApiLogSheetResults } from "./api-log-sheet-results";
+import { parseCompactSheetResults } from "./compact-sheet-results";
 
 export const sheetColumn = (index: number) => {
   let value = index + 1, result = "";
@@ -20,6 +21,8 @@ export function parseStepSheetResults(rows: unknown[][], testCase: TestCase, she
   if (ownedStart >= 0) rows = rows.slice(0, ownedStart);
   const matrix = parseApiLogSheetResults(rows, testCase, sheetName, cases);
   if (matrix) return { ...matrix, results: [...matrix.results, ...ownedResults] };
+  const compact = parseCompactSheetResults(rows, testCase, sheetName, cases ?? [testCase]);
+  if (compact) return { ...compact, results: [...compact.results, ...ownedResults] };
   if (!testCase.stepDefinitions?.length) return null;
   const start = rows.findIndex(row => row.some(value => stepHeaderKey(value) === "resulttesting"));
   const headers = rows.slice(0, start < 0 ? rows.length : start).find(row => stepHeaderColumns(row)) ?? [];

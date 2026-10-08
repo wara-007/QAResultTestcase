@@ -364,8 +364,9 @@ export function readWorkbookResultImages(source: WorkbookSource, cases: TestCase
     }) : [];
     if (structured.length) {
       content!.images.forEach(image => {
-        const match = structured.flatMap(({ owner, parsed }) => parsed.results.map(result => ({ owner, result }))).find(({ result }) => result.sourceRange && image.row >= result.sourceRange.startRow && image.row <= result.sourceRange.endRow);
-        imported.push({ ...image, sheetName: sheet.name, testCaseId: match?.owner.id ?? ownerCase!.id, resultId: match?.result.id ?? `SHEET-IMPORT-${sheet.name}-UNASSIGNED` });
+        const matches = structured.flatMap(({ owner, parsed }) => parsed.results.map(result => ({ owner, result }))).filter(({ result }) => result.sourceRange && image.row >= result.sourceRange.startRow && image.row <= result.sourceRange.endRow);
+        if (matches.length) matches.forEach(match => imported.push({ ...image, sheetName: sheet.name, testCaseId: match.owner.id, resultId: match.result.id }));
+        else imported.push({ ...image, sheetName: sheet.name, testCaseId: ownerCase!.id, resultId: `SHEET-IMPORT-${sheet.name}-UNASSIGNED` });
       });
       continue;
     }

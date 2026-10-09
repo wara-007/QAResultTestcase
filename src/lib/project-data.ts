@@ -45,6 +45,7 @@ type CaseRow = {
 };
 
 type StoredResultPayload = {
+  sourceSheetName?: string;
   sourceFields?: TestCase["sourceFields"];
   version: 1 | 2 | 3 | 4;
   stepDefinitions?: TestCase["stepDefinitions"];
@@ -78,6 +79,7 @@ export function parseStoredResults(value: string | undefined) {
     const migratedDefects = results.flatMap((result) => (result.defects ?? []).map((defect, index) => normalizeDefect(defect, `${result.id}-defect-${index + 1}`)));
     return {
       sourceFields: Array.isArray(payload.sourceFields) ? payload.sourceFields : undefined,
+      sourceSheetName: typeof payload.sourceSheetName === "string" ? payload.sourceSheetName : undefined,
       stepDefinitions: Array.isArray(payload.stepDefinitions) ? payload.stepDefinitions : undefined,
       importIssues: Array.isArray(payload.importIssues) ? payload.importIssues : [],
       resultReference: typeof payload.resultReference === "string" ? payload.resultReference : "",
@@ -98,6 +100,7 @@ export function parseStoredResults(value: string | undefined) {
 
 export function serializeStoredResults(testCase: TestCase) {
   const payload: StoredResultPayload = { version: 4, sourceFields: testCase.sourceFields, stepDefinitions: testCase.stepDefinitions, importIssues: testCase.importIssues, resultReference: testCase.resultReference, results: testCase.results ?? [], defects: testCase.defects ?? [], customFields: testCase.customFields ?? [], resultFieldDefinitions: testCase.resultFieldDefinitions ?? [] };
+  payload.sourceSheetName = testCase.sourceSheetName;
   return `qa-results:${JSON.stringify(payload)}`;
 }
 
@@ -238,6 +241,7 @@ export async function loadProjectWorkspace(projectId: string, options: { include
       evidence: [],
       customFields: stored.customFields,
       sourceFields: stored.sourceFields,
+      sourceSheetName: stored.sourceSheetName,
       resultFieldDefinitions: stored.resultFieldDefinitions,
       results: stored.results,
       defects: stored.defects,

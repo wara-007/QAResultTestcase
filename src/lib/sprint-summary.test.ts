@@ -24,6 +24,12 @@ test("counts the latest attempt once per case and open defects from saved Result
 test("an empty sprint has no fabricated progress", () => {
   assert.equal(summarizeSprint([]).progress, 0);
 });
+
+test("an unmatched tab with a TC-looking name is excluded from sprint totals", () => {
+  const summary = summarizeSprint([{ id: "p", approvals: [], cases: [{ testcaseKey: "TC99", sourceRow: 0, executions: [{ attempt_no: 1, status: "Pass", result_reference: 'qa-results:{"sourceSheetName":"RC TC99","results":[]}' }] }] }]);
+  assert.equal(summary.totalCases, 0);
+  assert.equal(summary.pass, 0);
+});
 test("excludes Cover and unmapped sheet placeholders but keeps real cases with unassigned Step results", () => {
   const cases = [
     { testcaseKey: "Cover", sourceRow: 2, steps: "Summary", executions: [] },

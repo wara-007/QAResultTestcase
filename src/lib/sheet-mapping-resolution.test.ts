@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { resolveSheetAssociations } from "./sheet-mapping-resolution";
+import { registeredTestCases } from "./sheet-mapping-model";
+import { workspaceCasesForRegister } from "./sheet-register-cases";
+import { parseStoredResults, serializeStoredResults } from "./project-data";
 import type { ProjectSheetMapping, TestCase, WorkbookSheet } from "./types";
 
 const testCase = (id: string): TestCase => ({
@@ -125,4 +128,45 @@ test("non-TC IDs map from their tab names without matching unrelated IDs in cell
   const result = resolveSheetAssociations([sheet(1, "True_01"), sheet(2, "SW_21"), sheet(3, "RC Dtac_02"), sheet(4, "True_011")], [testCase("True_01"), testCase("SW_21"), testCase("Dtac_02")], []);
   assert.deepEqual(result.associations.map(a => [a.sheet.name, a.testCase.id]), [["True_01", "True_01"], ["SW_21", "SW_21"], ["RC Dtac_02", "Dtac_02"]]);
   assert.deepEqual(result.unmapped.map(s => s.name), ["True_011"]);
+});
+
+test("a combined tab with a missing register owner stays entirely unmapped until QA chooses", () => {
+  const result = resolveSheetAssociations([sheet(10, "TC01, TC99")], [testCase("TC01")], []);
+  assert.deepEqual(result.associations, []);
+  assert.deepEqual(result.unmapped.map(item => item.name), ["TC01, TC99"]);
+});
+
+test("sheet-only imported placeholders cannot make an unknown tab look registered", () => {
+  const placeholder = { ...testCase("TC99"), sourceSheetName: "RC TC99", sourceRow: 0 };
+  const result = resolveSheetAssociations([sheet(10, "RC TC99")], [testCase("TC01"), placeholder], []);
+  assert.deepEqual(result.associations, []);
+  assert.deepEqual(result.unmapped.map(item => item.name), ["RC TC99"]);
+});
+
+test("case list excludes imported tab placeholders while retaining authored and registered cases", () => {
+  const items = [testCase("TC01"), { ...testCase("Run A"), sourceSheetName: "Run A" }, { ...testCase("Web case"), sourceRow: 0, steps: "Login" }];
+  assert.deepEqual(registeredTestCases(items).map(item => item.id), ["TC01", "Web case"]);
+});
+
+test("legacy sheet placeholders without a persisted marker are not register cases", () => {
+  const legacy = { ...testCase("TC99"), sourceRow: 0, results: [{ id: "old", sourceSheetName: "RC TC99", status: "Pass" as const, actualResult: "Proof", apiResponse: "", log: "", createdAt: "", evidence: [] }] };
+  assert.deepEqual(registeredTestCases([testCase("TC01"), legacy]).map(item => item.id), ["TC01"]);
+});
+
+test("legacy empty arbitrary-tab rows stay outside the testcase register", () => {
+  assert.deepEqual(registeredTestCases([testCase("TC01"), { ...testCase("ชีต6"), sourceRow: 0 }]).map(item => item.id), ["TC01"]);
+});
+
+test("manual mapping exposes the preserved tab result and image on its target, without adding a case", () => {
+  const target = testCase("TC01");
+  const snapshot = { ...testCase("Run A"), sourceSheetName: "Run A", results: [{ id: "proof", sourceSheetName: "Run A", status: "Pass" as const, actualResult: "Complete result", apiResponse: "API", log: "Log", createdAt: "", evidence: [{ fileId: "img1", name: "Proof", mimeType: "image/png" }] }] };
+  const { sourceSheetName: _source, ...databaseRow } = snapshot;
+  void _source;
+  const reopened = { ...databaseRow, ...parseStoredResults(serializeStoredResults(snapshot)) };
+  assert.equal(reopened.sourceSheetName, "Run A");
+  const output = workspaceCasesForRegister([target, reopened], [sheet(10, "Run A")], [mapping(10, "Run A", "TC01")]);
+  assert.deepEqual(output.map(item => item.id), ["TC01"]);
+  assert.equal(output[0].results?.[0].actualResult, "Complete result");
+  assert.equal(output[0].results?.[0].evidence[0].fileId, "img1");
+  assert.equal(target.results?.length, 0);
 });

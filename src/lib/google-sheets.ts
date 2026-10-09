@@ -6,7 +6,7 @@ import { isSheetPayloadLabel } from "@/lib/sheet-sections";
 import type { googleOAuthClient } from "@/lib/google-user-oauth";
 import { parseFlexibleDate } from "@/lib/date-format";
 import { evidenceMimeFromUrl, evidenceSheetCell } from "@/lib/evidence-media";
-import { testCaseIdsFromSheetText, testCaseIdsMatchingSheetName, workbookSheetFromGoogleProperties } from "@/lib/sheet-mapping-model";
+import { automaticSheetCaseIds, workbookSheetFromGoogleProperties } from "@/lib/sheet-mapping-model";
 import { casesFromRows } from "@/lib/testcase-rows";
 import { parseStepSheetResults } from "@/lib/step-sheet-results";
 import { compactResultCaseIds } from "@/lib/compact-sheet-results";
@@ -132,7 +132,7 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
   const cases = casesFromRows(values.data.values ?? []);
   const coverSheet = workbookSheets.find(sheet => isProjectSummarySheet(sheet.name));
   const coverSnapshot = coverSheet ? parseCoverSnapshot((await sheets.spreadsheets.values.get({ spreadsheetId, range: `'${coverSheet.name.replaceAll("'", "''")}'!A:AZ`, valueRenderOption: "FORMATTED_VALUE" })).data.values ?? [], coverSheet.name) : undefined;
-  workbookSheets.forEach(sheet => { sheet.testCaseIds = testCaseIdsMatchingSheetName(sheet.name, cases); });
+  workbookSheets.forEach(sheet => { sheet.testCaseIds = automaticSheetCaseIds(sheet.name, cases); });
   await Promise.all(workbookSheets.filter(sheet => isProjectDefectSheet(sheet.name) && (options.summary || (!options.sheetName && !options.sheetNames && !options.testcaseId) || sheet.name === options.sheetName || options.sheetNames?.includes(sheet.name))).map(async sheet => {
     const response = await sheets.spreadsheets.values.get({ spreadsheetId, range: `'${sheet.name.replaceAll("'", "''")}'!A:AZ`, valueRenderOption: "FORMULA", dateTimeRenderOption: "FORMATTED_STRING" });
     sheet.defects = projectDefectsFromRows(response.data.values ?? [], sheet.name);
@@ -169,17 +169,16 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
         const background = color(cell.effectiveFormat?.backgroundColorStyle, cell.effectiveFormat?.backgroundColor);
         return [{ ref: `${columnLetter((grid.startColumn ?? 0) + colIndex)}${(grid.startRow ?? 0) + rowIndex + 1}`, value: cell.formattedValue, link, background: background === "#ffffff" ? undefined : background, color: color(textFormat?.foregroundColorStyle, textFormat?.foregroundColor), bold: textFormat?.bold ?? undefined, runs: (cell.textFormatRuns ?? []).map(run => ({ start: run.startIndex ?? 0, color: color(run.format?.foregroundColorStyle, run.format?.foregroundColor), bold: run.format?.bold ?? undefined })) }];
       })));
-      const contentIds = Array.from(new Set(rows.flat().flatMap((cell) => testCaseIdsFromSheetText(String(cell ?? "")))));
       // A Test Case ID in the tab name is authoritative. Result tabs commonly
       // mention several other cases in their cells (references, defects, RCs),
       // which must not make those cases aliases of the same tab.
-      const nameIds = testCaseIdsMatchingSheetName(name, cases);
       const definitionIds = compactResultCaseIds(rows, cases);
-      const ids = definitionIds.length ? [...new Set([...nameIds, ...definitionIds])] : nameIds.length ? nameIds : contentIds;
-      if (!ids.length) ids.push(name);
+      const ids = automaticSheetCaseIds(name, cases, definitionIds);
       const sheetIndex = sheetIndexes.get(name);
       if (sheetIndex != null) workbookSheets[sheetIndex] = { ...workbookSheets[sheetIndex], testCaseIds: ids, ...(definitionIds.length ? { definitionCaseIds: definitionIds } : {}) };
-      ids.forEach((id) => {
+      // Unmatched tabs retain a preview snapshot, never infer an owner from
+      // arbitrary cell references or promote the snapshot into the case list.
+      (ids.length ? ids : [name]).forEach((id) => {
         let testCase = cases.find((item) => caseIdentity(item.id) === caseIdentity(id));
         if (!testCase) {
           testCase = { id, sourceSheetName: name, sourceRow: 0, platform: "", condition: "", scenario: "", name, steps: "", expected: "", status: "Not Start", device: "", testData: "", appVersion: "", environment: "", resultReference: name, executedBy: "", executedDate: "", executedTime: "", remark: "", evidence: [], results: [], defects: [] };

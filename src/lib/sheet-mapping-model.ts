@@ -1,9 +1,31 @@
-import type { ProjectSheetMapping, WorkbookSheet, WorkbookSheetKind } from "./types";
+import type { ProjectSheetMapping, TestCase, WorkbookSheet, WorkbookSheetKind } from "./types";
 
 const normalizeSheetName = (value: string) => value.toLowerCase().replace(/[\n\r*._()/-]+/g, " ").replace(/\s+/g, " ").trim();
 
 export function isProjectSummarySheet(name: string): boolean {
   return /^(?:cover(?: page)?|summary(?: page)?|สรุป(?:ผล)?)$/.test(normalizeSheetName(name));
+}
+
+/** Sheet-only snapshots are retained for preview, not promoted into the register. */
+export function registeredTestCases(cases: readonly TestCase[]) {
+  return cases.filter(item => {
+    const legacySnapshot = item.remark.startsWith("นำเข้าจาก tab ") || (
+      !item.steps.trim() && !item.expected.trim() && !item.sourceFields?.length && !item.stepDefinitions?.length && item.sourceRow === 0
+      && (item.results?.some(result => result.sourceSheetName) || !/(?:^|[\s_-])TC[\s_-]*\d+$/i.test(item.id))
+    );
+    return !item.sourceSheetName && !legacySnapshot && !isProjectSummarySheet(item.id);
+  });
+}
+
+export function automaticSheetCaseIds(name: string, cases: readonly TestCase[], definitionIds: readonly string[] = []) {
+  const register = registeredTestCases(cases);
+  const key = (value: string) => value.toUpperCase().replace(/[\s:_-]+/g, "");
+  const named = testCaseIdsMatchingSheetName(name, register);
+  // Do not silently attach a mixed TC01, TC99 tab to TC01 alone.
+  const references = testCaseIdsFromSheetText(name).filter(id => !named.some(match => key(match).endsWith(key(id))));
+  const owners = [...new Set([...named, ...references, ...definitionIds])];
+  const matched = owners.map(id => register.filter(item => key(item.id) === key(id)));
+  return matched.every(items => items.length === 1) ? [...new Set(matched.flatMap(items => items.map(item => item.id)))] : [];
 }
 
 export const testCaseIdsFromSheetText = (name: string) => Array.from(name.matchAll(/\b(TC|DEF)[\s:_-]*(\d+)/gi), (match) => `${match[1].toUpperCase()}-${match[2].padStart(2, "0")}`)

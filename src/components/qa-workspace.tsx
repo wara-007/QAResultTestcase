@@ -41,7 +41,6 @@ import { evidenceImageUrl } from "@/lib/evidence";
 import { ImageViewerGallery } from "@/components/image-viewer-gallery";
 import { ResultTextViewer } from "@/components/result-text-viewer";
 import { SheetResultSections } from "@/components/sheet-result-sections";
-import { isProjectSummarySheet } from "@/lib/sheet-mapping-model";
 import { isSheetPayloadLabel } from "@/lib/sheet-sections";
 import { loadRows, batchRowLoader, sheetRowState, caseDetailLoadKeys, canReuseSheetDetails, completeResultTabLoad, isImportedEvidenceDisplayed, type RowLoadState } from "@/lib/result-preview";
 import { selectDetailSheets } from "@/lib/sheet-detail";
@@ -61,6 +60,7 @@ import { checkpointSheetImport, readSheetImportState, shouldStartSheetImport, pe
 import { filterProjects } from "@/lib/project-search";
 import { testCaseSourceSection } from "@/lib/testcase-rows";
 import { resolveSheetAssociations } from "@/lib/sheet-mapping-resolution";
+import { workspaceCasesForRegister } from "@/lib/sheet-register-cases";
 import { clearProjectWorkbook, getProjectWorkbook } from "@/lib/workbook-cache";
 import { detectBootstrapCaseConflicts, detectThreeWayCaseConflicts, mergeCaseChoices, type CaseChoice, type CaseConflict } from "@/lib/sync/client-conflicts";
 import type { CanonicalProjectSnapshot } from "@/lib/sync/types";
@@ -1089,9 +1089,9 @@ export function QaWorkspace({
   const canManageProject = selectedProject?.canManage === true;
   const requiresDetailedGoogleData = Boolean((testCaseId || sheetName) && selectedProject?.googleSheetId);
   const [workspaceCases, setCases] = useState<TestCase[]>(() => cachedWorkspace?.cases ?? []);
-  const cases = useMemo(() => workspaceCases.filter(item => !isProjectSummarySheet(item.sourceSheetName || item.id)), [workspaceCases]);
   const [source, setSource] = useState<WorkbookSource | null>(() => cachedWorkspace?.source ?? null);
   const [sheetMappings, setSheetMappings] = useState<ProjectSheetMapping[]>(() => cachedWorkspace?.sheetMappings ?? []);
+  const cases = useMemo(() => workspaceCasesForRegister(workspaceCases, source?.sheets ?? [], sheetMappings), [workspaceCases, source, sheetMappings]);
   const [hasLoadedSheetMappings, setHasLoadedSheetMappings] = useState(cachedWorkspace?.hasLoadedSheetMappings ?? false);
   const [hasDetailedGoogleData, setHasDetailedGoogleData] = useState(cachedWorkspace?.hasDetailedGoogleData ?? false);
   const [hasGoogleWorkbook, setHasGoogleWorkbook] = useState(cachedWorkspace?.hasGoogleWorkbook ?? false);
@@ -1250,7 +1250,7 @@ export function QaWorkspace({
   const activeSheet = sheetName ? source?.sheets.find((item) => item.name === decodeURIComponent(sheetName)) ?? source?.sheets.find((item) => item.name.trim() === decodeURIComponent(sheetName).trim()) ?? null : null;
   const activeSheetAssociation = activeSheet ? sheetResolution.associations.find((association) => association.sheet.path === activeSheet.path) : undefined;
   const activeInvalidMapping = activeSheet ? sheetResolution.invalidMappings.find((item) => item.sheet.path === activeSheet.path)?.mapping : undefined;
-  const activeSheetCase = activeSheetAssociation?.testCase ?? cases.find(item => item.id === activeSheet?.name) ?? null;
+  const activeSheetCase = activeSheetAssociation?.testCase ?? workspaceCases.find(item => item.sourceSheetName === activeSheet?.name || item.id === activeSheet?.name || (!cases.some(registered => registered.id === item.id) && item.results?.some(result => result.sourceSheetName === activeSheet?.name))) ?? null;
   const importedSheetResult = useMemo<TestResult | null>(() => {
     if (!activeSheet || !source?.bufferLoaded || loadingSheetPreview) return null;
     try {
@@ -1488,8 +1488,8 @@ export function QaWorkspace({
 
   useEffect(() => {
     if (!selectedProjectId || loadingWorkspace) return;
-    workspaceNavigationCache.set(selectedProjectId, { cases, source, sheetMappings, hasLoadedSheetMappings, hasUnsyncedChanges, hasDetailedGoogleData, hasGoogleWorkbook, sheetRowLoads: rowLoadProjectId === selectedProjectId ? sheetRowLoads : {} });
-  }, [selectedProjectId, cases, source, sheetMappings, hasLoadedSheetMappings, hasUnsyncedChanges, hasDetailedGoogleData, hasGoogleWorkbook, loadingWorkspace, sheetRowLoads, rowLoadProjectId]);
+    workspaceNavigationCache.set(selectedProjectId, { cases: workspaceCases, source, sheetMappings, hasLoadedSheetMappings, hasUnsyncedChanges, hasDetailedGoogleData, hasGoogleWorkbook, sheetRowLoads: rowLoadProjectId === selectedProjectId ? sheetRowLoads : {} });
+  }, [selectedProjectId, workspaceCases, source, sheetMappings, hasLoadedSheetMappings, hasUnsyncedChanges, hasDetailedGoogleData, hasGoogleWorkbook, loadingWorkspace, sheetRowLoads, rowLoadProjectId]);
 
 
   async function saveCase(next: TestCase) {
@@ -1620,33 +1620,20 @@ export function QaWorkspace({
       imported.source.coverSnapshot = data.coverSnapshot ?? imported.source.coverSnapshot;
       const importedImages = readWorkbookResultImages(imported.source, imported.cases);
       const freeformResults = readWorkbookFreeformResults(imported.source, imported.cases);
-      const storedCases = new Map(cases.map((testCase) => [testCaseIdentity(testCase.id), testCase]));
-      let importedCases: TestCase[] = mergeWorkspaceAndGoogleCases(cases, googleCases, currentUser?.name ?? "").cases.map(testCase => ({ ...testCase, results: testCase.results?.map(result => ({ ...result, evidence: [...result.evidence] })) }));
+      let importedCases: TestCase[] = mergeWorkspaceAndGoogleCases(workspaceCases, googleCases, currentUser?.name ?? "").cases.map(testCase => ({ ...testCase, results: testCase.results?.map(result => ({ ...result, evidence: [...result.evidence] })) }));
       const importedSheetAssignments = new Map(resolveSheetAssociations(
         (data.sheets as WorkbookSheet[]).filter((sheet) => sheet.name.trim().toLowerCase() !== "testcase"),
         importedCases,
         sheetMappings,
       ).associations.filter(association => association.source === "manual").map((association) => [association.sheet.name.trim().toLocaleLowerCase(), association.testCase.id]));
-      for (const sheet of imported.source.sheets.filter((item) => item.name.trim().toLowerCase() !== "testcase")) {
-        if (isProjectDefectSheet(sheet.name) || isProjectSummarySheet(sheet.name)) continue;
-        const sheetCaseId = importedSheetAssignments.get(sheet.name.trim().toLocaleLowerCase())
-          ?? testCaseIdsFromSheet(sheet).find((id) => id.startsWith("TC-"))
-          ?? sheet.name;
-        if (importedCases.some((item) => testCaseIdentity(item.id) === testCaseIdentity(sheetCaseId))) continue;
-        const stored = storedCases.get(testCaseIdentity(sheetCaseId));
-        importedCases.push(stored ?? {
-          id: sheetCaseId,
-          sourceSheetName: sheet.name,
-          sourceRow: sheet.order + 1,
-          platform: "", condition: "", scenario: "", name: sheet.name, steps: "", expected: "",
-          status: "Not Start", device: "", testData: "", appVersion: "", environment: selectedProject.environment,
-          resultReference: sheet.name, executedBy: "", executedDate: "", executedTime: "",
-          remark: `นำเข้าจาก tab ${sheet.name}`, evidence: [], results: [], defects: [],
-        });
+      for (const snapshot of importedCases) {
+        if (!snapshot.sourceSheetName) continue;
+        const sheetKey = snapshot.sourceSheetName.trim().toLocaleLowerCase();
+        if (!importedSheetAssignments.has(sheetKey)) importedSheetAssignments.set(sheetKey, snapshot.id);
       }
       // Conflict choices govern case metadata, not whether fresh imported
       // results/Step definitions are discarded by the default "keep local".
-      importedCases = mergeWorkspaceAndGoogleCases(mergeCaseChoices(cases, importedCases, conflictChoices ?? {}), importedCases, currentUser?.name ?? "").cases;
+      importedCases = mergeWorkspaceAndGoogleCases(mergeCaseChoices(workspaceCases, importedCases, conflictChoices ?? {}), importedCases, currentUser?.name ?? "").cases;
       const changedCaseIds = new Set<string>();
       let attachedImageCount = 0;
       let skippedImageCount = 0;
@@ -1917,7 +1904,7 @@ export function QaWorkspace({
     if (!selectedProject) throw new Error("กรุณาเลือก Project");
     const timestampedCases = inputCases.map(withPassedTimestamp);
     const syncCases = await Promise.all(timestampedCases.map((testCase) => persistTestCaseResult(selectedProject.id, testCase)));
-    setCases(syncCases);
+    setCases(current => current.map(item => syncCases.find(saved => saved.id === item.id) ?? item));
     try {
       const response = await fetch(`/api/projects/${selectedProject.id}/google-sheet`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cases: syncCases }) });
       const data = await response.json();
@@ -2094,7 +2081,7 @@ export function QaWorkspace({
           />}
 
           {!loadingWorkspace && !testCaseId && sheetName && activeSheet && <section className="panel sheet-mapping-detail-bar">
-            <div><span className="eyebrow">GOOGLE SHEET MAPPING</span><strong>{activeSheet.name}</strong><small>{activeSheetCase ? `กำลังแสดงเป็นผลของ ${activeSheetCase.id}` : "แท็บนี้ยังไม่ได้ผูกกับ Test Case"}</small></div>
+            <div><span className="eyebrow">GOOGLE SHEET MAPPING</span><strong>{activeSheet.name}</strong><small>{activeSheetAssociation ? `กำลังแสดงเป็นผลของ ${activeSheetAssociation.testCase.id}` : "แท็บนี้ยังไม่ได้ผูกกับ Test Case — กรุณากด Map"}</small></div>
             <SheetMappingControl key={`${activeSheet.path}:${activeSheetAssociation?.mapping?.testcaseKey ?? activeInvalidMapping?.testcaseKey ?? activeSheetCase?.id ?? "unmapped"}`} projectId={selectedProject.id} sheet={activeSheet} cases={cases} existingMapping={activeSheetAssociation?.mapping ?? activeInvalidMapping} suggestedTestcaseKey={activeSheetAssociation?.source === "automatic" ? activeSheetCase?.id : undefined} canEdit={selectedProject.canEdit} onChanged={(mapping) => updateSheetMapping(activeSheet, mapping)} />
           </section>}
 
@@ -2105,7 +2092,7 @@ export function QaWorkspace({
             source={source}
             associatedSheets={activeSheet ? [activeSheet] : []}
             currentUserName={currentUser?.name ?? ""}
-            readOnly={!canEditProject || pullingGoogle}
+            readOnly={!canEditProject || pullingGoogle || !activeSheetAssociation}
             pageMode
             loadingSheetDetails={loadingSheetPreview}
             focusedSheetName={activeSheet?.name ?? ""}

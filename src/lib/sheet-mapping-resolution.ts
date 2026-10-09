@@ -1,5 +1,5 @@
 import type { ProjectSheetMapping, TestCase, WorkbookSheet } from "./types";
-import { testCaseIdsMatchingSheetName, isProjectSummarySheet } from "./sheet-mapping-model";
+import { automaticSheetCaseIds, registeredTestCases, isProjectSummarySheet } from "./sheet-mapping-model";
 
 const identity = (value: string) => value.trim().toLocaleUpperCase().replace(/[\s_-]+/g, "");
 const stableSheetKey = (sheet: WorkbookSheet) => sheet.sheetId == null ? `path:${sheet.path}` : `google:${sheet.sheetId}`;
@@ -22,7 +22,7 @@ export function resolveSheetAssociations(
   cases: readonly TestCase[],
   mappings: readonly ProjectSheetMapping[],
 ) {
-  const casesByIdentity = new Map(cases.map((testCase) => [identity(testCase.id), testCase]));
+  const casesByIdentity = new Map(registeredTestCases(cases).map((testCase) => [identity(testCase.id), testCase]));
   const mappingsBySheetId = new Map(mappings.map((mapping) => [mapping.sheetId, mapping]));
   const seen = new Set<string>();
   const associations: SheetAssociation[] = [];
@@ -46,7 +46,7 @@ export function resolveSheetAssociations(
     // References inside a sheet can mention many unrelated Test Cases (for
     // example the Defected summary). Only the tab name is safe to infer from;
     // content-only references stay unmapped until QA chooses the target.
-    const inferredCases = [...new Set([...testCaseIdsMatchingSheetName(sheet.name, cases), ...(sheet.definitionCaseIds ?? [])])]
+    const inferredCases = automaticSheetCaseIds(sheet.name, cases, sheet.definitionCaseIds)
       .map((testCaseId) => casesByIdentity.get(identity(testCaseId)))
       .filter((testCase): testCase is TestCase => Boolean(testCase));
     if (inferredCases.length) associations.push(...inferredCases.map(testCase => ({ sheet, testCase, source: "automatic" as const })));

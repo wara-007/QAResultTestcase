@@ -11,12 +11,17 @@ export function summarizeSprint(projects: SprintProjectStatsInput[]) {
     else if (project.approvals.some((item) => item.status === "approved")) summary.approvedProjects++;
     for (const testCase of project.cases) {
       if (isProjectSummarySheet(testCase.testcaseKey ?? "")) continue;
+      const latest = [...testCase.executions].sort((a, b) => b.attempt_no - a.attempt_no)[0];
+      if (latest?.result_reference.startsWith("qa-results:")) {
+        try {
+          if (JSON.parse(latest.result_reference.slice(11)).sourceSheetName) continue;
+        } catch { /* Legacy invalid payloads are handled below. */ }
+      }
       // Sheet-only placeholders have no register row or authored definition.
       // Do not use Result/Step mapping as a proxy for testcase membership.
       const recognizedCaseKey = /(?:^|[\s_-])TC[\s_-]*\d+$/i.test(testCase.testcaseKey ?? "");
       if (testCase.sourceRow === 0 && !recognizedCaseKey && !testCase.steps?.trim() && !testCase.expected?.trim()) continue;
       summary.totalCases++;
-      const latest = [...testCase.executions].sort((a, b) => b.attempt_no - a.attempt_no)[0];
       const fields: Record<string, "pass" | "failed" | "inProgress" | "skip"> = { Pass: "pass", Failed: "failed", "In Progress": "inProgress", Skip: "skip" };
       const field = fields[latest?.status ?? ""] ?? "notStart";
       summary[field]++;

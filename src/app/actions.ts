@@ -406,9 +406,10 @@ export async function deleteGroup(groupId: string) {
     const db=await createClient();
     const {data:auth,error:authError}=await db.auth.getUser();
     if(authError || !auth.user) throw new Error('กรุณาเข้าสู่ระบบอีกครั้ง');
-    const [group,system,appAccess]=await Promise.all([db.from('groups').select('id,owner_id').eq('id',groupId).maybeSingle(),db.rpc('is_system_owner'),db.rpc('is_app_authorized')]);
-    if(group.error || system.error || appAccess.error) throw new Error(group.error?.message || system.error?.message || appAccess.error?.message);
-    if(!group.data || !appAccess.data || !canDeleteGroup(auth.user.id,group.data.owner_id,system.data===true)) throw new Error('เฉพาะ Group Owner หรือ System Owner เท่านั้นที่ลบกลุ่มได้');
+    const [group,system,appAccess,access]=await Promise.all([db.from('groups').select('id,owner_id').eq('id',groupId).maybeSingle(),db.rpc('is_system_owner'),db.rpc('is_app_authorized'),db.rpc('list_group_access')]);
+    if(group.error || system.error || appAccess.error || access.error) throw new Error(group.error?.message || system.error?.message || appAccess.error?.message || access.error?.message);
+    const canManage = ((access.data ?? []) as {group_id:string;can_manage:boolean}[]).some(row=>row.group_id===groupId && row.can_manage);
+    if(!group.data || !appAccess.data || !canDeleteGroup(auth.user.id,group.data.owner_id,system.data===true,canManage)) throw new Error('เฉพาะสมาชิกในกลุ่ม หรือ System Owner เท่านั้นที่ลบกลุ่มได้');
     const admin=createAdminClient();
     const projects=await readAllRows((a,b)=>admin.from('projects').select('id,name').eq('group_id',groupId).order('id').range(a,b));
     let deletedProjects=0;

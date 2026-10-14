@@ -131,6 +131,7 @@ export type TestCaseStep = {
 };
 
 export type WorkbookSource = {
+  documentType?: "google-sheets" | "xlsx";
   coverSnapshot?: import("./workbook-validation").CoverSnapshot;
   sheetImport?: import("./sheet-import-state").SheetImportState;
   id?: string;

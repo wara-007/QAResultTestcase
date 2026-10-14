@@ -1,4 +1,5 @@
 "use client";
+import { GlobalProjectSearch } from './global-project-search';
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
@@ -35,7 +36,7 @@ export function PlanningHome(props: Props) {
     });
   }
   return <main className="groups-screen">
-    <header className="groups-topbar"><Link className="groups-brand" href="/groups"><span><ClipboardCheck size={23} /></span><div><strong>QA Workspace</strong><small>Test execution</small></div></Link>{currentUser && <div className="groups-user"><div><strong>{currentUser.name}</strong><small>{currentUser.email}</small></div><form action={signOut}><button><LogOut size={16} />ออกจากระบบ</button></form></div>}</header>
+    <header className="groups-topbar"><Link className="groups-brand" href="/groups"><span><ClipboardCheck size={23} /></span><div><strong>QA Workspace</strong><small>Test execution</small></div></Link><GlobalProjectSearch />{currentUser && <div className="groups-user"><div><strong>{currentUser.name}</strong><small>{currentUser.email}</small></div><form action={signOut}><button><LogOut size={16} />ออกจากระบบ</button></form></div>}</header>
     <section className="groups-content planning-content">
       <nav className="breadcrumb"><Link href="/groups">เลือกปี</Link><ChevronRight size={15}/>{year && <><Link href={groupsForYearHref(year)}>ปี {year} · Groups</Link><ChevronRight size={15}/></>}<Link href={year ? `${base}/${year}/sprints` : base}>{props.groupName}</Link>{sprint && <><ChevronRight size={15}/><strong>{sprint.name}</strong></>}</nav>
       <div className="groups-heading"><div><p className="eyebrow">{sprint ? "SPRINT DASHBOARD" : "WORKSPACE"}</p><h1>{heading}</h1><span>{sprint ? `${year} · ${sprint.startDate || "ไม่ระบุวันเริ่ม"} — ${sprint.endDate || "ไม่ระบุวันสิ้นสุด"}` : `เลือก Sprint ของ ${props.groupName} ในปี ${year ?? ""}`}</span></div>{!sprintId && props.canPlan && !props.error && <button className="primary-button" onClick={() => setShowCreate(true)}><Plus size={17} />{yearRow ? "สร้าง Sprint" : year ? `เพิ่มปี ${year} ในกลุ่ม` : "เพิ่มปี"}</button>}</div>

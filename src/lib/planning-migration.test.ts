@@ -180,4 +180,16 @@ test("planning migration preserves projects, enforces RLS and records moves atom
     const payload=(await db.query<{payload:{results:{id:string;testerName:string}[]}}>(`select substring(result_reference from 12)::jsonb as payload from test_executions`)).rows[0].payload;
     assert.equal(payload.results.find(r=>r.id==='import-freeze')?.testerName,'Imported Tester');
   });
+  await t.test('equal group rights preserve real project and Sprint audit triggers for former viewers',async()=>{
+    await db.exec('reset role;');
+    await db.exec(await readFile('supabase/migrations/20261009123224_equal_group_member_access.sql','utf8'));
+    await db.exec(`set role authenticated;set request.jwt.claim.sub='${viewer}';
+      update projects set name='Edited by group member' where id='${project}';`);
+    const history=(await db.query<{actor_email:string;after_data:{name:string}}>(`select actor_email,after_data from project_history where after_data->>'name'='Edited by group member'`)).rows;
+    assert.equal(history.length,1);
+    assert.equal(history[0].actor_email,'viewer@example.com');
+    await db.exec(`select * from update_sprint('30000000-0000-4000-8000-000000000001','Member Sprint',null,null,'Member goal','Active',(select updated_at from sprints where id='30000000-0000-4000-8000-000000000001'));`);
+    assert.equal((await db.query<{actor_email:string}>(`select actor_email from sprint_history where after_data->>'name'='Member Sprint'`)).rows[0].actor_email,'viewer@example.com');
+    await assert.rejects(db.exec(`delete from projects where id='${project}'`),/permission denied/i);
+  });
 });

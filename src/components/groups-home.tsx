@@ -1,4 +1,5 @@
 "use client";
+import { GlobalProjectSearch } from './global-project-search';
 
 import Link from "next/link";
 import { useState, useTransition } from "react";
@@ -53,6 +54,7 @@ export function GroupsHome({ initialGroups, error, currentUser, year }: { initia
     <main className="groups-screen">
       <header className="groups-topbar">
         <div className="groups-brand"><span><ClipboardCheck size={23} /></span><div><strong>QA Workspace</strong><small>Test execution</small></div></div>
+        <GlobalProjectSearch />
         {currentUser && <div className="groups-user"><span className="avatar compact">{currentUser.name.slice(0, 2).toUpperCase()}</span><div><strong>{currentUser.name}</strong><small>{currentUser.email}</small></div>{currentUser.isSystemOwner && <Link className="system-users-link" href="/admin/users"><Crown size={15} />จัดการสิทธิ์</Link>}<form action={signOut}><button type="submit"><LogOut size={16} />ออกจากระบบ</button></form></div>}
       </header>
 

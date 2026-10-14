@@ -11,16 +11,17 @@ type GroupAccessRow = { group_id: string; can_access: boolean; can_manage: boole
 export async function loadGroupMembers(groupId: string): Promise<{ members: GroupMember[]; groupName: string; canDelete: boolean; error: string }> {
   const supabase = await createClient();
   await supabase.rpc("claim_group_invitations");
-  const [membersResult, groupResult, authResult, systemOwnerResult] = await Promise.all([
+  const [membersResult, groupResult, authResult, systemOwnerResult, accessResult] = await Promise.all([
     supabase.rpc("list_group_members", { requested_group_id: groupId }),
     supabase.from("groups").select("name, owner_id").eq("id", groupId).single(),
     supabase.auth.getUser(),
     supabase.rpc("is_system_owner"),
+    supabase.rpc("list_group_access"),
   ]);
   const error = membersResult.error?.message ?? groupResult.error?.message ?? "";
   return {
     groupName: groupResult.data?.name ?? "Group",
-    canDelete: !!groupResult.data && canDeleteGroup(authResult.data.user?.id ?? "", groupResult.data.owner_id, systemOwnerResult.data === true),
+    canDelete: !accessResult.error && !!groupResult.data && canDeleteGroup(authResult.data.user?.id ?? "", groupResult.data.owner_id, systemOwnerResult.data === true, ((accessResult.data ?? []) as GroupAccessRow[]).some(row => row.group_id === groupId && row.can_manage)),
     error,
     members: ((membersResult.data ?? []) as GroupMemberRow[]).map((member) => ({ memberId: member.member_id ?? "", email: member.email, displayName: member.display_name, role: member.role, pending: member.pending, isOwner: member.is_owner })),
   };
@@ -63,7 +64,7 @@ export async function loadGroups(): Promise<{ groups: Group[]; error: string; cu
       createdAt: group.created_at,
       canAccess: accessByGroup.get(group.id)?.can_access ?? false,
       canManage: accessByGroup.get(group.id)?.can_manage ?? false,
-      canDelete: canDeleteGroup(user?.id ?? '',group.owner_id,isSystemOwner === true),
+      canDelete: canDeleteGroup(user?.id ?? '',group.owner_id,isSystemOwner === true,accessByGroup.get(group.id)?.can_manage === true),
       isPinned: pinnedGroupIds.has(group.id),
     }))),
   };

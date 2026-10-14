@@ -1,4 +1,5 @@
 "use client";
+import { GlobalProjectSearch } from './global-project-search';
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -7,7 +8,7 @@ import { ArrowLeft, Check, LoaderCircle, MailPlus, Pencil, ShieldCheck, Trash2, 
 import { deleteGroup, inviteGroupMember, removeGroupMember, updateGroupName } from "@/app/actions";
 import type { GroupMember } from "@/lib/types";
 
-const roleLabels = { admin: "Admin", qa_lead: "QA Lead", qa: "QA", viewer: "Viewer" } as const;
+const roleLabels = { admin: "Admin", qa_lead: "QA Lead", qa: "QA", viewer: "สมาชิก" } as const;
 
 export function GroupMembers({ groupId, groupName, canDelete, initialMembers, initialError }: { groupId: string; groupName: string; canDelete: boolean; initialMembers: GroupMember[]; initialError: string }) {
   const router = useRouter();
@@ -65,12 +66,12 @@ export function GroupMembers({ groupId, groupName, canDelete, initialMembers, in
     });
   }
 
-  return <main className="groups-screen"><header className="groups-topbar"><div className="groups-brand"><span><ShieldCheck size={23} /></span><div><strong>จัดการกลุ่ม</strong><small>{displayGroupName}</small></div></div><Link className="secondary-button" href="/groups"><ArrowLeft size={16} />กลับไป Groups</Link></header>
-    <section className="groups-content members-content"><div className="groups-heading"><div><p className="eyebrow">GROUP ACCESS</p><h1>{displayGroupName}</h1><span>สมาชิกในกลุ่มจะเห็น Projects ทั้งหมดตามสิทธิ์ที่กำหนด</span></div><div className="group-heading-actions"><button type="button" className="secondary-button" onClick={() => { setName(displayGroupName); setEditingName(true); }}><Pencil size={15} />แก้ไขชื่อกลุ่ม</button><Link className="secondary-button" href={`/groups/${groupId}/projects`}>ดู Projects</Link></div></div>
+  return <main className="groups-screen"><header className="groups-topbar"><div className="groups-brand"><span><ShieldCheck size={23} /></span><div><strong>จัดการกลุ่ม</strong><small>{displayGroupName}</small></div></div><GlobalProjectSearch /><Link className="secondary-button" href="/groups"><ArrowLeft size={16} />กลับไป Groups</Link></header>
+    <section className="groups-content members-content"><div className="groups-heading"><div><p className="eyebrow">GROUP ACCESS</p><h1>{displayGroupName}</h1><span>สมาชิกทุกคนมีสิทธิ์สร้าง แก้ไข ลบงาน และจัดการกลุ่มเท่ากัน · บทบาทใช้ระบุหน้าที่ ไม่ได้จำกัดสิทธิ์</span></div><div className="group-heading-actions"><button type="button" className="secondary-button" onClick={() => { setName(displayGroupName); setEditingName(true); }}><Pencil size={15} />แก้ไขชื่อกลุ่ม</button><Link className="secondary-button" href={`/groups/${groupId}/projects`}>ดู Projects</Link></div></div>
       {editingName && <form className="panel group-name-form" onSubmit={rename}><label className="text-field"><span>ชื่อกลุ่ม</span><input autoFocus required maxLength={120} value={name} onChange={(event) => setName(event.target.value)} /></label><div><button type="button" className="secondary-button" onClick={() => setEditingName(false)} disabled={pending}><X size={15} />ยกเลิก</button><button className="primary-button" disabled={pending}>{pending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}บันทึกชื่อกลุ่ม</button></div></form>}
       <form className="panel member-invite-form" onSubmit={invite}><div><MailPlus size={22} /><div><h2>เพิ่มสมาชิกด้วยอีเมล Google</h2><p>หากยังไม่เคย Login ระบบจะเพิ่มสิทธิ์ให้อัตโนมัติเมื่อ Login ครั้งแรก</p></div></div><div className="member-invite-fields"><input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="qa@example.com" /><select value={role} onChange={(event) => setRole(event.target.value as GroupMember["role"])}>{Object.entries(roleLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><button className="primary-button" disabled={pending}>{pending ? <LoaderCircle className="spin" size={16} /> : <MailPlus size={16} />}เพิ่มสมาชิก</button></div>{error && <p className="form-error">{error}</p>}</form>
       <section className="panel members-panel"><div className="panel-heading"><div><h2>สมาชิก</h2><p>{members.length} บัญชีและคำเชิญ</p></div><Users size={21} /></div><div className="members-list">{members.map((member) => <article key={`${member.memberId}-${member.email}`}><span className="avatar compact">{member.displayName.slice(0, 2).toUpperCase()}</span><div><strong>{member.displayName}</strong><small>{member.email}</small></div><span className="member-role">{roleLabels[member.role]}</span>{member.pending && <span className="member-pending">รอ Login</span>}{member.isOwner ? <span className="member-owner">Owner</span> : <button type="button" className="danger-button" disabled={pending} onClick={() => remove(member)}><Trash2 size={14} />นำออก</button>}</article>)}</div></section>
-      {canDelete && <section className="panel" style={{ padding: 24, borderColor: "#ef4444" }}><h2>ลบกลุ่ม</h2><p>เฉพาะ Owner ของกลุ่มและ System Owner สามารถลบกลุ่มและทุก Project ภายในได้ การลบไม่สามารถย้อนกลับได้</p><button type="button" className="danger-button" disabled={pending || deleted} onClick={() => { setDeleteError(""); setDeleteNotice(""); setShowDelete(true); }}><Trash2 size={16} />ลบกลุ่ม</button></section>}
+      {canDelete && <section className="panel" style={{ padding: 24, borderColor: "#ef4444" }}><h2>ลบกลุ่ม</h2><p>สมาชิกในกลุ่มและ System Owner สามารถลบกลุ่มและทุก Project ภายในได้ การลบไม่สามารถย้อนกลับได้</p><button type="button" className="danger-button" disabled={pending || deleted} onClick={() => { setDeleteError(""); setDeleteNotice(""); setShowDelete(true); }}><Trash2 size={16} />ลบกลุ่ม</button></section>}
     </section>
     {showDelete && <div className="modal-backdrop"><section className="project-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-group-title">
       <h2 id="delete-group-title">{deleted ? "ลบกลุ่มแล้ว" : `ลบกลุ่ม ${displayGroupName}?`}</h2>

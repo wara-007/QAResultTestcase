@@ -59,6 +59,23 @@ test("a combined result tab is accessible from every referenced register case", 
   assert.deepEqual(result.unmapped, []);
 });
 
+test("an explicit register result reference maps a shorter tab name without guessing ID suffixes",()=>{
+  const owner={...testCase('TAC_01_TC_01'),resultReference:'TC_01'};
+  const unreferenced=testCase('OTHER_TC_01');
+  const result=resolveSheetAssociations([sheet(10,'TC_01')],[owner,unreferenced],[]);
+  assert.deepEqual(result.associations.map(item=>item.testCase.id),['TAC_01_TC_01']);
+  assert.deepEqual(result.unmapped,[]);
+  assert.deepEqual(resolveSheetAssociations([sheet(10,'TC_01')],[unreferenced],[]).associations,[]);
+  assert.deepEqual(resolveSheetAssociations([sheet(10,'TC_01')],[owner,unreferenced],[mapping(10,'TC_01','OTHER_TC_01')]).associations.map(item=>item.testCase.id),['OTHER_TC_01']);
+});
+
+test("explicit Step references can share a result tab across registered cases",()=>{
+  const owner={...testCase('TAC_02_TC_02'),stepDefinitions:[{id:'s1',name:'Step 01',resultReference:'TC_02'}]} as TestCase;
+  const other={...testCase('TAC_03_TC_03'),resultReference:'TC_02'};
+  const result=resolveSheetAssociations([sheet(10,'TC_02')],[owner,other],[]);
+  assert.deepEqual(result.associations.map(item=>item.testCase.id),['TAC_02_TC_02','TAC_03_TC_03']);
+});
+
 test("validated compact definition owners can access a tab even when omitted from its title", () => {
   const source = { ...sheet(10, "TC05, TC06", ["TC05", "TC06", "TC15"]), definitionCaseIds: ["TC05", "TC06", "TC15"] };
   const result = resolveSheetAssociations([source], [testCase("TC05"), testCase("TC06"), testCase("TC15")], []);

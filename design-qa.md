@@ -45,3 +45,13 @@
 - P3: Replace the temporary `default` group slug with a real group ID after group persistence and authentication are implemented.
 
 final result: passed
+
+## Sprint individual report dashboard · 2026-10-10
+
+- Approved source: `/Users/wara/.codex/generated_images/01a06af2-dcba-7822-a998-7b23ed635bb9/exec-7feafdec-45c8-4505-96f3-cba0a263376d.png`.
+- Verified with real Sprint67 data: 15 cases, 13 Pass, 2 Skip; missing executors remain unknown rather than assigned to the viewer.
+- Retained existing sidebar, navigation, Projects table, sprint editing and history. Added six status cards, expanded individual reports, grouped follow-up links and date-backed recent activity.
+- Verified person expansion, nested pagination, tester/source filters, Skip detail links and unassigned-project links in the browser. No console errors on the verification tab.
+- Checked desktop width 1440 and narrow width 656. A positioned table scroll container fixes absolute screen-reader labels escaping the Projects table; document width now matches viewport width.
+- Activity remains empty when source records have no execution dates. Date-only records never receive fabricated times.
+- Verification: 320 tests passed; TypeScript, ESLint and production build passed. The final CSS containment fix was checked in the browser and with `git diff --check`.

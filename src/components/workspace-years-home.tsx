@@ -1,4 +1,5 @@
 "use client";
+import { GlobalProjectSearch } from './global-project-search';
 
 import Link from 'next/link';
 import { useState } from 'react';
@@ -19,7 +20,7 @@ export function WorkspaceYearsHome({years,currentYear,currentUser,error}:{years:
     router.push(groupsForYearHref(selected));
   }
   return <main className="groups-screen">
-    <header className="groups-topbar"><Link className="groups-brand" href="/groups"><span><ClipboardCheck size={23}/></span><div><strong>QA Workspace</strong><small>Test execution</small></div></Link>{currentUser && <div className="groups-user"><div><strong>{currentUser.name}</strong><small>{currentUser.email}</small></div>{currentUser.isSystemOwner && <Link className="system-users-link" href="/admin/users"><Crown size={15}/>จัดการสิทธิ์</Link>}<form action={signOut}><button><LogOut size={16}/>ออกจากระบบ</button></form></div>}</header>
+    <header className="groups-topbar"><Link className="groups-brand" href="/groups"><span><ClipboardCheck size={23}/></span><div><strong>QA Workspace</strong><small>Test execution</small></div></Link><GlobalProjectSearch />{currentUser && <div className="groups-user"><div><strong>{currentUser.name}</strong><small>{currentUser.email}</small></div>{currentUser.isSystemOwner && <Link className="system-users-link" href="/admin/users"><Crown size={15}/>จัดการสิทธิ์</Link>}<form action={signOut}><button><LogOut size={16}/>ออกจากระบบ</button></form></div>}</header>
     <section className="groups-content planning-content"><div className="groups-heading"><div><p className="eyebrow">WORKSPACE</p><h1>เลือกปี</h1><span>เลือกปี → กลุ่ม → Sprint → Projects</span></div></div>
       {error && <div className="project-error"><strong>โหลดรายการปีไม่สำเร็จ</strong><p>{error}</p></div>}
       <div className="planning-list">{years.map(value=><Link key={value} className="planning-row" href={groupsForYearHref(value)}><CalendarDays size={24}/><strong>{value}</strong><span>{value===currentYear ? 'ปีปัจจุบัน' : 'ปีที่มีข้อมูลใน Workspace'}</span><ChevronRight size={18}/></Link>)}</div>

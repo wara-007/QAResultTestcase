@@ -1,5 +1,7 @@
 import "server-only";
 import { sheetCellLink } from "./sheet-cell-link";
+import { driveWorkbookType, officeWorkbookData, OFFICE_SYNC_MESSAGE } from "./drive-workbook";
+import { readWorkbookStyledText } from "./excel-ooxml";
 
 import { google } from "googleapis";
 import { isSheetPayloadLabel } from "@/lib/sheet-sections";
@@ -30,6 +32,13 @@ export function extractGoogleSheetId(value: string) {
   const trimmed = value.trim();
   const match = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
   if (match) return match[1];
+  const driveMatch = trimmed.match(/^https:\/\/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (driveMatch) return driveMatch[1];
+  try {
+    const url = new URL(trimmed);
+    const id = url.searchParams.get("id") ?? "";
+    if (url.hostname === "drive.google.com" && /^[a-zA-Z0-9_-]{20,}$/.test(id)) return id;
+  } catch { /* A raw document ID is also accepted below. */ }
   return /^[a-zA-Z0-9-_]{20,}$/.test(trimmed) ? trimmed : "";
 }
 
@@ -122,7 +131,51 @@ function detailFieldsFromRows(rows: unknown[][], sheetName: string): TestCaseCus
   });
 }
 
-export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth = getGoogleServiceAuth(), options: { summary?: boolean; sheetName?: string; sheetNames?: string[]; testcaseId?: string } = {}) {
+export class GoogleFileSelectionRequiredError extends Error {
+  constructor() {
+    super("แอปยังเข้าถึงไฟล์นี้ผ่าน Google Drive ไม่ได้ กรุณากดเลือกไฟล์จาก Google Drive และเลือกไฟล์ที่เชื่อมกับ Project นี้ หากไม่พบไฟล์ ให้ตรวจบัญชี Google และสิทธิ์แชร์ไฟล์");
+    this.name = "GoogleFileSelectionRequiredError";
+  }
+}
+
+async function driveWorkbookMetadata(spreadsheetId: string, auth: GoogleApiAuth) {
+  try {
+    return (await google.drive({ version: "v3", auth }).files.get({ fileId: spreadsheetId, fields: "id,name,mimeType", supportsAllDrives: true })).data;
+  } catch (error) {
+    // drive.file access is narrower than spreadsheets access. A Drive 404 must
+    // not prevent the same account from reading a native Sheet through v4.
+    const reason = error as { code?: number | string; response?: { status?: number } };
+    if (Number(reason.code ?? reason.response?.status) === 404) return null;
+    throw error;
+  }
+}
+
+type SheetReadOptions = { summary?: boolean; sheetName?: string; sheetNames?: string[]; testcaseId?: string };
+export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth = getGoogleServiceAuth(), options: SheetReadOptions = {}): Promise<{ title: string; cases: TestCase[]; sheets: WorkbookSheet[]; coverSnapshot?: import("./workbook-validation").CoverSnapshot; documentType?: "google-sheets" | "xlsx" }> {
+  const file = await driveWorkbookMetadata(spreadsheetId, auth);
+  const documentType = file ? driveWorkbookType(file.mimeType) : "google-sheets";
+  if (documentType === "xlsx") {
+    const workbook = officeWorkbookData(await downloadOfficeWorkbook(spreadsheetId, auth), file?.name ?? "Drive.xlsx");
+    const { cases, sheets: workbookSheets, rows, source } = workbook;
+    workbookSheets.filter(sheet => isProjectDefectSheet(sheet.name)).forEach(sheet => {
+      sheet.defects = projectDefectsFromRows(rows.get(sheet.name) ?? [], sheet.name);
+    });
+    if (!options.summary) {
+      for (const sheet of selectDetailSheets(workbookSheets, options).filter(sheet => !isProjectSummarySheet(sheet.name) && !isProjectDefectSheet(sheet.name))) {
+        appendSheetResults(cases, workbookSheets, sheet.name, rows.get(sheet.name) ?? [], readWorkbookStyledText(source, sheet));
+      }
+    }
+    return { title: file?.name ?? "Drive.xlsx", cases, sheets: workbookSheets, coverSnapshot: source.coverSnapshot, documentType };
+  }
+  try { return await readNativeGoogleSheet(spreadsheetId, auth, options); }
+  catch (error) {
+    if (!file && /Office file|not supported for this document/i.test(error instanceof Error ? error.message : "")) throw new GoogleFileSelectionRequiredError();
+    throw error;
+  }
+}
+
+async function readNativeGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth, options: SheetReadOptions) {
+  const documentType = "google-sheets" as const;
   const sheets = google.sheets({ version: "v4", auth });
   const [metadata, values] = await Promise.all([
     sheets.spreadsheets.get({ spreadsheetId, includeGridData: false, fields: "properties(title),sheets(properties(sheetId,title,index,hidden,gridProperties))" }),
@@ -140,7 +193,7 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
   // Read every tab, not only tabs named exactly like a Test Case ID. Teams often
   // place evidence/results in tabs with names such as "Regression", "Run 1" or
   // "API logs". IDs are discovered from both the tab name and its cell content.
-  if (options.summary) return { title: metadata.data.properties?.title ?? "Google Sheet", cases, sheets: workbookSheets, coverSnapshot };
+  if (options.summary) return { title: metadata.data.properties?.title ?? "Google Sheet", cases, sheets: workbookSheets, coverSnapshot, documentType };
   const detailSheets = selectDetailSheets(workbookSheets, options).filter(sheet => !isProjectSummarySheet(sheet.name) && !isProjectDefectSheet(sheet.name));
   const ranges = detailSheets.map(sheet => {
     const grid = metadata.data.sheets?.find(item => item.properties?.sheetId === sheet.sheetId)?.properties?.gridProperties;
@@ -156,7 +209,6 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
       const rgb = style?.rgbColor ?? theme.find(item => item.colorType === style?.themeColor)?.color?.rgbColor ?? fallback;
       return rgb ? `#${[rgb.red, rgb.green, rgb.blue].map(n => Math.round(Math.max(0, Math.min(1, n ?? 0)) * 255).toString(16).padStart(2, "0")).join("")}` : undefined;
     };
-    const sheetIndexes = new Map(workbookSheets.map((sheet, index) => [sheet.name, index]));
     ranges.forEach((_range, index) => {
       const name = detailSheets[index]?.name;
       if (!name) return;
@@ -169,85 +221,90 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
         const background = color(cell.effectiveFormat?.backgroundColorStyle, cell.effectiveFormat?.backgroundColor);
         return [{ ref: `${columnLetter((grid.startColumn ?? 0) + colIndex)}${(grid.startRow ?? 0) + rowIndex + 1}`, value: cell.formattedValue, link, background: background === "#ffffff" ? undefined : background, color: color(textFormat?.foregroundColorStyle, textFormat?.foregroundColor), bold: textFormat?.bold ?? undefined, runs: (cell.textFormatRuns ?? []).map(run => ({ start: run.startIndex ?? 0, color: color(run.format?.foregroundColorStyle, run.format?.foregroundColor), bold: run.format?.bold ?? undefined })) }];
       })));
-      // A Test Case ID in the tab name is authoritative. Result tabs commonly
-      // mention several other cases in their cells (references, defects, RCs),
-      // which must not make those cases aliases of the same tab.
-      const definitionIds = compactResultCaseIds(rows, cases);
-      const ids = automaticSheetCaseIds(name, cases, definitionIds);
-      const sheetIndex = sheetIndexes.get(name);
-      if (sheetIndex != null) workbookSheets[sheetIndex] = { ...workbookSheets[sheetIndex], testCaseIds: ids, ...(definitionIds.length ? { definitionCaseIds: definitionIds } : {}) };
-      // Unmatched tabs retain a preview snapshot, never infer an owner from
-      // arbitrary cell references or promote the snapshot into the case list.
-      (ids.length ? ids : [name]).forEach((id) => {
-        let testCase = cases.find((item) => caseIdentity(item.id) === caseIdentity(id));
-        if (!testCase) {
-          testCase = { id, sourceSheetName: name, sourceRow: 0, platform: "", condition: "", scenario: "", name, steps: "", expected: "", status: "Not Start", device: "", testData: "", appVersion: "", environment: "", resultReference: name, executedBy: "", executedDate: "", executedTime: "", remark: "", evidence: [], results: [], defects: [] };
-          cases.push(testCase);
-        }
-        const stepResults = parseStepSheetResults(rows, testCase, name, cases.filter(item => ids.some(id => caseIdentity(id) === caseIdentity(item.id))));
-        if (stepResults) {
-          stepResults.results.forEach(result => {
-            result.sheetSections?.forEach(section => section.rows.forEach(row => row.fields.forEach(field => {
-              field.highlights = sheetTextHighlights(field.value, styled.filter(cell => cell.ref === field.ref));
-              const linkedCell = styled.find(cell => cell.ref === field.ref);
-              field.link = linkedCell?.link;
-              if (field.link && linkedCell) field.value = linkedCell.value;
-            })));
-          });
-          testCase.results = [...(testCase.results ?? []), ...stepResults.results];
-          testCase.importIssues = [...(testCase.importIssues ?? []), ...stepResults.issues];
-          return;
-        }
-        const parsedResults = resultsFromRows(rows);
-        const detailFields = detailFieldsFromRows(rows, name);
-        const representedRefs = detailFields.flatMap(field => {
-          if (field.row == null || field.column == null) return [];
-          const column = columnLetter(field.column);
-          const refs = [`${column}${field.row}`];
-          if (String(rows[field.row - 2]?.[field.column] ?? "").trim() === field.label) refs.push(`${column}${field.row - 1}`);
-          rows[field.row - 1]?.forEach((value, index) => { if (String(value ?? "").trim() === field.label) refs.push(`${columnLetter(index)}${field.row}`); });
-          return refs;
-        });
-        const resultHeaderRow = rows.findIndex(row => row.some(value => normalize(value) === "result id"));
-        if (resultHeaderRow >= 0 && parsedResults.length) {
-          const defectHeaderRow = rows.findIndex(row => row.some(value => normalize(value) === "defect id"));
-          const limit = defectHeaderRow > resultHeaderRow ? defectHeaderRow : rows.length;
-          const columns = rows[resultHeaderRow].flatMap((value, column) => String(value ?? "").trim() ? [column] : []);
-          for (let row = resultHeaderRow; row < limit; row++) {
-            columns.forEach(column => representedRefs.push(`${columnLetter(column)}${row + 1}`));
-          }
-        }
-        // The testcase metadata is already displayed above Preview Results.
-        rows.forEach((row, rowIndex) => row.forEach((value, column) => {
-          if (!detailStandardHeaders.has(normalize(value))) return;
-          const below = String(rows[rowIndex + 1]?.[column] ?? "").trim();
-          if ([testCase.id, testCase.scenario, testCase.name, testCase.steps, testCase.expected].some(mapped => mapped.trim() && mapped.trim() === below)) {
-            representedRefs.push(`${columnLetter(column)}${rowIndex + 1}`, `${columnLetter(column)}${rowIndex + 2}`);
-          }
-        }));
-        {
-          // Mapping is presentation only: always collect the cells not represented
-          // by the structured Results, including cells outside/above the table.
-          const represented = [testCase.id, testCase.scenario, testCase.name, testCase.steps, testCase.expected,
-            ...parsedResults.flatMap(result => [result.id, result.actualResult, result.apiResponse, result.log, ...(result.customFields ?? []).map(field => field.value)]),
-          ];
-          const text = freeformTextFromCells(rows.flatMap((row, rowIndex) => row.flatMap((value, colIndex) => String(value ?? "").trim() ? [{ ref: `${columnLetter(colIndex)}${rowIndex + 1}`, value: String(value) }] : [])), represented, representedRefs);
-          text.sheetSections.forEach(section => section.rows.forEach(row => row.fields.forEach(field => {
-            field.highlights = sheetTextHighlights(field.value, styled.filter(cell => cell.ref === field.ref));
-            const linkedCell = styled.find(cell => cell.ref === field.ref);
-            field.link = linkedCell?.link;
-            if (field.link && linkedCell) field.value = linkedCell.value;
-          })));
-          if (text.actualResult || text.apiResponse || text.log) parsedResults.push({ id: `SHEET-IMPORT-${name}`, source: "sheets", sourceSheetName: name, status: testCase.status, ...text, evidence: [], createdAt: "" });
-        }
-        testCase.resultFieldDefinitions = [...(testCase.resultFieldDefinitions ?? []), ...resultFieldDefinitionsFromRows(rows)];
-        testCase.customFields = [...(testCase.customFields ?? []), ...detailFields];
-        testCase.results = [...(testCase.results ?? []), ...parsedResults.map((result) => ({ ...result, sourceSheetName: name, defects: undefined, textHighlights: { actualResult: sheetTextHighlights(result.actualResult, styled), apiResponse: sheetTextHighlights(result.apiResponse, styled), log: sheetTextHighlights(result.log, styled) } }))];
-        testCase.defects = [...(testCase.defects ?? []), ...defectsFromRows(rows).map((defect) => ({ ...defect, sourceSheetName: name })), ...parsedResults.flatMap((result) => (result.defects ?? []).map((defect) => ({ ...defect, sourceSheetName: name })))];
-      });
+      appendSheetResults(cases, workbookSheets, name, rows, styled);
     });
   }
-  return { title: metadata.data.properties?.title ?? "Google Sheet", cases, sheets: workbookSheets, coverSnapshot };
+  return { title: metadata.data.properties?.title ?? "Google Sheet", cases, sheets: workbookSheets, coverSnapshot, documentType };
+}
+
+function appendSheetResults(cases: TestCase[], workbookSheets: WorkbookSheet[], name: string, rows: unknown[][], styled: StyledSheetText[]) {
+  const sheetIndexes = new Map(workbookSheets.map((sheet, index) => [sheet.name, index]));
+  // A Test Case ID in the tab name is authoritative. Result tabs commonly
+  // mention several other cases in their cells (references, defects, RCs),
+  // which must not make those cases aliases of the same tab.
+  const definitionIds = compactResultCaseIds(rows, cases);
+  const ids = automaticSheetCaseIds(name, cases, definitionIds);
+  const sheetIndex = sheetIndexes.get(name);
+  if (sheetIndex != null) workbookSheets[sheetIndex] = { ...workbookSheets[sheetIndex], testCaseIds: ids, ...(definitionIds.length ? { definitionCaseIds: definitionIds } : {}) };
+  // Unmatched tabs retain a preview snapshot, never infer an owner from
+  // arbitrary cell references or promote the snapshot into the case list.
+  (ids.length ? ids : [name]).forEach((id) => {
+    let testCase = cases.find((item) => caseIdentity(item.id) === caseIdentity(id));
+    if (!testCase) {
+      testCase = { id, sourceSheetName: name, sourceRow: 0, platform: "", condition: "", scenario: "", name, steps: "", expected: "", status: "Not Start", device: "", testData: "", appVersion: "", environment: "", resultReference: name, executedBy: "", executedDate: "", executedTime: "", remark: "", evidence: [], results: [], defects: [] };
+      cases.push(testCase);
+    }
+    const stepResults = parseStepSheetResults(rows, testCase, name, cases.filter(item => ids.some(id => caseIdentity(id) === caseIdentity(item.id))));
+    if (stepResults) {
+      stepResults.results.forEach(result => {
+        result.sheetSections?.forEach(section => section.rows.forEach(row => row.fields.forEach(field => {
+          field.highlights = sheetTextHighlights(field.value, styled.filter(cell => cell.ref === field.ref));
+          const linkedCell = styled.find(cell => cell.ref === field.ref);
+          field.link = linkedCell?.link;
+          if (field.link && linkedCell) field.value = linkedCell.value;
+        })));
+      });
+      testCase.results = [...(testCase.results ?? []), ...stepResults.results];
+      testCase.importIssues = [...(testCase.importIssues ?? []), ...stepResults.issues];
+      return;
+    }
+    const parsedResults = resultsFromRows(rows);
+    const detailFields = detailFieldsFromRows(rows, name);
+    const representedRefs = detailFields.flatMap(field => {
+      if (field.row == null || field.column == null) return [];
+      const column = columnLetter(field.column);
+      const refs = [`${column}${field.row}`];
+      if (String(rows[field.row - 2]?.[field.column] ?? "").trim() === field.label) refs.push(`${column}${field.row - 1}`);
+      rows[field.row - 1]?.forEach((value, index) => { if (String(value ?? "").trim() === field.label) refs.push(`${columnLetter(index)}${field.row}`); });
+      return refs;
+    });
+    const resultHeaderRow = rows.findIndex(row => row.some(value => normalize(value) === "result id"));
+    if (resultHeaderRow >= 0 && parsedResults.length) {
+      const defectHeaderRow = rows.findIndex(row => row.some(value => normalize(value) === "defect id"));
+      const limit = defectHeaderRow > resultHeaderRow ? defectHeaderRow : rows.length;
+      const columns = rows[resultHeaderRow].flatMap((value, column) => String(value ?? "").trim() ? [column] : []);
+      for (let row = resultHeaderRow; row < limit; row++) {
+        columns.forEach(column => representedRefs.push(`${columnLetter(column)}${row + 1}`));
+      }
+    }
+    // The testcase metadata is already displayed above Preview Results.
+    rows.forEach((row, rowIndex) => row.forEach((value, column) => {
+      if (!detailStandardHeaders.has(normalize(value))) return;
+      const below = String(rows[rowIndex + 1]?.[column] ?? "").trim();
+      if ([testCase.id, testCase.scenario, testCase.name, testCase.steps, testCase.expected].some(mapped => mapped.trim() && mapped.trim() === below)) {
+        representedRefs.push(`${columnLetter(column)}${rowIndex + 1}`, `${columnLetter(column)}${rowIndex + 2}`);
+      }
+    }));
+    {
+      // Mapping is presentation only: always collect the cells not represented
+      // by the structured Results, including cells outside/above the table.
+      const represented = [testCase.id, testCase.scenario, testCase.name, testCase.steps, testCase.expected,
+        ...parsedResults.flatMap(result => [result.id, result.actualResult, result.apiResponse, result.log, ...(result.customFields ?? []).map(field => field.value)]),
+      ];
+      const text = freeformTextFromCells(rows.flatMap((row, rowIndex) => row.flatMap((value, colIndex) => String(value ?? "").trim() ? [{ ref: `${columnLetter(colIndex)}${rowIndex + 1}`, value: String(value) }] : [])), represented, representedRefs);
+      text.sheetSections.forEach(section => section.rows.forEach(row => row.fields.forEach(field => {
+        field.highlights = sheetTextHighlights(field.value, styled.filter(cell => cell.ref === field.ref));
+        const linkedCell = styled.find(cell => cell.ref === field.ref);
+        field.link = linkedCell?.link;
+        if (field.link && linkedCell) field.value = linkedCell.value;
+      })));
+      if (text.actualResult || text.apiResponse || text.log) parsedResults.push({ id: `SHEET-IMPORT-${name}`, source: "sheets", sourceSheetName: name, status: testCase.status, ...text, evidence: [], createdAt: "" });
+    }
+    testCase.resultFieldDefinitions = [...(testCase.resultFieldDefinitions ?? []), ...resultFieldDefinitionsFromRows(rows)];
+    testCase.customFields = [...(testCase.customFields ?? []), ...detailFields];
+    testCase.results = [...(testCase.results ?? []), ...parsedResults.map((result) => ({ ...result, sourceSheetName: name, defects: undefined, textHighlights: { actualResult: sheetTextHighlights(result.actualResult, styled), apiResponse: sheetTextHighlights(result.apiResponse, styled), log: sheetTextHighlights(result.log, styled) } }))];
+    testCase.defects = [...(testCase.defects ?? []), ...defectsFromRows(rows).map((defect) => ({ ...defect, sourceSheetName: name })), ...parsedResults.flatMap((result) => (result.defects ?? []).map((defect) => ({ ...defect, sourceSheetName: name })))];
+  });
 }
 
 function resultsFromRows(rows: unknown[][]): TestResult[] {
@@ -391,18 +448,35 @@ function defectsFromRows(rows: unknown[][]): TestDefect[] {
   });
 }
 
+async function downloadOfficeWorkbook(fileId: string, auth: GoogleApiAuth) {
+  const { token } = await auth.getAccessToken();
+  if (!token) throw new Error("ขอ access token สำหรับ Google Drive ไม่สำเร็จ");
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`, {
+    headers: { Authorization: `Bearer ${token}` }, cache: "no-store",
+  });
+  if (!response.ok) throw new Error(`ดาวน์โหลด Excel จาก Google Drive ไม่สำเร็จ (${response.status})`);
+  return response.arrayBuffer();
+}
+
 export async function exportGoogleSheetWorkbook(spreadsheetId: string, auth: GoogleApiAuth = getGoogleServiceAuth()) {
+  const file = await driveWorkbookMetadata(spreadsheetId, auth);
+  if (file && driveWorkbookType(file.mimeType) === "xlsx") return downloadOfficeWorkbook(spreadsheetId, auth);
   const { token } = await auth.getAccessToken();
   if (!token) throw new Error("ขอ access token สำหรับ Google Sheets ไม่สำเร็จ");
   const response = await fetch(`https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/export?format=xlsx`, {
     headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
   });
-  if (!response.ok) throw new Error(`ดาวน์โหลด workbook จาก Google Sheets ไม่สำเร็จ (${response.status})`);
+  if (!response.ok) {
+    if (!file && [400, 403, 404].includes(response.status)) throw new GoogleFileSelectionRequiredError();
+    throw new Error(`ดาวน์โหลด workbook จาก Google Sheets ไม่สำเร็จ (${response.status})`);
+  }
   return response.arrayBuffer();
 }
 
 export async function writeGoogleSheetResults(spreadsheetId: string, cases: TestCase[], auth: GoogleApiAuth = getGoogleServiceAuth()) {
+  const file = await driveWorkbookMetadata(spreadsheetId, auth);
+  if (file && driveWorkbookType(file.mimeType) === "xlsx") throw new Error(OFFICE_SYNC_MESSAGE);
   const sheets = google.sheets({ version: "v4", auth });
   const formulaText = (value: string) => value.replaceAll('"', '""');
   if (!cases.length) throw new Error("ไม่มี Testcase สำหรับซิงค์");

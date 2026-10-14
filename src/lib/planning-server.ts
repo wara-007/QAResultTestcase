@@ -51,7 +51,7 @@ export async function loadSprintDashboard(groupId: string,sprintId: string,proje
       db.rpc('can_manage_sprint',{requested_sprint_id:sprintId}),
       allRows((a,b)=>db.from('sprint_history').select('id,actor_email,before_data,after_data,created_at').eq('sprint_id',sprintId).order('created_at',{ascending:false}).order('id').range(a,b)),
       allRows<PersonalMetadataRow>((a,b)=>db.rpc('personal_sprint_cases',{requested_sprint_id:sprintId}).eq('group_id',groupId).order('record_id').range(a,b)),
-      allRows((a,b)=>db.from('test_cases').select('id,project_id,testcase_key,case_name,source_row,steps,expected_result,test_executions!test_executions_test_case_id_fkey(attempt_no,status,executed_by_name,result_reference),projects!test_cases_project_id_fkey!inner(sprint_id)').eq('projects.sprint_id',sprintId).order('id').range(a,b)),
+      allRows((a,b)=>db.from('test_cases').select('id,project_id,testcase_key,case_name,source_row,steps,expected_result,test_executions!test_executions_test_case_id_fkey(attempt_no,status,executed_by_name,result_reference,executed_date,executed_time),projects!test_cases_project_id_fkey!inner(sprint_id)').eq('projects.sprint_id',sprintId).order('id').range(a,b)),
     ]);
     if(canManage.error) throw new Error(canManage.error.message);
     const moves:MoveHistory[]=history.map(h=>({id:h.id,projectId:h.project_id,actorEmail:h.actor_email,createdAt:h.created_at,before:h.before_data,after:h.after_data}));

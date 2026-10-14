@@ -25,7 +25,12 @@ export function automaticSheetCaseIds(name: string, cases: readonly TestCase[], 
   const references = testCaseIdsFromSheetText(name).filter(id => !named.some(match => key(match).endsWith(key(id))));
   const owners = [...new Set([...named, ...references, ...definitionIds])];
   const matched = owners.map(id => register.filter(item => key(item.id) === key(id)));
-  return matched.every(items => items.length === 1) ? [...new Set(matched.flatMap(items => items.map(item => item.id)))] : [];
+  if(matched.length && matched.every(items => items.length === 1)) return [...new Set(matched.flatMap(items => items.map(item => item.id)))];
+  // Do not guess ID suffixes or partially attach mixed-owner tabs. A Ref in
+  // the register is an explicit link, unlike incidental IDs in result cells.
+  if(matched.some(items=>items.length>0) || definitionIds.length) return [];
+  return register.filter(item=>[item.resultReference,...(item.stepDefinitions ?? []).map(step=>step.resultReference)]
+    .some(reference=>reference?.trim() && key(reference)===key(name))).map(item=>item.id);
 }
 
 export const testCaseIdsFromSheetText = (name: string) => Array.from(name.matchAll(/\b(TC|DEF)[\s:_-]*(\d+)/gi), (match) => `${match[1].toUpperCase()}-${match[2].padStart(2, "0")}`)

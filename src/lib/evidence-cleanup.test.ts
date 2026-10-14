@@ -18,6 +18,11 @@ test('only Group Owner or System Owner can delete a group', () => {
   assert.equal(canDeleteGroup('system','owner',true),true);
   assert.equal(canDeleteGroup('','',false),false);
 });
+test('verified group management permits member deletion but never anonymous deletion', () => {
+  assert.equal(canDeleteGroup('member','owner',false,true),true);
+  assert.equal(canDeleteGroup('outsider','owner',false,false),false);
+  assert.equal(canDeleteGroup('','owner',false,true),false);
+});
 test('collects deduplicated Drive evidence from results and defects, not arbitrary text or R2', () => {
   const file={fileId:'image1',name:'1234567890123-a.png',mimeType:'image/png',provider:'google-drive'};
   assert.deepEqual(collectGoogleEvidence(['qa-results:'+JSON.stringify({results:[{evidence:[file,file]}],defects:[{evidence:[{...file,fileId:'image2'}]}],apiResponse:{fileId:'not-evidence'},evidence:[{...file,fileId:'r2',provider:'cloudflare-r2'}]})]).map(e=>e.fileId),['image1','image2']);

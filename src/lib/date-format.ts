@@ -28,3 +28,12 @@ export function formatFlexibleDate(value: unknown, includeTime = true) {
     ? { dateStyle: "medium", timeStyle: "short" }
     : { dateStyle: "medium" }).format(date);
 }
+
+/** Keep execution dates honest and consistent between server and browser. */
+export function formatReportDate(value:string) {
+  const date=parseFlexibleDate(value);
+  if(!date) return 'ไม่ระบุเวลา';
+  return new Intl.DateTimeFormat('th-TH',/^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? {dateStyle:'medium',timeZone:'Asia/Bangkok'}
+    : {dateStyle:'medium',timeStyle:'short',timeZone:'Asia/Bangkok'}).format(date);
+}

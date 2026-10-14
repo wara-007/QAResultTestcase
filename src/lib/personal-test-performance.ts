@@ -3,8 +3,8 @@ import type { PlanningTeamMember, TestStatus } from './types';
 export type PersonalResult = {id:string;testerId?:string;testerName:string;status:string;source:'web'|'sheets';sourceSheet:string;recordedAt:string;order:number;originSprintId?:string;inferred:boolean};
 export type PersonalCase = {projectId:string;projectName:string;currentSprintId:string;caseId:string;caseName:string;sourceRowKey:string;detailPath:string;assignedUserIds:string[];results:PersonalResult[]};
 export type PerformanceFilters = {projectId?:string;testerKey?:string;source?:'web'|'sheets'};
-export type PersonalEntry = {key:string;projectId:string;projectName:string;caseId:string;caseName:string;sourceRowKey:string;detailPath:string;status:TestStatus;source:'web'|'sheets'|'pending';inferred:boolean};
-export type PersonalPerformanceRow = {key:string;name:string;email:string;unresolved:boolean;projects:number;tested:number;pass:number;failed:number;inProgress:number;skip:number;notStart:number;entries:PersonalEntry[]};
+export type PersonalEntry = {key:string;projectId:string;projectName:string;caseId:string;caseName:string;sourceRowKey:string;detailPath:string;status:TestStatus;source:'web'|'sheets'|'pending';inferred:boolean;recordedAt:string};
+export type PersonalPerformanceRow = {key:string;name:string;email:string;unresolved:boolean;projects:number;assigned:number;assignedEntries:PersonalEntry[];tested:number;pass:number;failed:number;inProgress:number;skip:number;notStart:number;entries:PersonalEntry[]};
 export type PersonalPerformanceInput = {sprintId:string;members:PlanningTeamMember[];cases:PersonalCase[];filters?:PerformanceFilters};
 
 const normalized = (value:string) => value.trim().toLocaleLowerCase().replace(/\s+/g,' ');
@@ -30,18 +30,28 @@ function newer(a:PersonalResult,b:PersonalResult) {
 export function buildPersonalPerformance(input: PersonalPerformanceInput): PersonalPerformanceRow[] {
   const rows=new Map<string,PersonalPerformanceRow>();
   const filters=input.filters ?? {};
+  function ensure(person:ReturnType<typeof tester>) {
+    let current=rows.get(person.key);
+    if(!current) {current={...person,projects:0,assigned:0,assignedEntries:[],tested:0,pass:0,failed:0,inProgress:0,skip:0,notStart:0,entries:[]};rows.set(person.key,current);}
+    return current;
+  }
   function add(person:ReturnType<typeof tester>,entry:PersonalEntry) {
     if(filters.testerKey && filters.testerKey!==person.key) return;
     if(filters.source && entry.source!==filters.source) return;
-    let current=rows.get(person.key);
-    if(!current) {current={...person,projects:0,tested:0,pass:0,failed:0,inProgress:0,skip:0,notStart:0,entries:[]};rows.set(person.key,current);}
+    const current=ensure(person);
     const existing=current.entries.findIndex(e=>e.key===entry.key);
     if(existing>=0) current.entries[existing]=entry; else current.entries.push(entry);
   }
   for(const item of input.cases) {
     if(filters.projectId && item.projectId!==filters.projectId) continue;
     const key=JSON.stringify([item.projectId,item.caseId,item.sourceRowKey]);
-    const entry=(status:TestStatus,source:PersonalEntry['source'],inferred=false):PersonalEntry=>({key,projectId:item.projectId,projectName:item.projectName,caseId:item.caseId,caseName:item.caseName,sourceRowKey:item.sourceRowKey,detailPath:item.detailPath,status,source,inferred});
+    const entry=(status:TestStatus,source:PersonalEntry['source'],inferred=false,recordedAt=''):PersonalEntry=>({key,projectId:item.projectId,projectName:item.projectName,caseId:item.caseId,caseName:item.caseName,sourceRowKey:item.sourceRowKey,detailPath:item.detailPath,status,source,inferred,recordedAt});
+    if(item.currentSprintId===input.sprintId) for(const userId of new Set(item.assignedUserIds)) {
+      if(filters.testerKey && filters.testerKey!==userId) continue;
+      const member=input.members.find(m=>m.userId===userId);
+      const assigned=ensure({key:userId,name:member?.name ?? 'อดีตผู้รับผิดชอบ',email:member?.email ?? '',unresolved:false});
+      if(!assigned.assignedEntries.some(e=>e.key===key)) assigned.assignedEntries.push(entry('Not Start','pending'));
+    }
     const latest=new Map<string,{person:ReturnType<typeof tester>;result:PersonalResult}>();
     for(const result of item.results) {
       const applicable=result.inferred || !result.originSprintId ? item.currentSprintId===input.sprintId : result.originSprintId===input.sprintId;
@@ -53,7 +63,7 @@ export function buildPersonalPerformance(input: PersonalPerformanceInput): Perso
     for(const [personKey,{person,result}] of latest) {
       const status=statusOf(result.status);
       if(status==='Not Start') continue;
-      started.add(personKey);add(person,entry(status,result.source,result.inferred));
+      started.add(personKey);add(person,entry(status,result.source,result.inferred,result.recordedAt));
     }
     if(item.currentSprintId!==input.sprintId) continue;
     // A recorded Skip is not pending work. An assignment is not proof of who
@@ -66,9 +76,23 @@ export function buildPersonalPerformance(input: PersonalPerformanceInput): Perso
     if(!started.size && !item.assignedUserIds.length) add({key:'unassigned',name:'ยังไม่ระบุผู้รับผิดชอบ',email:'',unresolved:false},entry('Not Start','pending'));
   }
   for(const row of rows.values()) {
-    row.projects=new Set(row.entries.map(e=>e.projectId)).size;
+    row.assigned=row.assignedEntries.length;
+    row.projects=new Set([...row.entries,...row.assignedEntries].map(e=>e.projectId)).size;
     for(const entry of row.entries) row[({'Pass':'pass','Failed':'failed','In Progress':'inProgress','Skip':'skip','Not Start':'notStart'} as const)[entry.status]]++;
     row.tested=row.pass+row.failed;
   }
-  return [...rows.values()].sort((a,b)=>a.key==='unassigned' ? 1 : b.key==='unassigned' ? -1 : b.tested-a.tested || a.name.localeCompare(b.name));
+  return [...rows.values()].filter(row=>!filters.source || row.entries.length>0).sort((a,b)=>a.key==='unassigned' ? 1 : b.key==='unassigned' ? -1 : b.tested-a.tested || a.name.localeCompare(b.name));
+}
+
+export function buildSprintResultActivity(input:PersonalPerformanceInput) {
+  const activity=new Map<string,{key:string;resultId:string;testerName:string;projectName:string;caseIds:string[];detailPath:string;status:TestStatus;recordedAt:string;source:'web'|'sheets'}>();
+  for(const item of input.cases) for(const result of item.results) {
+    const applicable=result.inferred || !result.originSprintId ? item.currentSprintId===input.sprintId : result.originSprintId===input.sprintId;
+    if(!applicable || !Number.isFinite(Date.parse(result.recordedAt))) continue;
+    const key=JSON.stringify([item.projectId,result.source,result.sourceSheet,result.id]);
+    const existing=activity.get(key);
+    if(existing) {if(!existing.caseIds.includes(item.caseId)) existing.caseIds.push(item.caseId);continue;}
+    activity.set(key,{key,resultId:result.id,testerName:tester(result,input.members).name,projectName:item.projectName,caseIds:[item.caseId],detailPath:item.detailPath,status:statusOf(result.status),recordedAt:result.recordedAt,source:result.source});
+  }
+  return [...activity.values()].sort((a,b)=>Date.parse(b.recordedAt)-Date.parse(a.recordedAt) || a.key.localeCompare(b.key));
 }

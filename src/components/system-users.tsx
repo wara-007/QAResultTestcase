@@ -1,4 +1,5 @@
 "use client";
+import { GlobalProjectSearch } from './global-project-search';
 
 import Link from "next/link";
 import { useState, useTransition } from "react";
@@ -65,6 +66,7 @@ export function SystemUsers({ initialUsers, initialError }: { initialUsers: Syst
   return <main className="groups-screen">
     <header className="groups-topbar">
       <div className="groups-brand"><span><ShieldCheck size={23} /></span><div><strong>จัดการสิทธิ์ระบบ</strong><small>System access</small></div></div>
+      <GlobalProjectSearch />
       <Link className="secondary-button" href="/groups"><ArrowLeft size={16} />กลับไป Groups</Link>
     </header>
     <section className="groups-content members-content">

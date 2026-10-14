@@ -32,6 +32,25 @@ test("combined result evidence remains accessible to both referenced cases", () 
   const images = readWorkbookResultImages(source, cases);
   assert.deepEqual(images.map(image => [image.testCaseId, image.resultId]), [["TC01", "SHEET-IMPORT-TC01, TC02-API-2"], ["TC02", "SHEET-IMPORT-TC01, TC02-API-2"]]);
 });
+
+test("embedded evidence on an aliased result tab belongs to the register case without a dash", () => {
+  const source = workbook([["A1", "Result ID"], ["B1", "Actual Result"], ["A2", "R1"], ["B2", "works"]]);
+  source.sheets[0].name = "RC TC01";
+  source.sheets[0].testCaseIds = ["TC01"];
+  const files = unzipSync(new Uint8Array(source.buffer));
+  files["xl/worksheets/sheet1.xml"] = strToU8('<worksheet xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Result ID</t></is></c><c r="B1" t="inlineStr"><is><t>Actual Result</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>R1</t></is></c><c r="B2" t="inlineStr"><is><t>works</t></is></c></row></sheetData><drawing r:id="draw1"/></worksheet>');
+  files["xl/worksheets/_rels/sheet1.xml.rels"] = strToU8('<Relationships><Relationship Id="draw1" Target="../drawings/drawing1.xml"/></Relationships>');
+  files["xl/drawings/drawing1.xml"] = strToU8('<drawing xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><oneCellAnchor><from><row>1</row><col>1</col></from><blip r:embed="img1"/></oneCellAnchor></drawing>');
+  files["xl/drawings/_rels/drawing1.xml.rels"] = strToU8('<Relationships><Relationship Id="img1" Target="../media/proof.png"/></Relationships>');
+  files["xl/media/proof.png"] = new Uint8Array([137, 80, 78, 71]);
+  const bytes = zipSync(files);
+  source.buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  const cases = casesFromRows([["Test Case Id", "Test Case Name"], ["TC01", "First"]]);
+  const images = readWorkbookResultImages(source, cases);
+  assert.equal(images[0].testCaseId, "TC01");
+  assert.equal(images[0].resultId, "R1");
+  assert.deepEqual([...images[0].bytes], [137, 80, 78, 71]);
+});
 test("Step export preserves formula cells, original Cover and detail definitions", () => {
   Object.assign(globalThis, { XMLSerializer });
   const rows = [["Test Case (TC ID)", "Step#", "Description Step", "Expected Result", "Status"], ["ENQ_01_TC_01", "step 01", "Landing", "Correct", "TESTING"]];

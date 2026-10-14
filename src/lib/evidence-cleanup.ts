@@ -6,8 +6,8 @@ export async function cleanupGoogleWithWarning(cleanup:()=>Promise<number>) {
   catch { return {deletedGoogleImages:0,warnings:['ไม่สามารถตรวจหรือลบรูปใน Google ได้ครบ รูปที่เหลือยังอยู่ใน Google Drive กรุณาลบเองภายหลัง (Google Sheets ไม่ถูกลบ)']}; }
 }
 
-export function canDeleteGroup(userId: string, ownerId: string, systemOwner: boolean) {
-  return Boolean(userId && (userId === ownerId || systemOwner));
+export function canDeleteGroup(userId: string, ownerId: string, systemOwner: boolean, canManageGroup = false) {
+  return Boolean(userId && (userId === ownerId || systemOwner || canManageGroup));
 }
 
 export function collectGoogleEvidence(references: (string | null)[]): TestEvidence[] {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildPersonalPerformance, type PersonalCase, type PersonalResult } from './personal-test-performance';
+import { buildPersonalPerformance, buildSprintResultActivity, type PersonalCase, type PersonalResult } from './personal-test-performance';
 
 const members = [{userId:'a',name:'Ann',email:'ann@example.com',role:'qa'}, {userId:'b',name:'Ben',email:'ben@example.com',role:'qa'}];
 const result = (id:string, testerName:string, status:string, order=1): PersonalResult => ({id,testerName,status,order,source:'web',sourceSheet:'',recordedAt:'',inferred:false,originSprintId:'s1'});
@@ -8,11 +8,12 @@ const row = (results:PersonalResult[]=[], assignedUserIds:string[]=[], sourceRow
 const build = (cases:PersonalCase[], filters={}) => buildPersonalPerformance({sprintId:'s1',members,cases,filters});
 test('Skip without EXECUTED BY stays unknown and does not create pending work for assigned QA', () => {
   const data = build([row([{ ...result('skip', '', 'Skip'), source: 'sheets', inferred: true }], ['a'])]);
-  assert.equal(data.length, 1);
-  assert.equal(data[0].key, 'unknown');
-  assert.equal(data[0].name, 'ไม่ระบุผู้ทดสอบ');
-  assert.equal(data[0].skip, 1);
-  assert.equal(data[0].notStart, 0);
+  const unknown=data.find(person=>person.key==='unknown')!;
+  assert.equal(unknown.name, 'ไม่ระบุผู้ทดสอบ');
+  assert.equal(unknown.skip, 1);
+  assert.equal(unknown.notStart, 0);
+  assert.equal(data.find(person=>person.key==='a')?.notStart,0);
+  assert.equal(data.find(person=>person.key==='a')?.skip,0);
 });
 
 test('latest per-tester outcome replaces retests without merging separate source rows', () => {
@@ -62,4 +63,32 @@ test('moved-out known origins remain while inferred imports belong to current Sp
   const moved={...row([{...result('r1','Ann','Pass')},{...result('r2','Ben','Failed'),inferred:true,source:'sheets'}]),currentSprintId:'s2'};
   const data=build([moved]);
   assert.equal(data.length,1);assert.equal(data[0].key,'a');assert.equal(data[0].pass,1);
+});
+
+test('responsibility is counted separately from outcomes, including unknown Skip and assigned work tested by someone else',()=>{
+  const data=build([row([result('r1','Ben','Pass')],['a']),{...row([result('r2','','Skip')],['a']),caseId:'TC-19'}]);
+  assert.equal(data.find(p=>p.key==='a')?.assigned,2);
+  assert.equal(data.find(p=>p.key==='b')?.assigned,0);
+  assert.equal(data.find(p=>p.key==='b')?.pass,1);
+  assert.equal(data.find(p=>p.key==='unknown')?.skip,1);
+  assert.equal(data.find(p=>p.key==='a')?.assignedEntries.length,2);
+});
+
+test('drill-down retains latest outcome date and does not fabricate a pending activity date',()=>{
+  const data=build([row([{...result('r1','Ann','Pass'),recordedAt:'2026-10-10T02:00:00Z'}],['a','b'])]);
+  assert.equal(data.find(p=>p.key==='a')?.entries[0].recordedAt,'2026-10-10T02:00:00Z');
+  assert.equal(data.find(p=>p.key==='b')?.entries[0].recordedAt,'');
+});
+
+test('filtering result source does not erase responsibility for a tester with matching results',()=>{
+ const data=build([row([{...result('r1','Ann','Pass'),source:'sheets'}],['a','b'])],{source:'sheets'});
+ assert.equal(data.length,1);
+ assert.equal(data[0].assigned,1);
+});
+
+test('recent activity keeps real retests, deduplicates shared result snapshots and excludes invalid dates and other sprint origins',()=>{
+  const results=[{...result('r1','Ann','Failed'),recordedAt:'2026-10-10T01:00:00Z'},{...result('r2','Ann','Pass'),recordedAt:'2026-10-10T02:00:00Z'},result('invalid','Ben','Skip'),{...result('other','Ann','Pass'),originSprintId:'s2',recordedAt:'2026-10-10T03:00:00Z'}];
+  const activity=buildSprintResultActivity({sprintId:'s1',members,cases:[row(results),{...row(results),caseId:'TC-19'}]});
+  assert.deepEqual(activity.map(item=>[item.resultId,item.status,item.testerName]),[['r2','Pass','Ann'],['r1','Failed','Ann']]);
+  assert.deepEqual(activity[0].caseIds,['TC-18','TC-19']);
 });

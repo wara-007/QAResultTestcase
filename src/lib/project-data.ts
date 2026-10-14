@@ -189,9 +189,10 @@ export async function loadProjectWorkspace(projectId: string, options: { include
     const sheetPath = typeof mapping.sheetPath === "string" ? mapping.sheetPath : "";
     const sheets = Array.isArray(mapping.sheets) ? mapping.sheets as WorkbookSheet[] : [];
     const columns = Object.fromEntries(Object.entries(mapping).filter(([key, value]) =>
-      key !== "sheetPath" && key !== "chunkCount" && key !== "sheets" && typeof value === "string",
+      key !== "sheetPath" && key !== "chunkCount" && key !== "sheets" && key !== "documentType" && typeof value === "string",
     )) as Record<string, string>;
     source = {
+      documentType: mapping.documentType === "xlsx" ? "xlsx" : mapping.documentType === "google-sheets" ? "google-sheets" : undefined,
       coverSnapshot: mapping.coverSnapshot as WorkbookSource["coverSnapshot"],
       sheetImport: readSheetImportState(mapping.sheetImport),
       id: sourceRow.id,
@@ -289,7 +290,7 @@ export async function persistImportedWorkbook(projectId: string, cases: TestCase
     storage_key: storageKey,
     byte_size: source.buffer.byteLength,
     sheet_name: source.sheetName,
-    column_mapping: { ...source.columns, sheetPath: source.sheetPath, chunkCount, sheets: source.sheets, sheetImport: source.sheetImport, coverSnapshot: source.coverSnapshot },
+    column_mapping: { ...source.columns, documentType: source.documentType, sheetPath: source.sheetPath, chunkCount, sheets: source.sheets, sheetImport: source.sheetImport, coverSnapshot: source.coverSnapshot },
     version_no: (versionResult.data?.version_no ?? 0) + 1,
     uploaded_by: userResult.user.id,
   });

@@ -1,4 +1,5 @@
 "use client";
+import { GlobalProjectSearch } from './global-project-search';
 
 import {
   ArrowDownToLine,
@@ -29,12 +30,17 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { ChangeEvent, Fragment, useCallback, useEffect, useEffectEvent, useMemo, useReducer, useRef, useState, useTransition } from "react";
+import { ChangeEvent, useCallback, useEffect, useEffectEvent, useMemo, useReducer, useRef, useState, useTransition } from "react";
+import { CaseTableTools } from './case-table-tools';
+import { CaseRegisterTable, type CaseRegisterRow } from './case-register-table';
+import { useCaseTableView } from './use-case-table-view';
+import { CASE_ADVANCED_FILTERS_ENABLED, collectCaseColumns, filterCaseTable, visibleCaseColumns } from '@/lib/case-table-view';
 import { assignmentModeReducer, isAssignmentEditing } from '@/lib/case-assignment-mode';
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { GoogleCleanupWarning } from './google-cleanup-warning';
 import { createProject, createProjectApprovalRequest, deleteProject, getLatestProjectApproval, updateProjectGoogleSheet, type ProjectApprovalSummary } from "@/app/actions";
+import { GoogleDrivePickerButton } from "@/components/google-drive-picker-button";
 import { signOut } from "@/app/auth/actions";
 import { exportTestCases, importTestCases, readWorkbookFreeformResults, readWorkbookResultImages, readWorkbookSheet } from "@/lib/excel-ooxml";
 import { evidenceImageUrl } from "@/lib/evidence";
@@ -58,7 +64,6 @@ import { EVIDENCE_ACCEPT, validateEvidenceFile } from "@/lib/evidence-media";
 import { loadProjectWorkbook, loadProjectWorkspace, persistImportedWorkbook, persistTestCaseResult, persistSheetImportState } from "@/lib/project-data";
 import { checkpointSheetImport, readSheetImportState, shouldStartSheetImport, pendingImportSheets } from "@/lib/sheet-import-state";
 import { filterProjects } from "@/lib/project-search";
-import { testCaseSourceSection } from "@/lib/testcase-rows";
 import { resolveSheetAssociations } from "@/lib/sheet-mapping-resolution";
 import { workspaceCasesForRegister } from "@/lib/sheet-register-cases";
 import { clearProjectWorkbook, getProjectWorkbook } from "@/lib/workbook-cache";
@@ -391,7 +396,7 @@ function ProjectDialog({ groupId, sprint, onClose, onCreated }: { groupId: strin
         <label className="text-field"><span>ชื่อ Project *</span><input autoFocus required maxLength={160} value={name} onChange={(event) => setName(event.target.value)} placeholder="เช่น IR Cross sell" /></label>
         <label className="text-field"><span>รายละเอียด</span><textarea rows={3} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="ขอบเขตหรือเป้าหมายการทดสอบ" /></label>
         {sourceType === "file" ? <label className="project-file-picker"><Upload size={20} /><span><strong>{excelFile?.name ?? "เลือกไฟล์ Excel"}</strong><small>{excelFile ? `${(excelFile.size / 1024 / 1024).toFixed(2)} MB` : "รองรับไฟล์ .xlsx ที่มีชีต Testcase"}</small></span><input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => setExcelFile(event.target.files?.[0] ?? null)} /></label>
-          : <label className="text-field"><span>Google Sheet URL *</span><input required value={googleSheetUrl} onChange={(event) => setGoogleSheetUrl(event.target.value)} placeholder="https://docs.google.com/spreadsheets/d/..." /></label>}
+          : <><label className="text-field"><span>Google Sheets / Excel บน Drive URL *</span><input required value={googleSheetUrl} onChange={(event) => setGoogleSheetUrl(event.target.value)} placeholder="https://docs.google.com/spreadsheets/d/..." /></label><GoogleDrivePickerButton disabled={pending} onPicked={file => { setGoogleSheetUrl(file.url); if (!name.trim()) setName(file.name.replace(/\.xlsx$/i, "")); }} /><p className="dialog-help">ไฟล์ Excel บน Drive ต้องเลือกผ่านปุ่มนี้ เพื่ออนุญาตให้แอปอ่านเฉพาะไฟล์ที่เลือก</p></>}
         <div className="two-column-fields">
           <label><span>ปี / Sprint</span><input value={`${sprint?.year ?? ""} · ${sprintNo}`} readOnly /></label>
           <label><span>Environment *</span><input required value={environment} onChange={(event) => setEnvironment(event.target.value)} placeholder="UAT" /></label>
@@ -419,7 +424,8 @@ function GoogleSheetDialog({ project, onClose, onConnected }: { project: Project
     <button type="button" className="icon-button close-button" onClick={onClose} aria-label="ปิด"><X size={19} /></button>
     <div className="dialog-heading"><div className="dialog-icon"><Link2 size={23} /></div><div><p className="eyebrow">GOOGLE SHEETS</p><h2>เชื่อม Google Sheet</h2></div></div>
     <label className="text-field"><span>Google Sheet URL *</span><input required autoFocus value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://docs.google.com/spreadsheets/d/..." /></label>
-    <p className="dialog-help">แชร์ Sheet ให้ Service Account เป็น Editor ก่อนเชื่อม</p>
+    <GoogleDrivePickerButton projectId={project.id} disabled={pending} onPicked={file => { setUrl(file.url); setError(""); }} />
+    <p className="dialog-help">เลือก Google Sheets หรือ Excel .xlsx เพื่ออนุญาตไฟล์นี้ให้แอป แล้วกดเชื่อม Sheet โดยไฟล์ต้นฉบับจะไม่ถูกแปลงหรือลบ</p>
     {error && <p className="form-error"><CircleAlert size={16} />{error}</p>}
     <footer className="dialog-footer"><button type="button" className="secondary-button" onClick={onClose}>ยกเลิก</button><button className="primary-button" disabled={pending}>{pending && <LoaderCircle className="spin" size={17} />}เชื่อม Sheet</button></footer>
   </form></div>;
@@ -1097,8 +1103,11 @@ export function QaWorkspace({
   const [hasGoogleWorkbook, setHasGoogleWorkbook] = useState(cachedWorkspace?.hasGoogleWorkbook ?? false);
   const [loadingWorkspace, setLoadingWorkspace] = useState(Boolean(selectedProjectId && (!cachedWorkspace || !cachedWorkspace.hasLoadedSheetMappings || (requiresDetailedGoogleData && !cachedWorkspace.hasDetailedGoogleData))));
   const [workspaceError, setWorkspaceError] = useState("");
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<TestStatus | "All">("All");
+  const {view:caseTableView,update:updateCaseTableView}=useCaseTableView(currentUser?.id ?? '',selectedProjectId ?? '');
+  const search=caseTableView.query;
+  const statusFilter=caseTableView.status;
+  const setSearch=(query:string)=>updateCaseTableView({query});
+  const setStatusFilter=(status:TestStatus|'All')=>updateCaseTableView({status});
   const [selectedCase, setSelectedCase] = useState<TestCase | null>(null);
   const [showUpload, setShowUpload] = useState(false);
   const [showCreateCase, setShowCreateCase] = useState(false);
@@ -1192,12 +1201,10 @@ export function QaWorkspace({
   const completed = counts.Pass + counts.Failed + counts.Skip;
   const progress = testCaseTotal ? Math.round((completed / testCaseTotal) * 100) : 0;
   const testingFinished = testCaseTotal > 0 && completed === testCaseTotal;
-  const filteredCases = useMemo(() => cases.filter((item) => {
-    if (isProjectDefectSheet(item.id)) return false;
-    const query = search.trim().toLowerCase();
-    const matchesSearch = !query || `${item.id} ${item.name} ${item.scenario} ${testCaseSourceSection(item)}`.toLowerCase().includes(query);
-    return matchesSearch && (statusFilter === "All" || item.status === statusFilter);
-  }), [cases, search, statusFilter]);
+  const tableCases=useMemo(()=>cases.filter(item=>!isProjectDefectSheet(item.id)),[cases]);
+  const caseTableColumns=useMemo(()=>collectCaseColumns(tableCases),[tableCases]);
+  const selectedCaseTableColumns=useMemo(()=>visibleCaseColumns(caseTableColumns,caseTableView.selected),[caseTableColumns,caseTableView.selected]);
+  const filteredCases=useMemo(()=>filterCaseTable(tableCases,caseTableColumns,caseTableView,CASE_ADVANCED_FILTERS_ENABLED),[tableCases,caseTableColumns,caseTableView]);
   const allDefects = useMemo(() => collectProjectDefects(cases.flatMap(testCase => (testCase.defects ?? []).map(defect => ({ ...defect, testCaseReference: defect.testCaseReference || testCase.id }))), (source?.sheets ?? []).flatMap(sheet => sheet.defects ?? [])), [cases, source]);
   const defectSummary = useMemo(() => summarizeProjectDefects(allDefects), [allDefects]);
   const sheetResolution = useMemo(() => resolveSheetAssociations(
@@ -1230,6 +1237,15 @@ export function QaWorkspace({
     const aliases = caseSheetAliases.get(testCaseIdentity(item.id)) ?? [];
     return aliases.length ? aliases.map((sheetAlias) => ({ item, sheetAlias })) : [{ item, sheetAlias: "" }];
   }), [caseSheetAliases, filteredCases]);
+  function openRegisterRow({item,sheetAlias}:CaseRegisterRow) {
+    if(!selectedProject) return;
+    const shared=sheetAlias && sheetResolution.associations.filter(association=>association.sheet.name===sheetAlias).length>1;
+    const path=sheetAlias && !shared ? `/groups/${groupId}/projects/${selectedProject.id}/sheets/${encodeURIComponent(sheetAlias)}` : `/groups/${groupId}/projects/${selectedProject.id}/test-cases/${encodeURIComponent(item.id)}`;
+    openTestCaseDetail(path);
+  }
+  function registerRowState({item,sheetAlias}:CaseRegisterRow) {
+    return sheetRowState(sheetAlias || caseDetailLoadKeys((associatedSheetsByCase.get(testCaseIdentity(item.id)) ?? []).map(sheet=>sheet.name),item.id),activeSheetRowLoads);
+  }
   const assignmentRowKey=(id:string,sheetAlias:string)=>JSON.stringify([id,sheetAlias]);
   const assignmentTargets=cases.flatMap(item=>{
     const aliases=caseSheetAliases.get(testCaseIdentity(item.id)) ?? [];
@@ -1344,7 +1360,7 @@ export function QaWorkspace({
             return null;
           }
           if (!response.ok) throw new Error(data.error ?? "โหลด Google Sheet ไม่สำเร็จ");
-          return data as { cases: TestCase[]; sheets: WorkbookSource["sheets"]; coverSnapshot?: WorkbookSource["coverSnapshot"] };
+          return data as { cases: TestCase[]; sheets: WorkbookSource["sheets"]; coverSnapshot?: WorkbookSource["coverSnapshot"]; documentType?: WorkbookSource["documentType"] };
         })
       : Promise.resolve(null);
     const mappingsRequest = cached?.hasLoadedSheetMappings ? Promise.resolve(cached.sheetMappings) : selectedProject.googleSheetId
@@ -1387,6 +1403,7 @@ export function QaWorkspace({
         setCases(mergedCases);
         setSource(workspace.source ? {
           ...workspace.source,
+          documentType: googleWorkspace?.documentType ?? workspace.source.documentType,
           coverSnapshot: googleWorkspace?.coverSnapshot ?? workspace.source.coverSnapshot,
           sheets: googleWorkspace
             ? mergeGoogleSheetsWithSource(workspace.source.sheets, googleWorkspace.sheets)
@@ -1395,6 +1412,7 @@ export function QaWorkspace({
           fileName: `${selectedProject.name}.xlsx`, buffer: new ArrayBuffer(0), bufferLoaded: false,
           sheetName: "Testcase", sheetPath: "", columns: {}, sheets: googleWorkspace.sheets,
           coverSnapshot: googleWorkspace.coverSnapshot,
+          documentType: googleWorkspace.documentType,
         } : workspace.source);
         setHasUnsyncedChanges(Boolean(googleWorkspace && localOnlyCases.length));
         if (mappingsResult.status === "fulfilled") {
@@ -1617,6 +1635,7 @@ export function QaWorkspace({
         return;
       }
       const imported = importTestCases(workbookBuffer, `${selectedProject.name}.xlsx`);
+      imported.source.documentType = data.documentType;
       imported.source.coverSnapshot = data.coverSnapshot ?? imported.source.coverSnapshot;
       const importedImages = readWorkbookResultImages(imported.source, imported.cases);
       const freeformResults = readWorkbookFreeformResults(imported.source, imported.cases);
@@ -1931,6 +1950,7 @@ export function QaWorkspace({
 
   async function syncToGoogle() {
     if (!selectedProject?.googleSheetId) return setShowGoogleSheetDialog(true);
+    if (source?.documentType === "xlsx") return flash("ไฟล์นี้เป็น Excel บน Drive กรุณาดาวน์โหลดผล หรือแปลงเป็น Google Sheets ก่อนซิงค์กลับ");
     if (!canEditProject) return flash("Project นี้เปิดให้คุณดูอย่างเดียว");
     setSyncingGoogle(true);
     try {
@@ -1938,6 +1958,7 @@ export function QaWorkspace({
       const data = await response.json();
       if (response.status === 401 && data.authUrl) return continueGoogleAuthorization(data.authUrl);
       if (!response.ok) throw new Error(data.error ?? "ตรวจสอบข้อมูล Google Sheets ไม่สำเร็จ");
+      if (data.documentType === "xlsx") throw new Error("การซิงค์กลับรองรับเฉพาะ Google Sheets ไฟล์ Excel สามารถบันทึกผลในเว็บและดาวน์โหลดได้");
       const googleCases = data.cases as TestCase[];
       const baseline = data.baseline as CanonicalProjectSnapshot | undefined;
       const conflicts = baseline && Object.keys(baseline.cases).length
@@ -2044,6 +2065,7 @@ export function QaWorkspace({
         <header className="topbar">
           <button className="icon-button mobile-menu" onClick={() => setMobileNav(true)} aria-label="เปิดเมนู"><Menu size={21} /></button>
           <div className="breadcrumb"><Link href="/groups">เลือกปี</Link>{scopedYear && <><ChevronRight size={15} /><Link href={`/groups?year=${scopedYear}`}>ปี {scopedYear} · Groups</Link><ChevronRight size={15}/><Link href={`/groups/${groupId}/years/${scopedYear}/sprints`}>Sprints</Link></>}{sprintBase && <><ChevronRight size={15} /><Link href={sprintBase}>{planningSprint?.name ?? selectedProject?.sprintNo}</Link></>}<ChevronRight size={15} /><Link href={projectsHref}>Projects</Link>{selectedProject && <><ChevronRight size={15} /><strong>{selectedProject.name}</strong></>}</div>
+          <GlobalProjectSearch />
           <div className="topbar-actions">{selectedProject && currentEnvironment && <span className="environment-pill"><span />{currentEnvironment}</span>}</div>
         </header>
 
@@ -2053,9 +2075,11 @@ export function QaWorkspace({
           <section className="page-heading"><div><div className="title-line"><h1>{sheetName ? decodeURIComponent(sheetName) : activePage === "overview" ? selectedProject.name : ({ "test-cases": "Test cases", defects: "Defects", files: "เอกสาร/ไฟล์", settings: "ตั้งค่า Project" } as Record<string, string>)[activePage]}</h1>{selectedProject.sprintNo && <span className="sprint-pill">{selectedProject.sprintNo}</span>}{!canEditProject && <span className="read-only-badge">ดูอย่างเดียว</span>}{hasUnsyncedChanges && <span className="unsynced-pill">ยังไม่ Sync</span>}</div><p>{sheetName ? `รายละเอียด tab จาก Google Sheets · ${selectedProject.name}` : activePage === "overview" ? (selectedProject.description || "ภาพรวมการทดสอบของ Project") : selectedProject.name}</p></div><div className="heading-actions google-actions">
             {canEditProject && activePage === "files" && <button className="secondary-button" onClick={() => setShowUpload(true)}><Upload size={17} />ไฟล์ต้นฉบับ</button>}
             {(selectedProject.googleSheetId ? canEditProject : canManageProject) && <button className="secondary-button" onClick={() => void pullFromGoogle()} disabled={pullingGoogle}>{pullingGoogle ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}{selectedProject.googleSheetId ? "โหลดจาก Sheets" : "เชื่อม Google Sheet"}</button>}
+            {canEditProject && selectedProject.googleSheetId && <GoogleDrivePickerButton projectId={selectedProject.id} expectedFileId={selectedProject.googleSheetId} disabled={pullingGoogle || syncingGoogle} onPicked={async () => { await pullFromGoogle(); }} />}
             {canEditProject && selectedProject.googleSheetId && <button className="sync-button" onClick={() => void syncToGoogle()} disabled={syncingGoogle}>{syncingGoogle ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}ซิงค์กลับ Google Sheets</button>}
             {(activePage === "test-cases" || activePage === "files") && <button className="primary-button" onClick={() => void downloadResult()} disabled={exporting}>{exporting ? <LoaderCircle className="spin" size={17} /> : <ArrowDownToLine size={17} />}{source ? "ดาวน์โหลด Result" : "เชื่อมไฟล์ต้นฉบับ"}</button>}
           </div></section>
+          {source?.documentType === "xlsx" && <div className="source-banner" role="note"><FileSpreadsheet size={18} /><div><strong>Excel บน Google Drive</strong><span>บันทึกผลในเว็บและดาวน์โหลดได้ · ซิงค์กลับได้เฉพาะ Google Sheets · ระบบไม่แก้ไขไฟล์ Excel ต้นฉบับ</span></div></div>}
 
           {loadingWorkspace && <div className="source-banner"><LoaderCircle className="spin" size={18} /><div><strong>กำลังโหลดข้อมูลจาก Supabase</strong><span>กำลังโหลด Testcase และไฟล์ต้นฉบับของ Project</span></div></div>}
           {loadingWorkspace && (testCaseId || sheetName) && <CaseDrawerSkeleton />}
@@ -2123,11 +2147,12 @@ export function QaWorkspace({
           </section>}
 
           {!testCaseId && !sheetName && activePage === "test-cases" && <section className="panel cases-panel" id="cases">
-            <div className="cases-heading"><div><h2>Test cases</h2><span>{filteredCaseRows.length} รายการ</span></div><div className="table-actions">{canEditProject && <button className="primary-button add-testcase-button" onClick={() => setShowCreateCase(true)}><PlusIcon />เพิ่ม Test Case</button>}<label className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="ค้นหา ID หรือชื่อ Testcase" /></label><label className="filter-select"><Filter size={16} /><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as TestStatus | "All")}><option value="All">ทุกสถานะ</option>{TEST_STATUSES.map((status) => <option key={status} value={status}>{statusMeta[status].label}</option>)}</select><ChevronDown size={15} /></label></div></div>
+            <div className="cases-heading"><div><h2>Test cases</h2><span>{filteredCaseRows.length} รายการ</span></div><div className="table-actions">{canEditProject && <button className="primary-button add-testcase-button" onClick={() => setShowCreateCase(true)}><PlusIcon />เพิ่ม Test Case</button>}<label className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} aria-label="ค้นหาทุกคอลัมน์ของ Testcase" placeholder="ค้นหาทุกคอลัมน์…" /></label><label className="filter-select"><Filter size={16} /><select aria-label="กรองสถานะ Testcase" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as TestStatus | "All")}><option value="All">ทุกสถานะ</option>{TEST_STATUSES.map((status) => <option key={status} value={status}>{statusMeta[status].label}</option>)}</select><ChevronDown size={15} /></label></div></div>
+            <CaseTableTools columns={caseTableColumns} view={caseTableView} onChange={updateCaseTableView}/>
             {canEditProject && <div style={{padding:"12px 20px"}}><button type="button" className="secondary-button" onClick={()=>dispatchAssignmentMode(editingAssignments ? {type:"close"} : {type:"open",projectId:selectedProjectId ?? ""})}>{editingAssignments ? <Check size={16}/> : <Users size={16}/>} {editingAssignments ? "เสร็จสิ้น" : "แก้ไขผู้รับผิดชอบ"}</button></div>}
             {editingAssignments && <div className="case-assignment-selection"><label className="case-assignment-checkbox"><input type="checkbox" aria-label="เลือกทุกแถวที่แสดงเพื่อมอบหมาย" checked={!!filteredCaseRows.length && filteredCaseRows.every(r=>selectedAssignmentKeys.includes(assignmentRowKey(r.item.id,r.sheetAlias)))} onChange={e=>setAssignmentSelection({projectId:selectedProjectId ?? '',keys:e.target.checked ? [...new Set([...selectedAssignmentKeys,...filteredCaseRows.map(r=>assignmentRowKey(r.item.id,r.sheetAlias))])] : selectedAssignmentKeys.filter(k=>!filteredCaseRows.some(r=>assignmentRowKey(r.item.id,r.sheetAlias)===k))})}/>เลือกทุกแถวที่แสดง</label><span>เลือก {assignmentTargets.length} แถว</span><button type="button" className="secondary-button" disabled={!assignmentTargets.length || assignmentProjectId!==selectedProjectId || !assignmentData || !!assignmentData.error} onClick={()=>setShowCaseAssignment(true)}><Users size={16}/>มอบหมาย QA</button>{selectedAssignmentKeys.length>0 && <button type="button" className="secondary-button" onClick={()=>setAssignmentSelection({projectId:selectedProjectId ?? '',keys:[]})}>ล้างการเลือก</button>}</div>}
             {assignmentProjectId===selectedProjectId && assignmentData?.error && <p className="form-error" role="alert" style={{padding:'0 20px'}}>โหลดผู้รับผิดชอบไม่ได้: {assignmentData.error} · หากยังไม่ได้ติดตั้ง ให้รัน migration personal_test_performance ก่อน</p>}
-            <div className="table-wrap"><table><thead><tr>{editingAssignments && <th aria-label="เลือกเคสเพื่อมอบหมาย" />}<th>TESTCASE</th><th>SCENARIO</th><th>PLATFORM</th><th>DEVICE</th><th>STATUS</th><th>ข้อมูลจาก Sheets</th><th>ผู้ทดสอบ</th><th aria-label="การทำงาน" /></tr></thead><tbody>{filteredCaseRows.map(({ item, sheetAlias }, rowIndex) => { const sharedSheet = sheetAlias && sheetResolution.associations.filter(association => association.sheet.name === sheetAlias).length > 1; const detailPath = sheetAlias && !sharedSheet ? `/groups/${groupId}/projects/${selectedProject.id}/sheets/${encodeURIComponent(sheetAlias)}` : `/groups/${groupId}/projects/${selectedProject.id}/test-cases/${encodeURIComponent(item.id)}`; const rowState = sheetRowState(sheetAlias || caseDetailLoadKeys((associatedSheetsByCase.get(testCaseIdentity(item.id)) ?? []).map(sheet => sheet.name), item.id), activeSheetRowLoads); return <Fragment key={`${item.id}:${sheetAlias || "testcase"}`}>{testCaseSourceSection(item) && testCaseSourceSection(item) !== (rowIndex ? testCaseSourceSection(filteredCaseRows[rowIndex - 1].item) : "") && <tr className="testcase-section-row"><td colSpan={editingAssignments ? 9 : 8}>{testCaseSourceSection(item)}</td></tr>}<tr onClick={() => openTestCaseDetail(detailPath)}>{editingAssignments && <td onClick={e=>e.stopPropagation()}><label className="case-assignment-checkbox"><input type="checkbox" aria-label={`เลือก ${item.id}${sheetAlias ? ` (${sheetAlias})` : ""} เพื่อมอบหมาย`} checked={selectedAssignmentKeys.includes(assignmentRowKey(item.id,sheetAlias))} onChange={e=>toggleAssignment(item.id,sheetAlias,e.target.checked)}/></label></td>}<td><span className="table-id">{item.id}{sheetAlias ? ` (${sheetAlias})` : ""}</span><strong>{item.name || "ไม่มีชื่อ Testcase"}</strong></td><td><span className="truncate-cell">{item.scenario || "—"}</span></td><td><span className="platform-chip">{item.platform || "—"}</span></td><td>{item.device || "—"}</td><td><StatusBadge status={item.status} /></td><td><span className={`sheet-row-state sheet-row-${rowState}`}>{rowState === "loading" && <LoaderCircle className="spin" size={14}/>}{{queued:"รอโหลด",loading:"กำลังโหลด",loaded:"✓ โหลดแล้ว",error:"โหลดไม่สำเร็จ",idle:"ยังไม่ได้โหลดรายละเอียด"}[rowState]}</span>{rowState === "error" && <button type="button" className="row-retry" onClick={event=>{event.stopPropagation();void retryCaseRow(item, sheetAlias);}}>ลองใหม่</button>}</td><td><span className="tester"><span>{item.executedBy ? item.executedBy.slice(0, 2).toUpperCase() : "—"}</span>{item.executedBy || "ยังไม่มีผู้ทดสอบ"}</span>{assigneeNames(item,sheetAlias) && <small className="case-assignees">รับผิดชอบ: {assigneeNames(item,sheetAlias)}</small>}</td><td><button className="icon-button" onClick={(event) => { event.stopPropagation(); openTestCaseDetail(detailPath); }} aria-label={`เปิด ${item.id}${sheetAlias ? ` ${sheetAlias}` : ""}`}><ChevronRight size={18} /></button></td></tr></Fragment>; })}</tbody></table>{!filteredCaseRows.length && <div className="empty-state">{cases.length ? <Search size={26} /> : <FileSpreadsheet size={26} />}<strong>{cases.length ? "ไม่พบ Testcase" : "ยังไม่มี Testcase"}</strong><span>{cases.length ? "ลองเปลี่ยนคำค้นหาหรือตัวกรองสถานะ" : "ข้อมูลจะแสดงหลังจากอัปโหลดไฟล์ Excel"}</span>{!cases.length && <button className="secondary-button" onClick={() => setShowUpload(true)}><Upload size={16} />อัปโหลดไฟล์</button>}</div>}</div>
+            <CaseRegisterTable rows={filteredCaseRows} columns={selectedCaseTableColumns} getRowState={registerRowState} assigneeNames={assigneeNames} associatedSheetNames={item=>(associatedSheetsByCase.get(testCaseIdentity(item.id)) ?? []).map(sheet=>sheet.name)} onOpen={openRegisterRow} onRetry={({item,sheetAlias})=>{void retryCaseRow(item,sheetAlias);}} editingAssignments={editingAssignments} isSelected={({item,sheetAlias})=>selectedAssignmentKeys.includes(assignmentRowKey(item.id,sheetAlias))} onToggle={({item,sheetAlias},selected)=>toggleAssignment(item.id,sheetAlias,selected)} renderStatus={status=><StatusBadge status={status}/>} hasCases={tableCases.length>0} onUpload={()=>setShowUpload(true)}/>
           </section>}
           {!testCaseId && !sheetName && activePage === "test-cases" && source && <section className="panel workbook-panel non-testcase-sheets-panel">
             <div className="panel-heading"><div><h2>แท็บอื่นใน Google Sheets</h2><p>แสดงเฉพาะแท็บที่ระบบยังผูกกับ Test Case ไม่ได้</p></div><span className="sheet-total">{otherSheets.length} tabs</span></div>

@@ -6,6 +6,7 @@ import { isProjectSummarySheet, testCaseIdsMatchingSheetName } from "./sheet-map
 import { parseStepSheetResults } from "./step-sheet-results";
 import { parseCoverSnapshot } from "./workbook-validation";
 import { buildStepSheetWritePlan, stepResultSnapshotRows } from "./step-sheet-sync";
+import type { StyledSheetText } from "./result-preview";
 
 const readOnlyWorkbooks = new WeakMap<ArrayBuffer, { files: Unzipped; strings: string[]; sheets: Map<string, WorkbookSheetContent> }>();
 function readOnlyWorkbook(buffer: ArrayBuffer) {
@@ -166,6 +167,7 @@ function resolveSheets(files: Unzipped): WorkbookSheet[] {
     return {
       name,
       path,
+      sheetId: Number(sheet.getAttribute("sheetId")) || order + 1,
       order,
       kind: sheetKind(name),
       testCaseIds: idsFromSheetName(name),
@@ -357,6 +359,44 @@ export function readWorkbookSheet(source: WorkbookSource, sheet: WorkbookSheet):
   return content;
 }
 
+export function readWorkbookStyledText(source: WorkbookSource, sheet: WorkbookSheet): StyledSheetText[] {
+  const { files } = readOnlyWorkbook(source.buffer);
+  const document = parseXml(files[sheet.path]);
+  const styles = files["xl/styles.xml"] ? parseXml(files["xl/styles.xml"]) : undefined;
+  const fonts = styles ? Array.from(styles.getElementsByTagName("font")) : [];
+  const fills = styles ? Array.from(styles.getElementsByTagName("fill")) : [];
+  const formats = styles?.getElementsByTagName("cellXfs")[0]?.getElementsByTagName("xf");
+  const shared = files["xl/sharedStrings.xml"] ? Array.from(parseXml(files["xl/sharedStrings.xml"]).getElementsByTagName("si")) : [];
+  const theme = files["xl/theme/theme1.xml"] ? parseXml(files["xl/theme/theme1.xml"]) : undefined;
+  const themeNames = ["lt1", "dk1", "lt2", "dk2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink"];
+  const color = (element?: Element) => {
+    const themeIndex = element?.getAttribute("theme");
+    const themeElement = themeIndex && theme ? elementsByLocalName(theme, themeNames[Number(themeIndex)])[0] : undefined;
+    const rgb = element?.getAttribute("rgb") || (themeElement && (elementsByLocalName(themeElement, "srgbClr")[0]?.getAttribute("val") || elementsByLocalName(themeElement, "sysClr")[0]?.getAttribute("lastClr")));
+    return rgb && /^(?:[a-f0-9]{2})?[a-f0-9]{6}$/i.test(rgb) ? `#${rgb.slice(-6).toLowerCase()}` : undefined;
+  };
+  const relationshipFile = files[`${sheet.path.slice(0, sheet.path.lastIndexOf("/"))}/_rels/${sheet.path.slice(sheet.path.lastIndexOf("/") + 1)}.rels`];
+  const relationships = relationshipFile ? Array.from(parseXml(relationshipFile).getElementsByTagName("Relationship")) : [];
+  const links = new Map(Array.from(document.getElementsByTagName("hyperlink")).map(link => [link.getAttribute("ref"), relationships.find(item => item.getAttribute("Id") === relationshipId(link))?.getAttribute("Target") ?? link.getAttribute("location") ?? undefined]));
+  const cells = new Map(Array.from(document.getElementsByTagName("c")).map(cell => [cell.getAttribute("r"), cell]));
+  return readWorkbookSheet(source, sheet).cells.map(({ ref, value }) => {
+    const cell = cells.get(ref);
+    const format = formats?.[Number(cell?.getAttribute("s") ?? 0)];
+    const font = fonts[Number(format?.getAttribute("fontId") ?? 0)];
+    const fill = fills[Number(format?.getAttribute("fillId") ?? 0)];
+    const rich = cell?.getAttribute("t") === "s" ? shared[Number(cell.getElementsByTagName("v")[0]?.textContent)] : cell?.getElementsByTagName("is")[0];
+    let offset = 0;
+    const runs = rich ? Array.from(rich.getElementsByTagName("r")).map(run => {
+      const start = offset;
+      offset += run.getElementsByTagName("t")[0]?.textContent?.length ?? 0;
+      return { start, color: color(run.getElementsByTagName("color")[0]), bold: run.getElementsByTagName("b").length ? true : undefined };
+    }) : [];
+    const background = fill?.getElementsByTagName("patternFill")[0]?.getAttribute("patternType") === "solid" ? color(fill.getElementsByTagName("fgColor")[0]) : undefined;
+    const formula = cell?.getElementsByTagName("f")[0]?.textContent ?? "";
+    return { ref, value, link: links.get(ref) || /^HYPERLINK\(\s*"([^"]+)"/i.exec(formula)?.[1], color: color(font?.getElementsByTagName("color")[0]), background: background === "#ffffff" ? undefined : background, bold: font?.getElementsByTagName("b").length ? true : undefined, runs };
+  });
+}
+
 export function readWorkbookResultImages(source: WorkbookSource, cases: TestCase[] = []): WorkbookResultImage[] {
   const { files, strings: sharedStrings } = readOnlyWorkbook(source.buffer);
   const imported: WorkbookResultImage[] = [];
@@ -392,7 +432,7 @@ export function readWorkbookResultImages(source: WorkbookSource, cases: TestCase
         if (value === "defect id") defectHeaderRow = Math.min(defectHeaderRow, rowNumber);
       }
     }
-    const testCaseId = sheet.testCaseIds.find((id) => id.startsWith("TC-")) ?? sheet.name;
+    const testCaseId = ownerCase?.id ?? sheet.name;
     if (headerRow < 0 || !resultIdColumn) {
       const fallbackResultId = `SHEET-IMPORT-${sheet.name}`;
       drawingImages(files, sheet.path).forEach((image) => {

@@ -3,6 +3,13 @@ import assert from "node:assert/strict";
 import { personalRegisterCases } from "./personal-register-cases";
 import { buildPersonalPerformance } from "./personal-test-performance";
 import type { PersonalCase } from "./personal-test-performance";
+test('register reports preserve execution date and time instead of discarding them',()=>{
+ const base={id:'r',project_id:'p',testcase_key:'TC01',case_name:'Case',source_row:2,steps:'',expected_result:''};
+ const cases=personalRegisterCases([{...base,test_executions:[{attempt_no:1,status:'Pass',executed_by_name:'Ann',executed_date:'2026-10-10',executed_time:'09:30'}]}],[{id:'p',name:'P'}],'g','s',[]);
+ assert.equal(cases[0].results[0].recordedAt,'2026-10-10T09:30:00+07:00');
+ const dateOnly=personalRegisterCases([{...base,test_executions:[{attempt_no:1,status:'Pass',executed_by_name:'Ann',executed_date:'10/10/2569',executed_time:''}]}],[{id:'p',name:'P'}],'g','s',[]);
+ assert.equal(dateOnly[0].results[0].recordedAt,'2026-10-10');
+});
 test("old importer names are ignored when stored Sheet Steps explicitly Skip without a tester", () => {
   const cases = personalRegisterCases([{ id: "r", project_id: "p", testcase_key: "TC13", case_name: "C", source_row: 32, steps: "Step01", expected_result: "Map", test_executions: [{ attempt_no: 1, status: "Skip", executed_by_name: "wara pp", result_reference: 'qa-results:{"stepDefinitions":[{"status":"Skip","executedBy":""}],"results":[]}' }] }], [{ id: "p", name: "P" }], "g", "s", []);
   const stats = buildPersonalPerformance({ sprintId: "s", members: [], cases });

@@ -40,6 +40,7 @@ export function buildSprintDashboard(input: SprintDashboardInput) {
   const movedOut=[...latestOut.values()].map(m=>({...m,snapshot:(m.after.moveSnapshot ?? {}) as MoveSnapshot}));
   const attention=projects.flatMap(project=>[
     ...(project.counts.failed ? [{kind:'failed',projectId:project.id,projectName:project.name,count:project.counts.failed}] : []),
+    ...(project.counts.openDefects ? [{kind:'defects',projectId:project.id,projectName:project.name,count:project.counts.openDefects}] : []),
     ...(!project.qa.length ? [{kind:'unassigned',projectId:project.id,projectName:project.name,count:1}] : []),
     ...(project.approval.pending ? [{kind:'approval',projectId:project.id,projectName:project.name,count:project.approval.pending}] : []),
   ]);

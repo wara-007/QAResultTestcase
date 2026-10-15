@@ -1,6 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runSheetEvidenceImports, runSheetTextImports, sheetImportSummary, sheetImportProgressLabel } from './sheet-import-progress';
+import { runSheetEvidenceImports, runSheetTextImports, sheetImportSummary, sheetImportProgressLabel, showSheetImportNotice } from './sheet-import-progress';
+
+test('all saved tabs hide the incomplete notice even if the legacy complete flag is false', () => {
+  assert.equal(showSheetImportNotice({ total: 26, loaded: 26 }, { complete: false }), false);
+  assert.equal(showSheetImportNotice({ total: 26, loaded: 25 }, { complete: false }), true);
+  assert.equal(showSheetImportNotice({ total: 0, loaded: 0 }, { complete: false }), true);
+  assert.equal(showSheetImportNotice({ total: 26, loaded: 26 }, { complete: true }), false);
+  assert.equal(showSheetImportNotice({ total: 26, loaded: 26 }, { complete: true, refreshRequired: true }), true);
+});
 
 test('a short tab finishes and is saved while another tab is still uploading', async () => {
   let release!: () => void;

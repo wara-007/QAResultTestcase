@@ -1,6 +1,11 @@
 import { loadRows, type RowLoadState } from './result-preview';
 
 // Transient UI progress only. Persisted completion keeps the existing schema.
+export function showSheetImportNotice(summary: { total: number; loaded: number }, saved: { complete: boolean; refreshRequired?: boolean }): boolean {
+  if (saved.refreshRequired) return true;
+  return !saved.complete && (summary.total === 0 || summary.loaded < summary.total);
+}
+
 export type SheetImportProgress = {
   phase: 'details' | 'text-saving' | 'workbook' | 'waiting-images' | 'images' | 'saving' | 'conflict';
   detailsSaved?: boolean;

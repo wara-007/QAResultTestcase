@@ -48,11 +48,11 @@ test("QA and PO render the same distinct Step definitions while PO has no edit c
   const readOnly = renderToStaticMarkup(React.createElement(TestCaseSteps, { testCase, readOnly: true }));
   assert.match(readOnly, /BE response/);
   assert.match(readOnly, /Legacy response/);
-  assert.match(readOnly, /Blocked/);
+  assert.doesNotMatch(readOnly, /Blocked/);
   assert.match(readOnly, /2 Steps/);
   assert.ok(!readOnly.includes("<select"));
   const editable = renderToStaticMarkup(React.createElement(TestCaseSteps, { testCase, readOnly: false, onChange: () => {} }));
-  assert.match(editable, /<select/);
+  assert.doesNotMatch(editable, /<select|สถานะ Step/);
   assert.equal(stepResultTitle(testCase, { stepId: "Testcase:3" }), "step 08 · Legacy response");
   assert.equal(stepResultTitle(testCase, {}), "ผลที่ยังไม่ผูก Step");
 });

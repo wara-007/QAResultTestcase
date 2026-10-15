@@ -3,6 +3,33 @@ import assert from "node:assert/strict";
 import { personalRegisterCases } from "./personal-register-cases";
 import { buildPersonalPerformance } from "./personal-test-performance";
 import type { PersonalCase } from "./personal-test-performance";
+
+test('Not Start register summaries do not erase real outcomes from multiple testers and source tabs', () => {
+  const base: PersonalCase = { projectId: 'p', projectName: 'P', currentSprintId: 's', caseId: 'TC01', caseName: 'C', sourceRowKey: 'RC TC01', detailPath: '/source', assignedUserIds: ['qa'], results: [
+    { id: 'a1', testerName: 'Ann', status: 'Failed', source: 'sheets', sourceSheet: 'RC TC01', recordedAt: '2026-10-10T09:00:00Z', order: 1, inferred: true },
+    { id: 'a2', testerName: 'Ann', status: 'Pass', source: 'sheets', sourceSheet: 'RC TC01', recordedAt: '2026-10-10T10:00:00Z', order: 2, inferred: true },
+    { id: 'b1', testerName: 'Ben', status: 'Failed', source: 'web', sourceSheet: 'RC TC01', recordedAt: '', order: 3, inferred: true },
+  ] };
+  const second = { ...base, sourceRowKey: 'RC TC01 retest', detailPath: '/retest', assignedUserIds: [], results: [{ ...base.results[1], id: 'a3', sourceSheet: 'RC TC01 retest' }] };
+  const rows = [{ id: 'r', project_id: 'p', testcase_key: 'TC01', case_name: 'C', source_row: 2, steps: '', expected_result: '', test_executions: [{ attempt_no: 1, status: 'Not Start', executed_by_name: '' }] }];
+  const cases = personalRegisterCases(rows, [{id:'p',name:'P'}], 'g', 's', [base, second]);
+  const stats = buildPersonalPerformance({sprintId:'s',members:[],cases});
+  assert.equal(stats.find(person=>person.name==='Ann')?.pass, 2);
+  assert.equal(stats.find(person=>person.name==='Ben')?.failed, 1);
+  assert.equal(stats.find(person=>person.key==='unassigned'), undefined);
+  assert.equal(cases.find(item=>item.sourceRowKey==='RC TC01 retest')?.detailPath, '/retest');
+  assert.equal(stats.find(person=>person.key==='qa')?.assigned, 1);
+});
+
+test('detailed Results are not double-counted with a Passed register fallback or empty metadata rows', () => {
+  const base: PersonalCase = { projectId:'p',projectName:'P',currentSprintId:'s',caseId:'TC01',caseName:'C',sourceRowKey:'tab',detailPath:'/tab',assignedUserIds:[],results:[{id:'result',testerName:'Ann',status:'Pass',source:'sheets',sourceSheet:'tab',recordedAt:'',order:1,inferred:true}] };
+  const row = { id:'r',project_id:'p',testcase_key:'TC01',case_name:'C',source_row:2,steps:'',expected_result:'',test_executions:[{attempt_no:1,status:'Pass',executed_by_name:'Ann'}] };
+  const cases=personalRegisterCases([row],[{id:'p',name:'P'}],'g','s',[base,base,{...base,sourceRowKey:'',results:[]}]);
+  const stats=buildPersonalPerformance({sprintId:'s',members:[],cases});
+  assert.equal(cases.length,1);
+  assert.equal(stats.length,1);
+  assert.equal(stats[0].pass,1);
+});
 test('register reports preserve execution date and time instead of discarding them',()=>{
  const base={id:'r',project_id:'p',testcase_key:'TC01',case_name:'Case',source_row:2,steps:'',expected_result:''};
  const cases=personalRegisterCases([{...base,test_executions:[{attempt_no:1,status:'Pass',executed_by_name:'Ann',executed_date:'2026-10-10',executed_time:'09:30'}]}],[{id:'p',name:'P'}],'g','s',[]);

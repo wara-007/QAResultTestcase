@@ -13,7 +13,25 @@ function executionDate(date='',time='') {
 }
 export function personalRegisterCases(rows: RegisterPerformanceRow[], projects: { id: string; name: string }[], groupId: string, sprintId: string, previous: PersonalCase[]): PersonalCase[] {
   const historical = previous.filter(item => item.currentSprintId !== sprintId);
-  const current = rows.filter(row => summarizeSprint([{ id: row.project_id, approvals: [], cases: [{ testcaseKey: row.testcase_key, sourceRow: row.source_row ?? 0, steps: row.steps, expected: row.expected_result, executions: [] }] }]).totalCases > 0).map(row => {
+  const current = rows.filter(row => summarizeSprint([{ id: row.project_id, approvals: [], cases: [{ testcaseKey: row.testcase_key, sourceRow: row.source_row ?? 0, steps: row.steps, expected: row.expected_result, executions: [] }] }]).totalCases > 0).flatMap<PersonalCase>(row => {
+    const metadata = previous.filter(item => item.currentSprintId === sprintId && item.projectId === row.project_id && item.caseId === row.testcase_key);
+    // Detailed Results contain the actual tester and source-specific history.
+    // The register summary is only a fallback for cases without those Results.
+    // In particular, a Not Start summary must never erase a real Pass/Fail.
+    if (metadata.some(item => item.results.some(result => result.id !== "legacy"))) {
+      const sources = new Map<string, PersonalCase>();
+      for (const item of metadata) {
+        const results = item.results.filter(result => result.id !== "legacy");
+        if (!results.length && !item.assignedUserIds.length) continue;
+        const existing = sources.get(item.sourceRowKey);
+        sources.set(item.sourceRowKey, {
+          ...item,
+          results: [...new Map([...(existing?.results ?? []), ...results].map(result => [JSON.stringify([result.id, result.sourceSheet]), result])).values()],
+          assignedUserIds: [...new Set([...(existing?.assignedUserIds ?? []), ...item.assignedUserIds])],
+        });
+      }
+      return [...sources.values()];
+    }
     const latest = [...(row.test_executions ?? [])].sort((a, b) => b.attempt_no - a.attempt_no)[0];
     let testerName = latest?.executed_by_name ?? "";
     if (latest?.status === "Skip" && latest.result_reference?.startsWith("qa-results:")) {
@@ -22,13 +40,13 @@ export function personalRegisterCases(rows: RegisterPerformanceRow[], projects: 
         if (Array.isArray(payload.stepDefinitions) && isUnnamedSheetSkip(payload.stepDefinitions, Array.isArray(payload.results) ? payload.results : [])) testerName = "";
       } catch { /* Legacy references preserve their recorded tester. */ }
     }
-    const assigned = previous.filter(item => item.projectId === row.project_id && item.caseId === row.testcase_key).flatMap(item => item.assignedUserIds);
-    return {
+    const assigned = metadata.flatMap(item => item.assignedUserIds);
+    return [{
       projectId: row.project_id, projectName: projects.find(project => project.id === row.project_id)?.name ?? "", currentSprintId: sprintId,
       caseId: row.testcase_key, caseName: row.case_name, sourceRowKey: "", detailPath: `/groups/${encodeURIComponent(groupId)}/projects/${row.project_id}/test-cases/${encodeURIComponent(row.testcase_key)}`,
       assignedUserIds: [...new Set(assigned)],
       results: latest ? [{ id: `register:${row.id}`, testerName, status: latest.status, source: (row.source_row ?? 0) > 0 ? "sheets" as const : "web" as const, sourceSheet: "", recordedAt: executionDate(latest.executed_date,latest.executed_time), order: latest.attempt_no, inferred: true }] : [],
-    };
+    }];
   });
   return [...current, ...historical];
 }

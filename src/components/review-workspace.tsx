@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck, ExternalLink, FileSpreadsheet, LoaderCircle, RotateCcw, ShieldCheck } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck, ExternalLink, FileSpreadsheet, LoaderCircle, RotateCcw, Search, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ImageViewerGallery } from "@/components/image-viewer-gallery";
 import type { ProjectReview } from "@/lib/project-review";
@@ -10,6 +10,7 @@ import { evidenceImageUrl } from "@/lib/evidence";
 import { SheetResultSections } from "./sheet-result-sections";
 import { ResultTextViewer } from "./result-text-viewer";
 import { TestCaseSteps, orderedStepResults, stepResultTitle } from "./test-case-steps";
+import { reviewCasePage } from "@/lib/review-case-search";
 
 const statusClass: Record<TestStatus, string> = {
   "Not Start": "status-not-start",
@@ -56,6 +57,7 @@ export function ReviewWorkspace({ token, requestId, currentUserName = "" }: { to
   const [comment, setComment] = useState("");
   const [decision, setDecision] = useState<"approved" | "changes_requested" | null>(null);
   const [casePage, setCasePage] = useState(1);
+  const [caseSearch, setCaseSearch] = useState("");
 
   async function load() {
     setLoading(true);
@@ -92,10 +94,7 @@ export function ReviewWorkspace({ token, requestId, currentUserName = "" }: { to
     return initial;
   }, [review]);
 
-  const pageSize = 10;
-  const pageCount = Math.max(1, Math.ceil((review?.cases.length ?? 0) / pageSize));
-  const currentPage = Math.min(casePage, pageCount);
-  const visibleCases = review?.cases.slice((currentPage - 1) * pageSize, currentPage * pageSize) ?? [];
+  const { total: matchingCaseCount, pageSize, pageCount, currentPage, visible: visibleCases } = useMemo(() => reviewCasePage(review?.cases ?? [], caseSearch, casePage), [review, caseSearch, casePage]);
   const pageNumbers = pageCount <= 7
     ? Array.from({ length: pageCount }, (_, index) => index + 1)
     : [...new Set([1, currentPage - 1, currentPage, currentPage + 1, pageCount])].filter((page) => page >= 1 && page <= pageCount).sort((a, b) => a - b);
@@ -141,7 +140,9 @@ export function ReviewWorkspace({ token, requestId, currentUserName = "" }: { to
         <article><span>ทั้งหมด</span><strong>{review.cases.length}</strong></article><article className="pass"><span>Pass</span><strong>{counts.Pass}</strong></article><article className="failed"><span>Failed</span><strong>{counts.Failed}</strong></article><article><span>Inprogress</span><strong>{counts["In Progress"]}</strong></article><article><span>Not Start</span><strong>{counts["Not Start"]}</strong></article><article><span>Skip</span><strong>{counts.Skip}</strong></article>
       </section>
 
-      <section className="review-cases-section"><div className="review-section-heading"><div><h2>Test Cases และ Results</h2><p>กดแต่ละรายการเพื่อดูรายละเอียด ผลทดสอบ รูปหลักฐาน และ Defect</p></div><span>{review.cases.length} cases</span></div>
+      <section className="review-cases-section"><div className="review-section-heading"><div><h2>Test Cases และ Results</h2><p>กดแต่ละรายการเพื่อดูรายละเอียด ผลทดสอบ รูปหลักฐาน และ Defect</p></div><span aria-live="polite">{caseSearch.trim() ? `${matchingCaseCount} / ${review.cases.length}` : review.cases.length} cases</span></div>
+        <div className="review-case-search"><label className="search-box"><Search size={17}/><input type="search" aria-label="ค้นหา Test cases ในหน้ารีวิว" placeholder="ค้นหา ID ชื่อเคส หรือรายละเอียด…" value={caseSearch} onChange={event => { setCaseSearch(event.target.value); setCasePage(1); }}/></label>{caseSearch && <button type="button" className="secondary-button" onClick={() => { setCaseSearch(""); setCasePage(1); }}>ล้างคำค้นหา</button>}</div>
+        {!visibleCases.length && <p className="review-empty" role="status">{caseSearch.trim() ? "ไม่พบ Test case ที่ตรงกับคำค้นหา ลองเปลี่ยนคำค้นหาหรือล้างคำค้นหา" : "ยังไม่มี Test case ในรายการรีวิวนี้"}</p>}
         <div className="review-case-list">{visibleCases.map((testCase, index) => <details className="review-case" key={`${currentPage}-${testCase.recordId}-${testCase.id}-${testCase.sourceSheetName}`} open={index === 0}>
           <summary><div><span className="review-case-number">{String((currentPage - 1) * pageSize + index + 1).padStart(2, "0")}</span><div><strong>{testCase.id}{testCase.sourceSheetName && testCase.sourceSheetName !== "Testcase" ? ` (${testCase.sourceSheetName})` : ""} · {testCase.name || "ไม่มีชื่อ Test Case"}</strong><small>{testCase.scenario || "ไม่ระบุ Scenario"}</small><span className="review-source-badge">แหล่งที่มา: {testCase.sourceSheetName || "Testcase"}</span></div></div><div><span className={`status-badge ${statusClass[testCase.status]}`}><span />{testCase.status}</span><ChevronDown size={19} /></div></summary>
           <div className="review-case-content">
@@ -152,7 +153,7 @@ export function ReviewWorkspace({ token, requestId, currentUserName = "" }: { to
             {!!testCase.defects?.length && <div className="review-defects"><h3>Defects <span>{testCase.defects.length}</span></h3>{testCase.defects.map((defect) => <article key={defect.id}><header><strong>{defect.title || defect.id}</strong><span>{defect.status}</span></header><TextBlock label="รายละเอียด" value={defect.description} />{defect.jiraUrl && <a href={defect.jiraUrl} target="_blank" rel="noreferrer">เปิด Jira Card <ExternalLink size={14} /></a>}<TextBlock label="API Response" value={defect.apiResponse} code /><TextBlock label="Log" value={defect.log} code /><EvidenceGallery evidence={defect.evidence ?? []} evidenceBasePath={evidenceBasePath} /></article>)}</div>}
           </div>
         </details>)}</div>
-        {pageCount > 1 && <nav className="review-pagination" aria-label="หน้า Test Cases"><span>แสดง {(currentPage - 1) * pageSize + 1}-{Math.min(currentPage * pageSize, review.cases.length)} จาก {review.cases.length}</span><div><button type="button" onClick={() => changePage(currentPage - 1)} disabled={currentPage === 1} aria-label="หน้าก่อนหน้า"><ChevronLeft size={17} /></button>{pageNumbers.map((page, index) => <span key={page}>{index > 0 && page - pageNumbers[index - 1] > 1 && <i>…</i>}<button type="button" className={page === currentPage ? "active" : ""} onClick={() => changePage(page)} aria-current={page === currentPage ? "page" : undefined}>{page}</button></span>)}<button type="button" onClick={() => changePage(currentPage + 1)} disabled={currentPage === pageCount} aria-label="หน้าถัดไป"><ChevronRight size={17} /></button></div></nav>}
+        {pageCount > 1 && <nav className="review-pagination" aria-label="หน้า Test Cases"><span>แสดง {(currentPage - 1) * pageSize + 1}-{Math.min(currentPage * pageSize, matchingCaseCount)} จาก {matchingCaseCount}</span><div><button type="button" onClick={() => changePage(currentPage - 1)} disabled={currentPage === 1} aria-label="หน้าก่อนหน้า"><ChevronLeft size={17} /></button>{pageNumbers.map((page, index) => <span key={page}>{index > 0 && page - pageNumbers[index - 1] > 1 && <i>…</i>}<button type="button" className={page === currentPage ? "active" : ""} onClick={() => changePage(page)} aria-current={page === currentPage ? "page" : undefined}>{page}</button></span>)}<button type="button" onClick={() => changePage(currentPage + 1)} disabled={currentPage === pageCount} aria-label="หน้าถัดไป"><ChevronRight size={17} /></button></div></nav>}
       </section>
 
       <section className={`review-decision ${answered ? review.request.status : ""}`}>

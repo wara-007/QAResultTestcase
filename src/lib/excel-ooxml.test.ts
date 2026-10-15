@@ -7,6 +7,16 @@ import { casesFromRows } from "./testcase-rows";
 import type { WorkbookSource } from "./types";
 
 Object.assign(globalThis, { DOMParser });
+test("compound register IDs do not prevent an evidence workbook from opening", () => {
+  const bytes = zipSync({
+    "xl/workbook.xml": strToU8('<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Testcase" r:id="r1"/></sheets></workbook>'),
+    "xl/_rels/workbook.xml.rels": strToU8('<Relationships><Relationship Id="r1" Target="worksheets/sheet1.xml"/></Relationships>'),
+    "xl/worksheets/sheet1.xml": strToU8('<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Test Scenario ID</t></is></c><c r="C1" t="inlineStr"><is><t>Test Case Id</t></is></c><c r="D1" t="inlineStr"><is><t>Testcase</t></is></c></row><row r="3"><c r="A3" t="inlineStr"><is><t>RF02</t></is></c><c r="C3" t="inlineStr"><is><t>RF02_TC09</t></is></c><c r="D3" t="inlineStr"><is><t>Validate refill</t></is></c></row><row r="4"><c r="C4" t="inlineStr"><is><t>Refill section heading</t></is></c></row></sheetData></worksheet>'),
+  });
+  const { cases, source } = importTestCases(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, "compound.xlsx");
+  assert.deepEqual(cases.map(item => item.id), ["RF02_TC09"]);
+  assert.equal(source.bufferLoaded, true);
+});
 test("Excel imports retain original mapped labels and custom blank columns", () => {
   const bytes = zipSync({
     "xl/workbook.xml": strToU8('<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Testcase" r:id="r1"/></sheets></workbook>'),

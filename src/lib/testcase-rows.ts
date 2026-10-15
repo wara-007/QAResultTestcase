@@ -1,5 +1,9 @@
 import type { TestCase, TestEvidence, TestStatus } from "./types";
 import { parseStepTestCases } from "./step-testcases";
+export function isRegisterCaseIdentifier(id: string, populatedCount: number): boolean {
+  return /^(?:[\p{L}\p{N}][\p{L}\p{N}_.:-]*|(?:TC|TEST|CASE)[\s_-]*\d[\w\s-]*)$/iu.test(id)
+    && (populatedCount > 1 || /\d/.test(id));
+}
 const normalize = (value: unknown) => String(value ?? "").toLowerCase().replace(/[\n\r*._()/-]+/g, " ").replace(/\s+/g, " ").trim();
 const statusFromValue = (value: unknown): TestStatus => {
   const status = normalize(value);
@@ -61,8 +65,7 @@ export function casesFromRows(rows: unknown[][]): TestCase[] {
     // IDs come from the declared ID column, not a hard-coded TC prefix.
     // Section titles contain prose; identifiers are numeric or compact keys.
     const populatedCount = row.filter(cell => String(cell ?? "").trim()).length;
-    const identifier = /^(?:[\p{L}\p{N}][\p{L}\p{N}_.:-]*|(?:TC|TEST|CASE)[\s_-]*\d[\w\s-]*)$/iu.test(id)
-      && (populatedCount > 1 || /\d/.test(id));
+    const identifier = isRegisterCaseIdentifier(id, populatedCount);
     if (!identifier) {
       section = id;
       sectionRow = sourceRow;

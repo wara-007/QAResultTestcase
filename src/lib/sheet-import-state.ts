@@ -43,7 +43,18 @@ export function checkpointSheetImport(previous: SheetImportState | undefined, sp
 export function shouldStartSheetImport(spreadsheetId: string, canEdit: boolean, caseCount: number, saved: SheetImportState | undefined): boolean {
   if (!spreadsheetId || !canEdit) return false;
   const snapshot = readSheetImportState(saved, spreadsheetId);
-  return snapshot ? !snapshot.complete || snapshot.refreshRequired === true : caseCount === 0;
+  // Re-entering a saved project is not permission to restart an incomplete
+  // import (or a refresh). QA explicitly chooses when to resume it.
+  return !snapshot && caseCount === 0;
+}
+
+export function initialSheetImportStates(names: string[], saved: SheetImportState | undefined, resume: boolean): Record<string, RowLoadState> {
+  return {
+    ...(resume ? saved?.states : {}),
+    Testcase: resume && saved?.states.Testcase === "loaded" ? "loaded" : "loading",
+    ...Object.fromEntries(names.filter(name => name.trim().toLowerCase() !== "testcase")
+      .map(name => [name, resume && saved?.states[name] === "loaded" ? "loaded" : "queued"])),
+  };
 }
 
 export function pendingImportSheets(names: string[], saved: SheetImportState | undefined): string[] {

@@ -7,6 +7,7 @@ import { parseStepSheetResults } from "./step-sheet-results";
 import { parseCoverSnapshot } from "./workbook-validation";
 import { buildStepSheetWritePlan, stepResultSnapshotRows } from "./step-sheet-sync";
 import type { StyledSheetText } from "./result-preview";
+import { isRegisterCaseIdentifier } from "./testcase-rows";
 
 const readOnlyWorkbooks = new WeakMap<ArrayBuffer, { files: Unzipped; strings: string[]; sheets: Map<string, WorkbookSheetContent> }>();
 function readOnlyWorkbook(buffer: ArrayBuffer) {
@@ -261,7 +262,7 @@ export function importTestCases(buffer: ArrayBuffer, fileName: string) {
 
   for (let row = headerRow + 1; row <= maximumRow; row += 1) {
     const id = get("id", row);
-    if (!id || !/^(TC|TEST|CASE)[\s_-]*\d+/i.test(id)) continue;
+    if (!id || !isRegisterCaseIdentifier(id, (stepRows[row - 1] ?? []).filter(value => value?.trim()).length)) continue;
     const scenario = get("scenario", row) || previousScenario;
     const steps = get("steps", row) || previousSteps;
     if (scenario) previousScenario = scenario;

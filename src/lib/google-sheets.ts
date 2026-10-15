@@ -1,4 +1,5 @@
 import "server-only";
+import { googleDataRange } from "./google-data-range";
 import { sheetCellLink } from "./sheet-cell-link";
 import { driveWorkbookType, officeWorkbookData, OFFICE_SYNC_MESSAGE } from "./drive-workbook";
 import { readWorkbookStyledText } from "./excel-ooxml";
@@ -200,10 +201,9 @@ async function readNativeGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth,
     return `'${sheet.name.replaceAll("'", "''")}'!A1:${columnLetter((grid?.columnCount ?? 52) - 1)}${grid?.rowCount ?? 1000}`;
   });
   if (ranges.length) {
-    const [resultValues, formatting] = await Promise.all([
-      sheets.spreadsheets.values.batchGet({ spreadsheetId, ranges, valueRenderOption: "FORMULA" }),
-      sheets.spreadsheets.get({ spreadsheetId, ranges, fields: "properties(spreadsheetTheme),sheets(properties(sheetId),data(startRow,startColumn,rowData(values(formattedValue,hyperlink,chipRuns,userEnteredValue,effectiveFormat(backgroundColorStyle,backgroundColor,textFormat),textFormatRuns))))" }),
-    ]);
+    const resultValues = await sheets.spreadsheets.values.batchGet({ spreadsheetId, ranges, valueRenderOption: "FORMULA" });
+    const formattingRanges = detailSheets.map((sheet, index) => googleDataRange(sheet.name, resultValues.data.valueRanges?.[index]?.values ?? []));
+    const formatting = await sheets.spreadsheets.get({ spreadsheetId, ranges: formattingRanges, fields: "properties(spreadsheetTheme),sheets(properties(sheetId),data(startRow,startColumn,rowData(values(formattedValue,hyperlink,chipRuns,userEnteredValue,effectiveFormat(backgroundColorStyle,backgroundColor,textFormat),textFormatRuns))))" });
     const theme = formatting.data.properties?.spreadsheetTheme?.themeColors ?? [];
     const color = (style: { rgbColor?: { red?: number | null; green?: number | null; blue?: number | null } | null; themeColor?: string | null } | null | undefined, fallback?: { red?: number | null; green?: number | null; blue?: number | null } | null) => {
       const rgb = style?.rgbColor ?? theme.find(item => item.colorType === style?.themeColor)?.color?.rgbColor ?? fallback;

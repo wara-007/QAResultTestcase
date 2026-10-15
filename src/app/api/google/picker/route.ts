@@ -1,8 +1,9 @@
 import { createClient } from "@/lib/supabase/server";
-import { getGoogleUserAuth, GoogleConnectionRequiredError, safeReturnTo } from "@/lib/google-user-oauth";
+import { getGoogleUserAuth, safeReturnTo } from "@/lib/google-user-oauth";
 import { requireProjectCapability, ProjectAccessError } from "@/lib/project-access-server";
 import { pickerConfiguration } from "@/lib/google-picker";
 import { pickerSessionResponse } from "@/lib/google-picker-session";
+import { needsGoogleAuthorization } from "@/lib/google-authorization";
 
 export const runtime = "nodejs";
 
@@ -26,14 +27,14 @@ export async function POST(request: Request) {
         if (!token) throw new Error("ขอสิทธิ์ Google ไม่สำเร็จ");
         return token;
       } catch (reason) {
-        if (reason instanceof GoogleConnectionRequiredError) {
+        if (needsGoogleAuthorization(reason)) {
           const referer = request.headers.get("referer");
           let returnTo = "/groups";
           if (referer) {
             const url = new URL(referer);
             if (url.origin === new URL(request.url).origin) returnTo = safeReturnTo(`${url.pathname}${url.search}`);
           }
-          throw Object.assign(reason, { status: 401, authUrl: `/api/google/auth/start?returnTo=${encodeURIComponent(returnTo)}` });
+          throw Object.assign(new Error("กรุณาอนุญาตสิทธิ์ Google Drive และ Sheets ใหม่"), { status: 401, authUrl: `/api/google/auth/start?returnTo=${encodeURIComponent(returnTo)}` });
         }
         throw reason;
       }

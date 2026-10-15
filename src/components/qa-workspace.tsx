@@ -41,6 +41,7 @@ import { useRouter } from "next/navigation";
 import { GoogleCleanupWarning } from './google-cleanup-warning';
 import { createProject, createProjectApprovalRequest, deleteProject, getLatestProjectApproval, updateProjectGoogleSheet, type ProjectApprovalSummary } from "@/app/actions";
 import { GoogleDrivePickerButton } from "@/components/google-drive-picker-button";
+import { googleAuthorizationTarget } from "@/lib/google-authorization";
 import { signOut } from "@/app/auth/actions";
 import { exportTestCases, importTestCases, readWorkbookFreeformResults, readWorkbookResultImages, readWorkbookSheet } from "@/lib/excel-ooxml";
 import { evidenceImageUrl } from "@/lib/evidence";
@@ -119,10 +120,16 @@ async function cacheProjectDefectMetadata(projectId: string, sheets: WorkbookShe
   if (!response.ok) throw new Error(data.error ?? "บันทึก Defects สำหรับ Sprint ไม่สำเร็จ");
 }
 
-function continueGoogleAuthorization(authUrl: string) {
-  const target = new URL(authUrl, window.location.origin);
-  target.searchParams.set("returnTo", `${window.location.pathname}${window.location.search}${window.location.hash}`);
-  window.location.assign(target.toString());
+function continueGoogleAuthorization(authUrl: string, manual = false) {
+  const current = new URL(window.location.href);
+  if (manual) {
+    current.searchParams.delete("googleAuthAttempt");
+    current.searchParams.delete("googleAuthError");
+    current.searchParams.delete("googleAuth");
+  }
+  const target = googleAuthorizationTarget(authUrl, window.location.origin, `${current.pathname}${current.search}${current.hash}`);
+  if (!target) throw new Error("ยังไม่ได้รับสิทธิ์ Google ที่จำเป็น กรุณาลองเชื่อม Google ใหม่ — ระบบหยุดขอสิทธิ์อัตโนมัติเพื่อไม่ให้เด้งวน");
+  window.location.assign(target);
 }
 
 function testCaseIdentity(value: string) {
@@ -354,19 +361,44 @@ function SetupView() {
   );
 }
 
-function ProjectDialog({ groupId, sprint, onClose, onCreated }: { groupId: string; sprint?: Sprint; onClose: () => void; onCreated: (project: Project) => void }) {
-  const [sourceType, setSourceType] = useState<"file" | "url">("file");
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
+type ProjectDraft = { name: string; description: string; environment: string; googleSheetUrl: string; resume: boolean };
+function ProjectDialog({ groupId, sprint, draft, draftKey, onClose, onCreated }: { groupId: string; sprint?: Sprint; draft: ProjectDraft | null; draftKey: string; onClose: () => void; onCreated: (project: Project) => void }) {
+  const [sourceType, setSourceType] = useState<"file" | "url">(draft ? "url" : "file");
+  const [name, setName] = useState(draft?.name ?? "");
+  const [description, setDescription] = useState(draft?.description ?? "");
   const sprintNo = sprint?.name ?? "";
-  const [environment, setEnvironment] = useState("UAT");
-  const [googleSheetUrl, setGoogleSheetUrl] = useState("");
+  const [environment, setEnvironment] = useState(draft?.environment ?? "UAT");
+  const [googleSheetUrl, setGoogleSheetUrl] = useState(draft?.googleSheetUrl ?? "");
   const [excelFile, setExcelFile] = useState<File | null>(null);
   const [error, setError] = useState("");
   const [pending, startTransition] = useTransition();
+  const formRef = useRef<HTMLFormElement>(null);
+  const resumed = useRef(false);
+  useEffect(() => {
+    if (resumed.current || !draft) return;
+    resumed.current = true;
+    const query = new URLSearchParams(window.location.search);
+    if (query.has("googleAuthError")) {
+      queueMicrotask(() => setError("ไม่ได้อนุญาตสิทธิ์ Google ข้อมูลที่กรอกยังอยู่ กรุณาลองอีกครั้ง"));
+    } else if (query.get("googleAuth") === "connected" && draft.resume) {
+      formRef.current?.requestSubmit();
+    }
+  }, [draft]);
+
+  function saveDraft(resume: boolean) {
+    sessionStorage.setItem(draftKey, JSON.stringify({ name, description, environment, googleSheetUrl, resume }));
+  }
 
   function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    // Explicit retry is allowed; automatic callback retries keep their marker.
+    if ((event.nativeEvent as SubmitEvent).submitter) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("googleAuthAttempt");
+      url.searchParams.delete("googleAuthError");
+      url.searchParams.delete("googleAuth");
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    }
     setError("");
     startTransition(async () => {
       try {
@@ -375,8 +407,14 @@ function ProjectDialog({ groupId, sprint, onClose, onCreated }: { groupId: strin
           : null;
         if (sourceType === "file" && !imported) return setError("กรุณาเลือกไฟล์ Excel");
         const result = await createProject({ groupId, name, description, sprintNo, sprintId: sprint?.id, environment, googleSheetUrl: sourceType === "url" ? googleSheetUrl : "" });
+        if (!result.project && result.authUrl) {
+          saveDraft(true);
+          continueGoogleAuthorization(result.authUrl);
+          return;
+        }
         if (!result.project) return setError(result.error ?? "เพิ่ม Project ไม่สำเร็จ");
         if (imported) await persistImportedWorkbook(result.project.id, imported.cases, imported.source, true);
+        sessionStorage.removeItem(draftKey);
         onCreated({ ...result.project, year: sprint?.year });
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : "เพิ่ม Project ไม่สำเร็จ");
@@ -386,7 +424,7 @@ function ProjectDialog({ groupId, sprint, onClose, onCreated }: { groupId: strin
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <form className="project-dialog" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
+      <form ref={formRef} className="project-dialog" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
         <button type="button" className="icon-button close-button" onClick={onClose} aria-label="ปิด"><X size={19} /></button>
         <div className="dialog-heading"><div className="dialog-icon"><FolderKanban size={24} /></div><div><p className="eyebrow">NEW PROJECT</p><h2>เพิ่ม Project</h2></div></div>
         <div className="project-source-tabs" role="tablist" aria-label="แหล่งข้อมูล Testcase">
@@ -396,7 +434,7 @@ function ProjectDialog({ groupId, sprint, onClose, onCreated }: { groupId: strin
         <label className="text-field"><span>ชื่อ Project *</span><input autoFocus required maxLength={160} value={name} onChange={(event) => setName(event.target.value)} placeholder="เช่น IR Cross sell" /></label>
         <label className="text-field"><span>รายละเอียด</span><textarea rows={3} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="ขอบเขตหรือเป้าหมายการทดสอบ" /></label>
         {sourceType === "file" ? <label className="project-file-picker"><Upload size={20} /><span><strong>{excelFile?.name ?? "เลือกไฟล์ Excel"}</strong><small>{excelFile ? `${(excelFile.size / 1024 / 1024).toFixed(2)} MB` : "รองรับไฟล์ .xlsx ที่มีชีต Testcase"}</small></span><input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => setExcelFile(event.target.files?.[0] ?? null)} /></label>
-          : <><label className="text-field"><span>Google Sheets / Excel บน Drive URL *</span><input required value={googleSheetUrl} onChange={(event) => setGoogleSheetUrl(event.target.value)} placeholder="https://docs.google.com/spreadsheets/d/..." /></label><GoogleDrivePickerButton disabled={pending} onPicked={file => { setGoogleSheetUrl(file.url); if (!name.trim()) setName(file.name.replace(/\.xlsx$/i, "")); }} /><p className="dialog-help">ไฟล์ Excel บน Drive ต้องเลือกผ่านปุ่มนี้ เพื่ออนุญาตให้แอปอ่านเฉพาะไฟล์ที่เลือก</p></>}
+          : <><label className="text-field"><span>Google Sheets / Excel บน Drive URL *</span><input required value={googleSheetUrl} onChange={(event) => setGoogleSheetUrl(event.target.value)} placeholder="https://docs.google.com/spreadsheets/d/..." /></label><GoogleDrivePickerButton disabled={pending} onAuthorizationRequired={authUrl => { saveDraft(false); continueGoogleAuthorization(authUrl); }} onPicked={file => { setGoogleSheetUrl(file.url); if (!name.trim()) setName(file.name.replace(/\.xlsx$/i, "")); }} /><p className="dialog-help">ไฟล์ Excel บน Drive ต้องเลือกผ่านปุ่มนี้ เพื่ออนุญาตให้แอปอ่านเฉพาะไฟล์ที่เลือก</p></>}
         <div className="two-column-fields">
           <label><span>ปี / Sprint</span><input value={`${sprint?.year ?? ""} · ${sprintNo}`} readOnly /></label>
           <label><span>Environment *</span><input required value={environment} onChange={(event) => setEnvironment(event.target.value)} placeholder="UAT" /></label>
@@ -1126,6 +1164,18 @@ export function QaWorkspace({
     return ()=>{active=false;};
   },[selectedProjectId,activePage,testCaseId,sheetName,assignmentVersion]);
   const [showProjectDialog, setShowProjectDialog] = useState(false);
+  const [projectDraft, setProjectDraft] = useState<ProjectDraft | null>(null);
+  const projectDraftKey = `qa-project-draft:${currentUser?.id ?? ""}:${groupId}:${planningSprint?.id ?? ""}`;
+  useEffect(() => {
+    if (!canCreateProject) return;
+    const query = new URLSearchParams(window.location.search);
+    if (!query.has("googleAuth") && !query.has("googleAuthError")) return;
+    try {
+      const draft = JSON.parse(sessionStorage.getItem(projectDraftKey) ?? "null") as ProjectDraft | null;
+      if (!draft || [draft.name, draft.description, draft.environment, draft.googleSheetUrl].some(value => typeof value !== "string")) return;
+      queueMicrotask(() => { setProjectDraft(draft); setShowProjectDialog(true); });
+    } catch { /* An invalid or unavailable draft must not stop the Projects page. */ }
+  }, [canCreateProject, projectDraftKey]);
   const [showGoogleSheetDialog, setShowGoogleSheetDialog] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [toast, setToast] = useState("");
@@ -2084,7 +2134,7 @@ export function QaWorkspace({
           {loadingWorkspace && <div className="source-banner"><LoaderCircle className="spin" size={18} /><div><strong>กำลังโหลดข้อมูลจาก Supabase</strong><span>กำลังโหลด Testcase และไฟล์ต้นฉบับของ Project</span></div></div>}
           {loadingWorkspace && (testCaseId || sheetName) && <CaseDrawerSkeleton />}
           {!canEditProject && <section className="read-only-notice"><ShieldCheck size={18} /><div><strong>โหมดดูอย่างเดียว</strong><span>คุณดู Test cases, Results, Defects, รูป และ Google Sheet details ได้ แต่ยังแก้ไขหรือซิงค์ข้อมูลไม่ได้</span></div></section>}
-          {workspaceError && <section className="project-error"><CircleAlert size={20} /><div><strong>โหลดข้อมูล Project ไม่สำเร็จ</strong><span>{workspaceError}</span></div></section>}
+          {workspaceError && <section className="project-error"><CircleAlert size={20} /><div><strong>โหลดข้อมูล Project ไม่สำเร็จ</strong><span>{workspaceError}</span>{/สิทธิ์ Google|googleAuth/i.test(workspaceError) && <button type="button" className="secondary-button" onClick={() => continueGoogleAuthorization("/api/google/auth/start", true)}>ขอสิทธิ์ Google ใหม่</button>}</div></section>}
           {pullingGoogle && <div className="sheet-refresh-progress" role="status" aria-live="polite"><LoaderCircle className="spin" size={18} /><span>กำลังนำเข้าข้อมูลจาก Sheets · {(source?.sheets ?? []).filter(sheet => activeSheetRowLoads[sheet.name] === "loaded").length}/{source?.sheets.length ?? 0} แท็บ · เปิดดูข้อมูลได้ แก้ไขได้เมื่อการนำเข้าเสร็จเพื่อป้องกันข้อมูลทับกัน</span></div>}
           {!loadingWorkspace && source && (activePage === "test-cases" || activePage === "files") && <div className="source-banner"><FileArchive size={18} /><div><strong>{source.fileName}</strong><span>อ่านแล้ว {source.sheets.length || 1} sheets · {cases.length} cases · {workbookStats.results} result sheets · {workbookStats.images} รูป</span></div><CheckCircle2 size={18} /></div>}
 
@@ -2178,7 +2228,7 @@ export function QaWorkspace({
         flash(`บันทึก ${workspace.cases.length} Testcases ลง Supabase แล้ว`);
       }} />}
       {canEditProject && showCreateCase && selectedProject && <CreateTestCaseDialog existingIds={cases.map((item) => item.id)} nextSourceRow={Math.max(1, ...cases.map((item) => item.sourceRow)) + 1} defaultEnvironment={selectedProject.environment} currentUserName={currentUser?.name ?? ""} onClose={() => setShowCreateCase(false)} onCreated={createTestCase} />}
-      {canCreateProject && showProjectDialog && <ProjectDialog groupId={groupId} sprint={planningSprint} onClose={() => setShowProjectDialog(false)} onCreated={(project) => { setProjects((current) => [project, ...current]); setShowProjectDialog(false); router.push(`/groups/${groupId}/projects/${project.id}/overview`); }} />}
+      {canCreateProject && showProjectDialog && <ProjectDialog groupId={groupId} sprint={planningSprint} draft={projectDraft} draftKey={projectDraftKey} onClose={() => { sessionStorage.removeItem(projectDraftKey); setProjectDraft(null); setShowProjectDialog(false); }} onCreated={(project) => { setProjects((current) => [project, ...current]); setShowProjectDialog(false); router.push(`/groups/${groupId}/projects/${project.id}/overview`); }} />}
       {canManageProject && showGoogleSheetDialog && selectedProject && <GoogleSheetDialog project={selectedProject} onClose={() => setShowGoogleSheetDialog(false)} onConnected={(project) => { setProjects((current) => current.map((item) => item.id === project.id ? project : item)); setShowGoogleSheetDialog(false); flash("เชื่อม Google Sheet แล้ว"); }} />}
       {syncConflictState && <SyncConflictDialog operation={syncConflictState.operation} conflicts={syncConflictState.conflicts} onCancel={() => setSyncConflictState(null)} onConfirm={confirmSyncConflicts} />}
       <GoogleCleanupWarning />

@@ -1,17 +1,20 @@
 import { NextResponse } from "next/server";
 import { appOrigin, googleOAuthClient, GOOGLE_OAUTH_STATE_COOKIE, GOOGLE_USER_COOKIE, loadSavedGoogleCredentials, openGoogleToken, safeReturnTo, saveGoogleCredentials, sealGoogleToken } from "@/lib/google-user-oauth";
 import { createClient } from "@/lib/supabase/server";
+import { googleAuthorizationReturn } from "@/lib/google-authorization";
 
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const origin = appOrigin(url);
+  let returnTo = "/groups";
   try {
     const stateCookie = request.headers.get("cookie")?.match(new RegExp(`(?:^|; )${GOOGLE_OAUTH_STATE_COOKIE}=([^;]+)`))?.[1];
     if (!stateCookie) throw new Error("Google OAuth session หมดอายุ");
     const stateData = openGoogleToken(decodeURIComponent(stateCookie)) as { state?: string; returnTo?: string; userId?: string };
     if (!url.searchParams.get("state") || url.searchParams.get("state") !== stateData.state) throw new Error("Google OAuth state ไม่ถูกต้อง");
+    returnTo = safeReturnTo(stateData.returnTo ?? null);
     const supabase = await createClient();
     const { data: claimsData, error: claimsError } = await supabase.auth.getClaims();
     const userId = typeof claimsData?.claims?.sub === "string" ? claimsData.claims.sub : "";
@@ -24,13 +27,15 @@ export async function GET(request: Request) {
     const persistentTokens = { ...existing, ...tokens, refresh_token: tokens.refresh_token ?? existing?.refresh_token };
     if (!persistentTokens.refresh_token) throw new Error("Google ไม่ส่ง refresh token กรุณาถอนสิทธิ์แอปจาก Google Account แล้วเชื่อมใหม่อีกครั้ง");
     await saveGoogleCredentials(persistentTokens);
-    const response = NextResponse.redirect(new URL(safeReturnTo(stateData.returnTo ?? null), origin));
+    const response = NextResponse.redirect(new URL(googleAuthorizationReturn(returnTo), origin));
     response.cookies.set(GOOGLE_USER_COOKIE, sealGoogleToken(persistentTokens), {
       httpOnly: true, sameSite: "lax", secure: url.protocol === "https:", maxAge: 60 * 60 * 24 * 400, path: "/",
     });
     response.cookies.delete(GOOGLE_OAUTH_STATE_COOKIE);
     return response;
   } catch (reason) {
-    return NextResponse.redirect(new URL(`/?googleAuthError=${encodeURIComponent(reason instanceof Error ? reason.message : "Google OAuth ไม่สำเร็จ")}`, origin));
+    const response = NextResponse.redirect(new URL(googleAuthorizationReturn(returnTo, reason instanceof Error ? reason.message : "Google OAuth ไม่สำเร็จ"), origin));
+    response.cookies.delete(GOOGLE_OAUTH_STATE_COOKIE);
+    return response;
   }
 }

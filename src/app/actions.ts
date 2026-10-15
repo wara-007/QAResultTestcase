@@ -3,7 +3,9 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
-import { extractGoogleSheetId } from "@/lib/google-sheets";
+import { extractGoogleSheetId, readGoogleSheet } from "@/lib/google-sheets";
+import { getGoogleUserAuth } from "@/lib/google-user-oauth";
+import { needsGoogleAuthorization } from "@/lib/google-authorization";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { Project } from "@/lib/types";
 import { hashReviewToken, type ApprovalStatus } from "@/lib/project-review";
@@ -141,7 +143,7 @@ type CreateProjectInput = {
 
 type CreateProjectResult =
   | { project: Project; error?: never }
-  | { project?: never; error: string };
+  | { project?: never; error: string; authUrl?: string };
 
 export async function createProject(input: CreateProjectInput): Promise<CreateProjectResult> {
   const name = input.name.trim();
@@ -159,6 +161,9 @@ export async function createProject(input: CreateProjectInput): Promise<CreatePr
     const { data: claimsData, error: claimsError } = await supabase.auth.getClaims();
     const ownerId = claimsData?.claims?.sub;
     if (claimsError || typeof ownerId !== "string") return { error: "กรุณาเข้าสู่ระบบอีกครั้ง" };
+    // Check the actual file before inserting, so consent recovery cannot leave
+    // behind an empty project or create a duplicate on its return trip.
+    if (googleSheetId) await readGoogleSheet(googleSheetId, await getGoogleUserAuth(), { summary: true });
     const projectId = randomUUID();
     const { error: insertError } = await supabase
       .from("projects")
@@ -203,6 +208,7 @@ export async function createProject(input: CreateProjectInput): Promise<CreatePr
       },
     };
   } catch (reason) {
+    if (needsGoogleAuthorization(reason)) return { error: "กรุณาอนุญาตสิทธิ์ Google Drive และ Sheets", authUrl: "/api/google/auth/start" };
     return { error: reason instanceof Error ? reason.message : "เพิ่ม Project ไม่สำเร็จ" };
   }
 }

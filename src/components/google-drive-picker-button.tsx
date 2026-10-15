@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import { FolderOpen, LoaderCircle } from "lucide-react";
 import type { PickedWorkbook } from "@/lib/google-picker";
+import { googleAuthorizationTarget } from "@/lib/google-authorization";
 
-export function GoogleDrivePickerButton({ projectId, expectedFileId, onPicked, disabled = false }: { projectId?: string; expectedFileId?: string; onPicked: (file: PickedWorkbook) => void | Promise<void>; disabled?: boolean }) {
+export function GoogleDrivePickerButton({ projectId, expectedFileId, onPicked, onAuthorizationRequired, disabled = false }: { projectId?: string; expectedFileId?: string; onPicked: (file: PickedWorkbook) => void | Promise<void>; onAuthorizationRequired?: (authUrl: string) => void; disabled?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [authUrl, setAuthUrl] = useState("");
@@ -19,7 +20,14 @@ export function GoogleDrivePickerButton({ projectId, expectedFileId, onPicked, d
       const response = await fetch("/api/google/picker", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId }), cache: "no-store", signal: active.signal });
       const data = await response.json();
       if (!response.ok) {
-        if (typeof data.authUrl === "string" && data.authUrl.startsWith("/api/google/auth/start?")) setAuthUrl(data.authUrl);
+        if (typeof data.authUrl === "string" && data.authUrl.startsWith("/api/google/auth/start?")) {
+          setAuthUrl(data.authUrl);
+          if (onAuthorizationRequired) onAuthorizationRequired(data.authUrl);
+          else {
+            const target = googleAuthorizationTarget(data.authUrl, window.location.origin, `${window.location.pathname}${window.location.search}${window.location.hash}`);
+            if (target) window.location.assign(target);
+          }
+        }
         throw new Error(data.error ?? "เปิด Google Drive ไม่สำเร็จ");
       }
       // Download the Google SDK only after QA clicks the button.

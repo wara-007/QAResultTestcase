@@ -1,7 +1,8 @@
 import { readGoogleSheet, writeGoogleSheetResults } from "@/lib/google-sheets";
 import type { TestCase, WorkbookSheet } from "@/lib/types";
 import { withCachedProjectDefects } from "@/lib/project-defect-cache";
-import { getGoogleUserAuth, GoogleConnectionRequiredError } from "@/lib/google-user-oauth";
+import { getGoogleUserAuth } from "@/lib/google-user-oauth";
+import { needsGoogleAuthorization } from "@/lib/google-authorization";
 import { canonicalizeCases } from "@/lib/sync/canonical";
 import { loadBaselines, replaceBaselines } from "@/lib/sync/store";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -37,9 +38,9 @@ async function spreadsheetIdForProject(projectId: string) {
 }
 
 function googleAuthError(reason: unknown, request: Request) {
-  if (!(reason instanceof GoogleConnectionRequiredError)) return null;
+  if (!needsGoogleAuthorization(reason)) return null;
   const current = new URL(request.url);
-  return Response.json({ error: reason.message, authUrl: `/api/google/auth/start?returnTo=${encodeURIComponent(current.pathname.replace(/\/api\/projects\/[^/]+\/google-sheet$/, "/groups"))}` }, { status: 401 });
+  return Response.json({ error: "กรุณาอนุญาตสิทธิ์ Google Drive และ Sheets ใหม่", authUrl: `/api/google/auth/start?returnTo=${encodeURIComponent(current.pathname.replace(/\/api\/projects\/[^/]+\/google-sheet$/, "/groups"))}` }, { status: 401 });
 }
 
 export async function GET(request: Request, { params }: { params: Promise<{ projectId: string }> }) {

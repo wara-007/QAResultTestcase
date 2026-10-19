@@ -372,9 +372,15 @@ async function deleteProjectRecords(projectId: string) {
     ]);
     if (project.error) return { error: project.error.message };
     if (!project.data) return { error: "ไม่พบ Project" };
-    const googleCleanup = await cleanupGoogleWithWarning(()=>trashProjectGoogleEvidence(project.data!,collectGoogleEvidence(executions.data.map(e=>e.result_reference))));
+    const historyReady=await admin.rpc('project_sprint_continuation_ready');
+    if(historyReady.error && !['PGRST202','42883'].includes(historyReady.error.code)) return {error:historyReady.error.message};
+    const archived=historyReady.data===true ? await readAllRows((a,b)=>admin.from('project_sprint_snapshot_cases').select('payload').eq('project_id',projectId).order('id').range(a,b)) : [];
+    const archivedHeaders=historyReady.data===true ? await readAllRows((a,b)=>admin.from('project_sprint_snapshots').select('header').eq('project_id',projectId).order('id').range(a,b)) : [];
+    const archivedReferences=archived.flatMap(r=>(r.payload?.test_executions ?? []).map((e:{result_reference?:string})=>e.result_reference ?? ''));
+    const references=[...executions.data.map(e=>e.result_reference),...archivedReferences];
+    const googleCleanup = await cleanupGoogleWithWarning(()=>trashProjectGoogleEvidence(project.data!,collectGoogleEvidence(references)));
 
-    const hasR2Evidence = (executions.data ?? []).some(({ result_reference }) =>
+    const hasR2Evidence = references.some((result_reference) =>
       typeof result_reference === "string" && (result_reference.includes("cloudflare-r2") || result_reference.includes(`projects/${projectId}/`)),
     );
     const deletedR2Images = await deleteR2ObjectsByPrefix(`projects/${projectId}/`);
@@ -389,12 +395,13 @@ async function deleteProjectRecords(projectId: string) {
     if (deleted.error) return { error: deleted.error.message };
     if (!deleted.data) return { error: "ลบ Project ไม่สำเร็จ" };
 
-    const storagePaths = (sources.data ?? []).flatMap((source) => {
+    const retainedSources=archivedHeaders.flatMap(r=>r.header?.source?.storageKey ? [{storage_key:r.header.source.storageKey,column_mapping:{chunkCount:r.header.source.chunkCount ?? 0}}] : []);
+    const storagePaths = [...new Set([...(sources.data ?? []),...retainedSources].flatMap((source) => {
       const chunkCount = typeof source.column_mapping?.chunkCount === "number" ? source.column_mapping.chunkCount : 0;
       return chunkCount > 0
         ? Array.from({ length: chunkCount }, (_, index) => `${source.storage_key}/part-${String(index).padStart(3, "0")}`)
         : [source.storage_key];
-    });
+    }))];
     if (storagePaths.length) await admin.storage.from("testcase-source-files").remove(storagePaths);
     revalidatePath("/");
     revalidatePath("/approvals");

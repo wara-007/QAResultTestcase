@@ -1,12 +1,13 @@
 import type { PlanningTeamMember, Project } from './types';
 import { summarizeSprint, type SprintProjectStatsInput } from './sprint-summary';
 import type { PersonalCase } from './personal-test-performance';
+import { selectSprintProjectEpisodes, type Participation, type SnapshotHeader, type SprintProjectEntry } from './project-sprint-participation';
 
 export type ApprovalTotals = { projectId: string; total: number; approved: number; pending: number; changesRequested: number };
 export type ResultOriginRow = { projectId: string; testCaseId: string; resultId: string; sourceSheet: string; sprintId: string; authorId: string | null; authorName: string; inferred: boolean; recordedAt: string; active: boolean; status: string };
 export type MoveHistory = { id: string; projectId: string; actorEmail: string; createdAt: string; before: Record<string, unknown> | null; after: Record<string, unknown> };
 export type MoveSnapshot = { totalCases: number; pass: number; failed: number; skip: number; inProgress: number; notStart: number; openDefects: number; totalDefects?: number; closedDefects?: number };
-export type SprintDashboardInput = { sprintId: string; projects: Project[]; team: PlanningTeamMember[]; personalCases?: PersonalCase[]; assignments: {projectId: string; userId: string}[]; stats: SprintProjectStatsInput[]; summaries?: {projectId: string; counts: MoveSnapshot}[]; approvals: ApprovalTotals[]; origins: ResultOriginRow[]; moves: MoveHistory[] };
+export type SprintDashboardInput = { sprintId: string; episodes?: Participation[]; headers?: SnapshotHeader[]; previousNames?: Record<string,string>; projects: Project[]; team: PlanningTeamMember[]; personalCases?: PersonalCase[]; assignments: {projectId: string; userId: string}[]; stats: SprintProjectStatsInput[]; summaries?: {projectId: string; counts: MoveSnapshot}[]; approvals: ApprovalTotals[]; origins: ResultOriginRow[]; moves: MoveHistory[] };
 
 export function buildSprintDashboard(input: SprintDashboardInput) {
   const stats = new Map(input.stats.map(p=>[p.id,p]));
@@ -45,14 +46,32 @@ export function buildSprintDashboard(input: SprintDashboardInput) {
     ...(project.approval.pending ? [{kind:'approval',projectId:project.id,projectName:project.name,count:project.approval.pending}] : []),
   ]);
   const summary=summarizeSprint([]);
+  const selected=selectSprintProjectEpisodes(input.sprintId,input.episodes ?? []);
+  const entries:SprintProjectEntry[]=projects.map(p=>{
+    const episode=selected.find(e=>e.projectId===p.id);
+    return {projectId:p.id,sprintId:input.sprintId,name:p.name,kind:'current',participationId:episode?.id ?? '',destination:null,historical:null,qaIds:p.qa.map(q=>q.userId),previousSprintName:episode?.previousId ? input.previousNames?.[episode.previousId] : undefined};
+  });
+  for(const episode of selected) {
+    if(currentIds.has(episode.projectId)) continue;
+    const header=input.headers?.find(h=>h.participation.id===episode.id);
+    if(!header) continue;
+    entries.push({projectId:episode.projectId,sprintId:input.sprintId,name:header.project.name,kind:'continued',participationId:episode.id,destination:header.destination ?? null,historical:header});
+  }
   summary.projects=projects.length;
   for(const project of projects) {
     for(const key of ['totalCases','pass','failed','skip','inProgress','notStart','openDefects','totalDefects','closedDefects'] as const) summary[key]+=project.counts[key];
     if(project.approval.state==='approved') summary.approvedProjects++;
     if(project.approval.state==='pending') summary.pendingApprovalProjects++;
   }
+  for(const entry of entries.filter(e=>e.kind==='continued')) {
+    const header=entry.historical!;
+    summary.projects++;
+    for(const key of ['totalCases','pass','failed','skip','inProgress','notStart','openDefects','totalDefects','closedDefects'] as const) summary[key]+=header.counts[key] ?? 0;
+    if(header.approval.total && header.approval.approved===header.approval.total) summary.approvedProjects++;
+    if(header.approval.pending) summary.pendingApprovalProjects++;
+  }
   summary.progress=summary.totalCases ? Math.round((summary.pass+summary.failed+summary.skip)/summary.totalCases*100) : 0;
-  return {summary,projects,team,attention,movedOut,moves,inferredResults:activeOrigins.filter(r=>r.inferred || !r.authorId).length,personalPerformance:{sprintId:input.sprintId,members:input.team,cases:input.personalCases ?? []}};
+  return {summary,projects,entries,episodes:input.episodes ?? [],team,attention,movedOut,moves,inferredResults:activeOrigins.filter(r=>r.inferred || !r.authorId).length,personalPerformance:{sprintId:input.sprintId,members:input.team,cases:input.personalCases ?? []}};
 }
 export type SprintDashboardData = ReturnType<typeof buildSprintDashboard>;
 export function filterDashboardProjects(projects: SprintDashboardData['projects'], query: string, qaId: string) {

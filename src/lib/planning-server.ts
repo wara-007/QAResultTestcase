@@ -1,4 +1,6 @@
 import "server-only";
+import { loadSprintParticipationHeaders, loadSprintSnapshotPerformance } from "./project-sprint-history-server";
+import { mergeSprintPersonalCases } from './sprint-result-scope';
 import { readAllRows as allRows } from './paged-rows';
 import { createClient } from "@/lib/supabase/server";
 import type { PlanningTeamMember, Project, Sprint, WorkspaceYear } from "@/lib/types";
@@ -54,11 +56,13 @@ export async function loadSprintDashboard(groupId: string,sprintId: string,proje
       allRows((a,b)=>db.from('test_cases').select('id,project_id,testcase_key,case_name,source_row,steps,expected_result,test_executions!test_executions_test_case_id_fkey(attempt_no,status,executed_by_name,result_reference,executed_date,executed_time),projects!test_cases_project_id_fkey!inner(sprint_id)').eq('projects.sprint_id',sprintId).order('id').range(a,b)),
     ]);
     if(canManage.error) throw new Error(canManage.error.message);
+    const participation=await loadSprintParticipationHeaders(sprintId);
     const moves:MoveHistory[]=history.map(h=>({id:h.id,projectId:h.project_id,actorEmail:h.actor_email,createdAt:h.created_at,before:h.before_data,after:h.after_data}));
     const originRows:ResultOriginRow[]=origins.map(r=>({projectId:r.project_id,testCaseId:r.test_case_id,resultId:r.result_id,sourceSheet:r.source_sheet,sprintId:r.sprint_id,authorId:r.author_id,authorName:r.author_name,inferred:r.inferred,recordedAt:r.recorded_at,active:r.active,status:r.status}));
-    const personalCases=personalRegisterCases(caseRows, projects, groupId, sprintId, personalCasesFromMetadata(personalMetadata));
+    const frozen=await loadSprintSnapshotPerformance(groupId,sprintId,participation.episodes);
+    const personalCases=mergeSprintPersonalCases(personalRegisterCases(caseRows, projects, groupId, sprintId, personalCasesFromMetadata(personalMetadata)),frozen.archived,sprintId,frozen.baseline);
     const verifiedCounts = new Map(projects.map(project => [project.id, summarizeSprint([{ id: project.id, approvals: [], cases: caseRows.filter(row => row.project_id === project.id).map(row => ({ testcaseKey: row.testcase_key, sourceRow: row.source_row ?? 0, steps: row.steps, expected: row.expected_result, executions: (row.test_executions ?? []).map(execution => ({ ...execution, result_reference: "" })) })) }])]));
-    return {data:buildSprintDashboard({sprintId,projects,team,personalCases,stats:[],summaries:(counts.data ?? []).map((c:{project_id:string;counts:MoveSnapshot})=>({projectId:c.project_id,counts:{...c.counts,...(() => { const verified=verifiedCounts.get(c.project_id)!; return {totalCases:verified.totalCases,pass:verified.pass,failed:verified.failed,skip:verified.skip,inProgress:verified.inProgress,notStart:verified.notStart}; })()}})),approvals:(approvals.data ?? []).map((a:{project_id:string;total:number;approved:number;pending:number;changes_requested:number})=>({projectId:a.project_id,total:Number(a.total),approved:Number(a.approved),pending:Number(a.pending),changesRequested:Number(a.changes_requested)})),assignments:assignments.map(a=>({projectId:a.project_id,userId:a.user_id})),origins:originRows,moves}),history:moves,sprintHistory,canManage:canManage.data===true,error:''};
+    return {data:buildSprintDashboard({...participation,sprintId,projects,team,personalCases,stats:[],summaries:(counts.data ?? []).map((c:{project_id:string;counts:MoveSnapshot})=>({projectId:c.project_id,counts:{...c.counts,...(() => { const verified=verifiedCounts.get(c.project_id)!; return {totalCases:verified.totalCases,pass:verified.pass,failed:verified.failed,skip:verified.skip,inProgress:verified.inProgress,notStart:verified.notStart}; })()}})),approvals:(approvals.data ?? []).map((a:{project_id:string;total:number;approved:number;pending:number;changes_requested:number})=>({projectId:a.project_id,total:Number(a.total),approved:Number(a.approved),pending:Number(a.pending),changesRequested:Number(a.changes_requested)})),assignments:assignments.map(a=>({projectId:a.project_id,userId:a.user_id})),origins:originRows,moves}),history:moves,sprintHistory,canManage:canManage.data===true,error:''};
   } catch(reason) {return {data:undefined,history:[],sprintHistory:[],canManage:false,error:reason instanceof Error ? reason.message : 'โหลด Sprint Dashboard ไม่สำเร็จ'};}
 }
 

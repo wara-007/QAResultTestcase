@@ -77,6 +77,12 @@ export async function updateProjectDetails(input: { projectId: string; name: str
   if (!name || name.length > 160 || !input.environment.trim() || !input.sprintId) return { error: "กรุณาระบุชื่อ Environment และ Sprint" };
   try {
     const access = await requireProjectCapability(input.projectId, "manage");
+    const current = await access.supabase.from('projects').select('sprint_id').eq('id',input.projectId).single();
+    if(current.error) return {error:current.error.message};
+    if(current.data.sprint_id!==input.sprintId) {
+      const ready=await access.supabase.rpc('project_sprint_continuation_ready');
+      if(ready.error || ready.data!==true) return {error:'ยังไม่ได้ติดตั้งระบบทำต่อข้าม Sprint กรุณารัน migration ก่อน'};
+    }
     const result = await access.supabase.from("projects").update({ name, description: input.description.trim(), environment: input.environment.trim(), sprint_id: input.sprintId,last_move_reason:input.moveReason?.trim() ?? '' })
       .eq("id", input.projectId).eq("updated_at", input.expectedUpdatedAt).select("id,updated_at,sprint_no");
     if (result.error) return { error: result.error.message };

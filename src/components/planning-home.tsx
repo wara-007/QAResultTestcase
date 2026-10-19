@@ -10,6 +10,8 @@ import { GoogleCleanupWarning } from './google-cleanup-warning';
 import type { CurrentUser, Project, Sprint, WorkspaceYear } from "@/lib/types";
 import type { summarizeSprint } from "@/lib/sprint-summary";
 import { groupsForYearHref } from '@/lib/year-navigation';
+import { sortSprints, SPRINT_SORT_OPTIONS, parseSprintSort } from '@/lib/sprint-sort';
+import { useSprintSort } from './use-sprint-sort';
 
 type Props = { groupId: string; groupName: string; years: WorkspaceYear[]; sprints: Sprint[]; projects: Project[]; currentUser: CurrentUser | null; canPlan: boolean; error: string; year?: number; sprintId?: string; summary?: ReturnType<typeof summarizeSprint> };
 export function PlanningHome(props: Props) {
@@ -23,6 +25,8 @@ export function PlanningHome(props: Props) {
   const [error, setError] = useState("");
   const [pending, startTransition] = useTransition();
   const yearRow = years.find((item) => item.year === year);
+  const { sort, setSort } = useSprintSort(currentUser?.id ?? '', groupId, year);
+  const visibleSprints = sortSprints(sprints.filter(item => item.yearId === yearRow?.id), sort);
   const sprint = sprints.find((item) => item.id === sprintId);
   const base = `/groups/${groupId}/years`;
   const heading = sprint ? sprint.name : year ? `ปี ${year} · Sprints` : "เลือกปี";
@@ -42,7 +46,7 @@ export function PlanningHome(props: Props) {
       <div className="groups-heading"><div><p className="eyebrow">{sprint ? "SPRINT DASHBOARD" : "WORKSPACE"}</p><h1>{heading}</h1><span>{sprint ? `${year} · ${sprint.startDate || "ไม่ระบุวันเริ่ม"} — ${sprint.endDate || "ไม่ระบุวันสิ้นสุด"}` : `เลือก Sprint ของ ${props.groupName} ในปี ${year ?? ""}`}</span></div>{!sprintId && props.canPlan && !props.error && <button className="primary-button" onClick={() => setShowCreate(true)}><Plus size={17} />{yearRow ? "สร้าง Sprint" : year ? `เพิ่มปี ${year} ในกลุ่ม` : "เพิ่มปี"}</button>}</div>
       {props.error && <div className="project-error"><strong>โหลดข้อมูลไม่สำเร็จ</strong><p>{props.error}</p></div>}
       {!props.error && !year && <div className="planning-list">{years.map((item) => <Link className="planning-row" key={item.id} href={`${base}/${item.year}/sprints`}><CalendarDays size={24} /><strong>{item.year}</strong><span>{sprints.filter((s) => s.yearId === item.id).length} Sprints</span><span>{projects.filter((p) => p.year === item.year).length} Projects</span><ChevronRight size={18} /></Link>)}{!years.length && <div className="panel groups-empty"><h2>ยังไม่มีปี</h2><p>เพิ่มปีเพื่อเริ่มจัด Sprint และ Projects</p></div>}</div>}
-      {!props.error && year && !sprintId && <div className="planning-list">{sprints.filter((item) => item.yearId === yearRow?.id).map((item) => <Link className="planning-row" key={item.id} href={`${base}/${year}/sprints/${item.id}`}><FolderKanban size={24} /><strong>{item.name}</strong><span>{item.startDate || "ไม่ระบุวันเริ่ม"} — {item.endDate || "ไม่ระบุวันสิ้นสุด"}</span><span>{projects.filter((p) => p.sprintId === item.id).length} Projects</span><ChevronRight size={18} /></Link>)}{!sprints.some((s) => s.yearId === yearRow?.id) && <div className="panel groups-empty"><h2>ยังไม่มี Sprint ในปีนี้</h2><p>{yearRow ? "สร้าง Sprint ก่อนเพิ่ม Project" : props.canPlan ? `เพิ่มปี ${year} ในกลุ่มนี้ก่อน แล้วจึงสร้าง Sprint` : "ผู้มีสิทธิ์จัดการกลุ่มสามารถเพิ่มปีและสร้าง Sprint ได้"}</p></div>}</div>}
+      {!props.error && year && !sprintId && <><div className="sprint-list-toolbar"><span>{visibleSprints.length} Sprints</span><label>เรียงตาม<select aria-label="เรียงลำดับ Sprint" value={sort} onChange={event => setSort(parseSprintSort(event.target.value))}>{SPRINT_SORT_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label></div><div className="planning-list">{visibleSprints.map((item) => <Link className="planning-row" key={item.id} href={`${base}/${year}/sprints/${item.id}`}><FolderKanban size={24} /><strong>{item.name}</strong><span>{item.startDate || "ไม่ระบุวันเริ่ม"} — {item.endDate || "ไม่ระบุวันสิ้นสุด"}</span><span>{projects.filter((p) => p.sprintId === item.id).length} Projects</span><ChevronRight size={18} /></Link>)}{!sprints.some((s) => s.yearId === yearRow?.id) && <div className="panel groups-empty"><h2>ยังไม่มี Sprint ในปีนี้</h2><p>{yearRow ? "สร้าง Sprint ก่อนเพิ่ม Project" : props.canPlan ? `เพิ่มปี ${year} ในกลุ่มนี้ก่อน แล้วจึงสร้าง Sprint` : "ผู้มีสิทธิ์จัดการกลุ่มสามารถเพิ่มปีและสร้าง Sprint ได้"}</p></div>}</div></>}
       {sprint && summary && <>
         <div className="sprint-dashboard-stats">{[["Projects", summary.projects], ["Test cases", summary.totalCases], ["Pass", summary.pass], ["Failed", summary.failed], ["In Progress", summary.inProgress], ["Not Start", summary.notStart], ["Skip", summary.skip], ["Defects ที่ยังเปิด", summary.openDefects], ["Projects Approved", summary.approvedProjects], ["Projects รอ Approval", summary.pendingApprovalProjects]].map(([label, value]) => <article className="panel" key={label}><span>{label}</span><strong>{value}</strong></article>)}</div>
         <section className="panel sprint-progress"><div><strong>ทดสอบแล้ว {summary.progress}%</strong><span>Pass + Failed + Skip / Test cases ทั้งหมด</span></div><progress max={100} value={summary.progress} /><small>สรุปจากข้อมูลที่บันทึกไว้ในเว็บ อัปเดตหลังบันทึกหรือดึงจาก Sheets</small></section>

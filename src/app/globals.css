@@ -1085,6 +1085,10 @@ details[open] .sync-chevron { transform: rotate(180deg); }
 
 .planning-content .breadcrumb { margin-bottom: 24px; flex-wrap: wrap; }
 .planning-list { display: grid; gap: 10px; }
+.sprint-list-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; color: #6d7e94; font-size: 13px; }
+.sprint-list-toolbar label { display: flex; align-items: center; gap: 10px; }
+.sprint-list-toolbar select { min-width: 0; max-width: 100%; padding: 10px 12px; border: 1px solid #dee6f1; border-radius: 8px; background: white; color: #344866; font: inherit; }
+@media (max-width: 600px) { .sprint-list-toolbar label { width: 100%; } .sprint-list-toolbar select { flex: 1; } }
 .planning-row { display: grid; grid-template-columns: 30px minmax(120px, 1fr) minmax(100px, 1fr) 120px 20px; align-items: center; gap: 14px; padding: 20px; color: #344866; background: white; border: 1px solid #dee6f1; border-radius: 10px; text-decoration: none; }
 .planning-row:hover { background: #f3f7ff; border-color: #83a8e5; }
 .planning-row > span { color: #758298; font-size:13px; }
@@ -1354,3 +1358,14 @@ a[href^="http"][target="_blank"]:not(:has(.lucide-external-link))::after { conte
   .global-search-dropdown { width: 100%; }
   .topbar > .breadcrumb { flex: 1 1 70%; }
 }
+.sprint-continuation-badge { display: inline-block; padding: 3px 8px; border-radius: 6px; background: #edf2ff; color: #375b9e; font-size: .82rem; line-height: 1.5; }
+.sprint-snapshot-page { max-width: 1450px; margin: 0 auto; padding: 24px; display: grid; gap: 20px; min-width: 0; }
+.sprint-snapshot-banner, .sprint-snapshot-summary { padding: 24px; min-width: 0; overflow-wrap: anywhere; }
+.sprint-snapshot-banner { border-left: 4px solid #7184b0; background: #f6f8ff; }
+.sprint-snapshot-banner h1 { margin: 8px 0; }
+.sprint-snapshot-summary form { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+.sprint-snapshot-summary form input { flex: 1; min-width: 180px; border: 1px solid #d7dfed; padding: 10px 12px; border-radius: 8px; }
+.sprint-snapshot-case { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 14px 0; border-bottom: 1px solid #e6eaf1; }
+.sprint-snapshot-summary .testcase-preview-page { margin-top: 16px; }
+.sprint-episode-history { margin-top: 8px; font-size: .8rem; }
+.sprint-episode-history a { display: block; padding: 5px 0; }

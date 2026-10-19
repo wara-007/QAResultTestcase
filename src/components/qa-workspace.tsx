@@ -1,4 +1,6 @@
 "use client";
+import { SprintProjectList } from './sprint-project-list';
+import type { SprintDashboardData } from '../lib/sprint-dashboard';
 import { GlobalProjectSearch } from './global-project-search';
 import { ProjectBreadcrumb } from './project-breadcrumb';
 import { TestCasePreview } from './test-case-preview';
@@ -1117,6 +1119,7 @@ export function QaWorkspace({
   previewSheetName,
   sheetName,
   planningSprint,
+  sprintProjectData,
   canCreateProject = false,
 }: {
   configured: boolean;
@@ -1131,6 +1134,7 @@ export function QaWorkspace({
   previewSheetName?: string;
   sheetName?: string;
   planningSprint?: Sprint;
+  sprintProjectData?: SprintDashboardData;
   canCreateProject?: boolean;
 }) {
   const router = useRouter();
@@ -2205,7 +2209,7 @@ export function QaWorkspace({
         </header>
 
         <div className="page-content" id="dashboard">
-          {!selectedProject ? <ProjectsHome projects={projects} error={projectsError} canCreate={canCreateProject} onUpdated={(project) => { setProjects((current) => current.map((p) => p.id === project.id ? project : p).filter((p) => !planningSprint || p.sprintId === planningSprint.id)); router.refresh(); }} onAdd={() => setShowProjectDialog(true)} projectHref={(project) => `/groups/${groupId}/projects/${project.id}/overview`} /> : <>
+          {!selectedProject ? sprintProjectData ? <><SprintProjectList data={sprintProjectData} groupId={groupId} year={planningSprint?.year ?? 0}/>{canCreateProject && <button className="primary-button" onClick={()=>setShowProjectDialog(true)}>เพิ่ม Project</button>}</> : <ProjectsHome projects={projects} error={projectsError} canCreate={canCreateProject} onUpdated={(project) => { setProjects((current) => current.map((p) => p.id === project.id ? project : p).filter((p) => !planningSprint || p.sprintId === planningSprint.id)); router.refresh(); }} onAdd={() => setShowProjectDialog(true)} projectHref={(project) => `/groups/${groupId}/projects/${project.id}/overview`} /> : <>
           <section className="page-heading"><div><div className="title-line"><h1>{sheetName ? decodeURIComponent(sheetName) : activePage === "overview" ? selectedProject.name : ({ "test-cases": "Test cases", defects: "Defects", files: "เอกสาร/ไฟล์", settings: "ตั้งค่า Project" } as Record<string, string>)[activePage]}</h1>{selectedProject.sprintNo && <span className="sprint-pill">{selectedProject.sprintNo}</span>}{!canEditProject && <span className="read-only-badge">ดูอย่างเดียว</span>}{hasUnsyncedChanges && <span className="unsynced-pill">ยังไม่ Sync</span>}</div><p>{sheetName ? `รายละเอียด tab จาก Google Sheets · ${selectedProject.name}` : activePage === "overview" ? (selectedProject.description || "ภาพรวมการทดสอบของ Project") : selectedProject.name}</p></div><div className="heading-actions google-actions">
             {!testCaseId && !sheetName && activePage === "test-cases" && (selectedProject.googleSheetId ? canEditProject : canManageProject) && <button className="secondary-button" onClick={() => void pullFromGoogle()} disabled={pullingGoogle}>{pullingGoogle ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}{selectedProject.googleSheetId ? "โหลดจาก Sheets" : "เชื่อม Google Sheet"}</button>}
           </div></section>
@@ -2218,7 +2222,7 @@ export function QaWorkspace({
           {!loadingWorkspace && !pullingGoogle && !testCaseId && !sheetName && canEditProject && source?.sheetImport && showSheetImportNotice(sheetImportTotals, source.sheetImport) && (activePage === "test-cases" || activePage === "files") && <div className="sheet-refresh-progress" role="status"><CircleAlert size={18} /><span>{source.sheetImport.refreshRequired ? "มีข้อมูลที่รออัปเดตจาก Sheets" : `นำเข้ายังไม่ครบ · โหลดแล้ว ${sheetImportTotals.loaded}/${sheetImportTotals.total} แท็บ`} · ใช้และแก้ไขข้อมูลที่บันทึกไว้ได้ โดยระบบจะไม่เริ่มนำเข้าใหม่เอง</span><button type="button" className="secondary-button" onClick={() => void pullFromGoogle(undefined, !source.sheetImport?.refreshRequired)}>{source.sheetImport.refreshRequired ? "อัปเดตจาก Sheets" : "โหลดส่วนที่เหลือ"}</button></div>}
           {!loadingWorkspace && source && (activePage === "test-cases" || activePage === "files") && <div className="source-banner"><FileArchive size={18} /><div><strong>{source.fileName}</strong><span>อ่านแล้ว {source.sheets.length || 1} sheets · {cases.length} cases · {workbookStats.results} result sheets · {workbookStats.images} รูป</span></div><CheckCircle2 size={18} /></div>}
 
-          {!loadingWorkspace && testCaseId && activeSelectedCase && (previewMode ? <TestCasePreview testCase={activeSelectedCase} projectId={selectedProject.id} backHref={`/groups/${groupId}/projects/${selectedProject.id}/test-cases`} editHref={canEditProject && !pullingGoogle ? (previewSheetName && sheetResolution.associations.filter(association => association.sheet.name === previewSheetName).length === 1 ? `/groups/${groupId}/projects/${selectedProject.id}/sheets/${encodeURIComponent(previewSheetName)}` : `/groups/${groupId}/projects/${selectedProject.id}/test-cases/${encodeURIComponent(activeSelectedCase.id)}`) : undefined} sourceSheetName={previewSheetName} associatedSheets={associatedSheetsByCase.get(testCaseIdentity(activeSelectedCase.id))} loading={loadingSheetPreview} onBack={returnToTestCases} /> : <CaseDrawer
+          {!loadingWorkspace && testCaseId && activeSelectedCase && (previewMode ? <TestCasePreview sprintId={selectedProject?.sprintId} testCase={activeSelectedCase} projectId={selectedProject.id} backHref={`/groups/${groupId}/projects/${selectedProject.id}/test-cases`} editHref={canEditProject && !pullingGoogle ? (previewSheetName && sheetResolution.associations.filter(association => association.sheet.name === previewSheetName).length === 1 ? `/groups/${groupId}/projects/${selectedProject.id}/sheets/${encodeURIComponent(previewSheetName)}` : `/groups/${groupId}/projects/${selectedProject.id}/test-cases/${encodeURIComponent(activeSelectedCase.id)}`) : undefined} sourceSheetName={previewSheetName} associatedSheets={associatedSheetsByCase.get(testCaseIdentity(activeSelectedCase.id))} loading={loadingSheetPreview} onBack={returnToTestCases} /> : <CaseDrawer
             key={`${activeSelectedCase.id}:${(activeSelectedCase.results ?? []).map((result) => `${result.id}-${result.evidence.length}`).join(",")}:${source?.sheets.length ?? 0}`}
             value={activeSelectedCase}
             projectId={selectedProject.id}

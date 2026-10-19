@@ -2,7 +2,7 @@ import { createClient } from "@/lib/supabase/client";
 import { readSheetImportState } from "./sheet-import-state";
 import type { SheetImportState } from "./sheet-import-state";
 import type { RowLoadState } from "./result-preview";
-import type { TestCase, TestCaseCustomField, TestDefect, TestResult, TestStatus, WorkbookSheet, WorkbookSource } from "@/lib/types";
+import type { TestCase, TestStatus, WorkbookSheet, WorkbookSource } from "@/lib/types";
 
 const SOURCE_BUCKET = "testcase-source-files";
 const SOURCE_CHUNK_SIZE = 8 * 1024 * 1024;
@@ -44,65 +44,8 @@ type CaseRow = {
   test_executions: ExecutionRow[] | null;
 };
 
-type StoredResultPayload = {
-  sourceSheetName?: string;
-  sourceFields?: TestCase["sourceFields"];
-  version: 1 | 2 | 3 | 4;
-  stepDefinitions?: TestCase["stepDefinitions"];
-  importIssues?: string[];
-  resultReference: string;
-  results: TestResult[];
-  defects?: TestDefect[];
-  customFields?: TestCaseCustomField[];
-  resultFieldDefinitions?: TestCase["resultFieldDefinitions"];
-};
-
-function normalizeDefect(defect: Partial<TestDefect>, fallbackId: string): TestDefect {
-  return {
-    id: defect.id ?? fallbackId,
-    title: defect.title ?? "Defect",
-    description: defect.description ?? "",
-    status: defect.status ?? "Open",
-    jiraUrl: defect.jiraUrl ?? "",
-    apiResponse: defect.apiResponse ?? "",
-    log: defect.log ?? "",
-    evidence: Array.isArray(defect.evidence) ? defect.evidence : [],
-    createdAt: defect.createdAt ?? new Date(0).toISOString(),
-  };
-}
-
-export function parseStoredResults(value: string | undefined) {
-  if (!value?.startsWith("qa-results:")) return { resultReference: value ?? "", results: [] as TestResult[], defects: [] as TestDefect[], customFields: [] as TestCaseCustomField[], resultFieldDefinitions: [], persistedLocally: false };
-  try {
-    const payload = JSON.parse(value.slice("qa-results:".length)) as StoredResultPayload;
-    const results = Array.isArray(payload.results) ? payload.results : [];
-    const migratedDefects = results.flatMap((result) => (result.defects ?? []).map((defect, index) => normalizeDefect(defect, `${result.id}-defect-${index + 1}`)));
-    return {
-      sourceFields: Array.isArray(payload.sourceFields) ? payload.sourceFields : undefined,
-      sourceSheetName: typeof payload.sourceSheetName === "string" ? payload.sourceSheetName : undefined,
-      stepDefinitions: Array.isArray(payload.stepDefinitions) ? payload.stepDefinitions : undefined,
-      importIssues: Array.isArray(payload.importIssues) ? payload.importIssues : [],
-      resultReference: typeof payload.resultReference === "string" ? payload.resultReference : "",
-      results: results.map((result) => {
-        const normalized = { ...result };
-        delete normalized.defects;
-        return normalized;
-      }),
-      defects: Array.isArray(payload.defects) ? payload.defects.map((defect, index) => normalizeDefect(defect, `defect-${index + 1}`)) : migratedDefects,
-      customFields: Array.isArray(payload.customFields) ? payload.customFields : [],
-      resultFieldDefinitions: Array.isArray(payload.resultFieldDefinitions) ? payload.resultFieldDefinitions : [],
-      persistedLocally: true,
-    };
-  } catch {
-    return { resultReference: "", results: [] as TestResult[], defects: [] as TestDefect[], customFields: [] as TestCaseCustomField[], resultFieldDefinitions: [], persistedLocally: false };
-  }
-}
-
-export function serializeStoredResults(testCase: TestCase) {
-  const payload: StoredResultPayload = { version: 4, sourceFields: testCase.sourceFields, stepDefinitions: testCase.stepDefinitions, importIssues: testCase.importIssues, resultReference: testCase.resultReference, results: testCase.results ?? [], defects: testCase.defects ?? [], customFields: testCase.customFields ?? [], resultFieldDefinitions: testCase.resultFieldDefinitions ?? [] };
-  payload.sourceSheetName = testCase.sourceSheetName;
-  return `qa-results:${JSON.stringify(payload)}`;
-}
+export { parseStoredResults, serializeStoredResults } from "./stored-results";
+import { parseStoredResults, serializeStoredResults } from "./stored-results";
 
 export type ProjectWorkspace = {
   cases: TestCase[];
@@ -353,6 +296,23 @@ export async function persistSheetImportState(projectId: string, sourceId: strin
 }
 
 export async function persistTestCaseResult(projectId: string, testCase: TestCase) {
+  const supabase=createClient();
+  const saved=await supabase.rpc('save_test_case_result',{
+    requested_project_id:projectId,
+    requested_case:{recordId:testCase.recordId,id:testCase.id,sourceRow:testCase.sourceRow,platform:testCase.platform,condition:testCase.condition,scenario:testCase.scenario,name:testCase.name,steps:testCase.steps,expected:testCase.expected,testData:testCase.testData},
+    requested_execution:{status:testCase.status,device:testCase.device,appVersion:testCase.appVersion,environment:testCase.environment,remark:testCase.remark,resultReference:serializeStoredResults(testCase),executedBy:testCase.executedBy,executedDate:testCase.executedDate,executedTime:testCase.executedTime},
+  });
+  if(saved.error) {
+    // Before schema installation continuation is gated off. Keep ordinary saves
+    // compatible; never fall back on a real transaction/authorization failure.
+    if(['PGRST202','42883'].includes(saved.error.code)) return persistTestCaseResultLegacy(projectId,testCase);
+    throw new Error(saved.error.message);
+  }
+  if(!saved.data?.recordId || !saved.data?.executionId) throw new Error('บันทึก Result ไม่สำเร็จ');
+  return {...testCase,results:parseStoredResults(saved.data.resultReference).results,recordId:saved.data.recordId,executionId:saved.data.executionId,persistedLocally:true};
+}
+
+async function persistTestCaseResultLegacy(projectId: string, testCase: TestCase) {
   const supabase = createClient();
   let recordId = testCase.recordId;
   if (!recordId) {

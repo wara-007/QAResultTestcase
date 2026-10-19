@@ -1,16 +1,17 @@
 "use client";
+import { SprintProjectList } from "./sprint-project-list";
 import { GlobalProjectSearch } from './global-project-search';
 
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState, useTransition, type ReactNode } from 'react';
-import { CalendarDays, ClipboardCheck, FolderKanban, Users, History, LayoutDashboard, Pencil, Search, ChevronRight, LogOut, MoreHorizontal, ArrowRight, X, LoaderCircle, CheckCircle2, ListChecks, Clock3, CircleX, SkipForward, CircleDashed } from 'lucide-react';
+import { CalendarDays, ClipboardCheck, FolderKanban, Users, History, LayoutDashboard, Pencil, ChevronRight, LogOut, MoreHorizontal, ArrowRight, X, LoaderCircle, CheckCircle2, ListChecks, Clock3, CircleX, SkipForward, CircleDashed } from 'lucide-react';
 import { signOut } from '@/app/auth/actions';
 import { updateSprint } from '@/app/planning-actions';
 import { ProjectManagement } from './project-management';
 import { PersonalTestPerformance } from './personal-test-performance';
 import { SprintAttention, SprintRecentActivity } from './sprint-insights';
-import { filterDashboardProjects, type SprintDashboardData } from '@/lib/sprint-dashboard';
+import { type SprintDashboardData } from '@/lib/sprint-dashboard';
 import { formatFlexibleDate } from '@/lib/date-format';
 import type { CurrentUser, Project, ProjectHistoryEntry, Sprint } from '@/lib/types';
 
@@ -21,9 +22,6 @@ export function SprintDashboard({groupId,groupName,sprint,data,currentUser,sprin
   const pathname=usePathname();
   const params=useSearchParams();
   const view=['team','history'].includes(params.get('view') ?? '') ? params.get('view')! : 'overview';
-  const [query,setQuery]=useState('');
-  const [qaId,setQaId]=useState('');
-  const [page,setPage]=useState(0);
   const [showEdit,setShowEdit]=useState(false);
   const [managed,setManaged]=useState<Project|null>(null);
   const [notice,setNotice]=useState('');
@@ -31,8 +29,6 @@ export function SprintDashboard({groupId,groupName,sprint,data,currentUser,sprin
   const base=`/groups/${groupId}/years/${sprint.year}/sprints`;
   const projectsHref=`${base}/${sprint.id}/projects`;
   const projectHref=(id:string,section='test-cases')=>`/groups/${groupId}/projects/${id}/${section}`;
-  const filtered=filterDashboardProjects(data.projects,query,qaId);
-  const rows=filtered.slice(page*10,(page+1)*10);
   const summary=data.summary;
   function navigate(next:string) {const search=new URLSearchParams(params.toString()); if(next==='overview')search.delete('view');else search.set('view',next);router.push(`${pathname}${search.size ? `?${search}` : ''}`,{scroll:false});}
   const activity=[...data.moves.map(move=>({id:move.id,createdAt:move.createdAt,actor:move.actorEmail,title:`${String(move.after.name || move.before?.name || 'Project')} · ${String(move.before?.sprint || '')} → ${String(move.after.sprint || '')}`,detail:String(move.after.reason || '')})),...sprintHistory.map(entry=>({id:entry.id,createdAt:entry.created_at,actor:entry.actor_email,title:'แก้ไขข้อมูล Sprint',detail:['name','start_date','end_date','goal','status'].filter(key=>entry.before_data?.[key]!==entry.after_data[key]).map(key=>`${({name:'ชื่อ',start_date:'เริ่ม',end_date:'สิ้นสุด',goal:'เป้าหมาย',status:'สถานะ'} as Record<string,string>)[key]}: ${String(entry.before_data?.[key] ?? '—')} → ${String(entry.after_data[key] ?? '—')}`).join(' · ')}))].sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
@@ -48,14 +44,11 @@ export function SprintDashboard({groupId,groupName,sprint,data,currentUser,sprin
           <div className="sprint-summary-line"><span>{summary.projects} Projects</span><span>ดำเนินการแล้ว {summary.progress}% · รวม Skip</span><span>Defects ปิดแล้ว {summary.closedDefects}/{summary.totalDefects}</span></div>
           <div className="sd-bottom-grid sprint-report-grid">{teamSection}<SprintAttention data={data} groupId={groupId}/></div>
           <SprintRecentActivity data={data}/>
-          <section className="sd-panel sd-projects"><div className="sd-section-heading"><div><h2>Projects ใน Sprint <span>{filtered.length} / {data.projects.length}</span></h2><p>สถานะปัจจุบันรวมผลก่อนย้ายเข้ามา · รองรับ QA หลายคนต่อ Project</p></div><div className="sd-filters"><label className="sd-search"><Search size={17}/><input aria-label="ค้นหา Project" placeholder="ค้นหาชื่อ Project…" value={query} onChange={e=>{setQuery(e.target.value);setPage(0);}}/></label><select aria-label="กรองตาม QA" value={qaId} onChange={e=>{setQaId(e.target.value);setPage(0);}}><option value="">QA ทั้งหมด</option>{data.team.filter(m=>m.assignedProjects>0).map(m=><option key={m.userId} value={m.userId}>{m.name}</option>)}</select></div></div>
-            <div className="sd-table-scroll"><table><thead><tr><th>Project</th><th>QA ที่รับผิดชอบ</th><th>ความคืบหน้า</th><th>Failed</th><th>Defects ปิด/ทั้งหมด</th><th>PO Approval</th><th><span className="sr-only">จัดการ</span></th></tr></thead><tbody>{rows.map(project=><tr key={project.id}><td><Link className="sd-project-name" href={projectHref(project.id)}><FolderKanban size={20}/><span><strong>{project.name}</strong><small>{project.environment}</small></span></Link></td><td><div className="sd-qa-chips">{project.qa.length ? project.qa.map(qa=><span key={qa.userId} title={`${qa.name} · ${qa.email}`}>{qa.name}</span>) : <span className="sd-unassigned">ยังไม่มอบหมาย</span>}</div></td><td><div className="sd-project-progress"><span>{project.counts.pass+project.counts.failed+project.counts.skip} / {project.counts.totalCases} ({project.counts.progress}%)</span><progress value={project.counts.progress} max={100}/></div></td><td className={project.counts.failed ? 'sd-error-count' : ''}>{project.counts.failed}</td><td className={project.counts.openDefects ? 'sd-error-count' : ''}>{project.counts.closedDefects}/{project.counts.totalDefects}</td><td><span className={`sd-approval sd-${project.approval.state}`}>{project.approval.label}</span></td><td><RowMenu project={project} href={projectHref(project.id)} onManage={()=>setManaged(project)}/></td></tr>)}</tbody></table></div>
-            {!rows.length && <p className="sd-empty">{data.projects.length ? 'ไม่พบ Project ที่ตรงกับตัวกรอง' : 'ยังไม่มี Project ใน Sprint นี้'}</p>}<footer className="sd-project-footer"><Pager page={page} count={filtered.length} onChange={setPage}/><Link className="primary-button" href={projectsHref}>ดู / เพิ่ม Projects<ArrowRight size={17}/></Link></footer>
-          </section>
-          <MovedOut data={data} groupId={groupId}/>
+          <SprintProjectList data={data} groupId={groupId} year={sprint.year} renderActions={project=><RowMenu project={project} href={projectHref(project.id)} onManage={()=>setManaged(project)}/>}/>
+          <Link className="primary-button" href={projectsHref}>ดู / เพิ่ม Projects<ArrowRight size={17}/></Link>
         </>}
         {view==='team' && teamSection}
-        {view==='history' && <><section className="sd-panel"><div className="sd-section-heading"><div><h2><History size={20}/>ประวัติ Sprint และการย้าย Projects</h2><p>เก็บผู้แก้ไข เวลา และค่าก่อน–หลัง</p></div></div><div className="sd-history">{activity.slice(historyPage*10,(historyPage+1)*10).map(item=><article key={item.id}><header><strong>{item.title}</strong><time>{formatFlexibleDate(item.createdAt)}</time></header><small>{item.actor || 'ระบบ'}</small><p>{item.detail}</p></article>)}{!activity.length && <p className="sd-empty">ยังไม่มีประวัติการแก้ไขหรือย้าย</p>}</div><Pager page={historyPage} count={activity.length} onChange={setHistoryPage}/></section><MovedOut data={data} groupId={groupId}/></>}
+        {view==='history' && <><section className="sd-panel"><div className="sd-section-heading"><div><h2><History size={20}/>ประวัติ Sprint และการย้าย Projects</h2><p>เก็บผู้แก้ไข เวลา และค่าก่อน–หลัง</p></div></div><div className="sd-history">{activity.slice(historyPage*10,(historyPage+1)*10).map(item=><article key={item.id}><header><strong>{item.title}</strong><time>{formatFlexibleDate(item.createdAt)}</time></header><small>{item.actor || 'ระบบ'}</small><p>{item.detail}</p></article>)}{!activity.length && <p className="sd-empty">ยังไม่มีประวัติการแก้ไขหรือย้าย</p>}</div><Pager page={historyPage} count={activity.length} onChange={setHistoryPage}/></section></>}
       </div>
     </div>
     {showEdit && <SprintEditDialog key={sprint.updatedAt} sprint={sprint} onClose={()=>setShowEdit(false)} onSaved={()=>{setShowEdit(false);setNotice('บันทึก Sprint และประวัติแล้ว');router.refresh();}}/>}
@@ -64,8 +57,6 @@ export function SprintDashboard({groupId,groupName,sprint,data,currentUser,sprin
 }
 
 function Pager({page,count,onChange}:{page:number;count:number;onChange:(page:number)=>void}) {return count>10 ? <div className="sd-pagination"><button className="secondary-button" disabled={!page} onClick={()=>onChange(page-1)}>ก่อนหน้า</button><span>{page+1} / {Math.ceil(count/10)}</span><button className="secondary-button" disabled={(page+1)*10>=count} onClick={()=>onChange(page+1)}>ถัดไป</button></div> : null;}
-
-function MovedOut({data,groupId}:{data:SprintDashboardData;groupId:string}) {return <section className="sd-panel sd-moved-out"><div className="sd-section-heading"><div><h2>Projects ที่ย้ายออก <span>{data.movedOut.length}</span></h2><p>Snapshot ณ ตอนย้าย ไม่รวมในตัวเลขงานปัจจุบันด้านบน</p></div></div>{!data.movedOut.length && <p className="sd-empty">ยังไม่มี Project ที่ย้ายออกจาก Sprint นี้</p>}{data.movedOut.map(move=><article key={move.id}><div><Link href={`/groups/${groupId}/projects/${move.projectId}/test-cases`}><strong>{String(move.after.name || move.before?.name || 'Project')}</strong></Link><p>ย้ายไป <Link href={`/groups/${groupId}/years/${String(move.after.year)}/sprints/${String(move.after.sprintId)}`}>{String(move.after.sprint)} · {String(move.after.year)}</Link></p><small>{move.actorEmail || 'ระบบ'} · {formatFlexibleDate(move.createdAt)}</small></div><div><p>{String(move.after.reason || 'ไม่ระบุเหตุผล')}</p><div className="sd-snapshot-values"><span>{move.snapshot.totalCases ?? 0} เคส</span><span>Pass {move.snapshot.pass ?? 0}</span><span>Failed {move.snapshot.failed ?? 0}</span><span>Skip {move.snapshot.skip ?? 0}</span><span>In Progress {move.snapshot.inProgress ?? 0}</span><span>Not Start {move.snapshot.notStart ?? 0}</span><span>Defects เปิด {move.snapshot.openDefects ?? 0}</span></div></div></article>)}</section>;}
 
 function PlanningDialog({title,children,onClose}:{title:string;children:ReactNode;onClose:()=>void}) {const ref=useRef<HTMLDialogElement>(null);useEffect(()=>{ref.current?.showModal();},[]);return <dialog className="sd-dialog" ref={ref} onCancel={onClose} aria-label={title}><header><h2>{title}</h2><button type="button" className="icon-button" onClick={onClose} aria-label="ปิด"><X size={20}/></button></header>{children}</dialog>;}
 

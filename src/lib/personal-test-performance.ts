@@ -1,7 +1,7 @@
 import type { PlanningTeamMember, TestStatus } from './types';
 
-export type PersonalResult = {id:string;testerId?:string;testerName:string;status:string;source:'web'|'sheets';sourceSheet:string;recordedAt:string;order:number;originSprintId?:string;inferred:boolean};
-export type PersonalCase = {projectId:string;projectName:string;currentSprintId:string;caseId:string;caseName:string;sourceRowKey:string;detailPath:string;assignedUserIds:string[];results:PersonalResult[]};
+export type PersonalResult = {id:string;testerId?:string;testerName:string;status:string;source:'web'|'sheets';sourceSheet:string;recordedAt:string;order:number;originSprintId?:string;inferred:boolean;detailPath?:string};
+export type PersonalCase = {projectId:string;projectName:string;currentSprintId:string;caseId:string;caseName:string;sourceRowKey:string;detailPath:string;assignedUserIds:string[];results:PersonalResult[];snapshotAt?:string;baselineResultIds?:string[];carriedIn?:boolean};
 export type PerformanceFilters = {projectId?:string;testerKey?:string;source?:'web'|'sheets'};
 export type PersonalEntry = {key:string;projectId:string;projectName:string;caseId:string;caseName:string;sourceRowKey:string;detailPath:string;status:TestStatus;source:'web'|'sheets'|'pending';inferred:boolean;recordedAt:string};
 export type PersonalPerformanceRow = {key:string;name:string;email:string;unresolved:boolean;projects:number;assigned:number;assignedEntries:PersonalEntry[];tested:number;pass:number;failed:number;inProgress:number;skip:number;notStart:number;entries:PersonalEntry[]};
@@ -63,9 +63,10 @@ export function buildPersonalPerformance(input: PersonalPerformanceInput): Perso
     for(const [personKey,{person,result}] of latest) {
       const status=statusOf(result.status);
       if(status==='Not Start') continue;
-      started.add(personKey);add(person,entry(status,result.source,result.inferred,result.recordedAt));
+      started.add(personKey);add(person,{...entry(status,result.source,result.inferred,result.recordedAt),detailPath:result.detailPath ?? item.detailPath});
     }
     if(item.currentSprintId!==input.sprintId) continue;
+    if(item.carriedIn) continue;
     // A recorded Skip is not pending work. An assignment is not proof of who
     // skipped the case when the source has no EXECUTED BY.
     if ([...latest.values()].some(({ person, result }) => person.key === 'unknown' && statusOf(result.status) === 'Skip')) continue;
@@ -92,7 +93,7 @@ export function buildSprintResultActivity(input:PersonalPerformanceInput) {
     const key=JSON.stringify([item.projectId,result.source,result.sourceSheet,result.id]);
     const existing=activity.get(key);
     if(existing) {if(!existing.caseIds.includes(item.caseId)) existing.caseIds.push(item.caseId);continue;}
-    activity.set(key,{key,resultId:result.id,testerName:tester(result,input.members).name,projectName:item.projectName,caseIds:[item.caseId],detailPath:item.detailPath,status:statusOf(result.status),recordedAt:result.recordedAt,source:result.source});
+    activity.set(key,{key,resultId:result.id,testerName:tester(result,input.members).name,projectName:item.projectName,caseIds:[item.caseId],detailPath:result.detailPath ?? item.detailPath,status:statusOf(result.status),recordedAt:result.recordedAt,source:result.source});
   }
   return [...activity.values()].sort((a,b)=>Date.parse(b.recordedAt)-Date.parse(a.recordedAt) || a.key.localeCompare(b.key));
 }

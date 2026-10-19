@@ -1,0 +1,1 @@
+export default function Loading(){return <main className="sprint-snapshot-page"><div className="sheet-text-shimmer" role="status" aria-label="กำลังโหลดข้อมูลย้อนหลัง"><span/><span/><span/></div></main>;}

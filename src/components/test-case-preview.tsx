@@ -11,19 +11,22 @@ import { SharedSheetDefinition } from "./shared-sheet-definition";
 import { formatFlexibleDate } from "../lib/date-format";
 import { ImageViewerGallery } from "./image-viewer-gallery";
 import { evidenceImageUrl } from "../lib/evidence";
+import { classifySprintResult } from '../lib/sprint-result-scope';
 
-export function TestCasePreview({ testCase, projectId, backHref, editHref, sourceSheetName = "", loading = false, associatedSheets = [], onBack }: {
+export function TestCasePreview({ testCase, projectId, backHref, editHref, sourceSheetName = "", loading = false, associatedSheets = [], onBack, evidenceBasePath: providedEvidenceBasePath, sprintId }: {
   testCase: TestCase; projectId: string; backHref: string; editHref?: string;
   sourceSheetName?: string; loading?: boolean; associatedSheets?: WorkbookSheet[]; onBack?: () => void;
+  evidenceBasePath?:string;
+  sprintId?:string;
 }) {
-  const evidenceBasePath = `/api/projects/${projectId}/evidence`;
+  const evidenceBasePath = providedEvidenceBasePath ?? `/api/projects/${projectId}/evidence`;
   const results = orderedStepResults(testCase).filter(result => !sourceSheetName || !result.sourceSheetName || result.sourceSheetName === sourceSheetName);
   const defects = (testCase.defects ?? []).filter(defect => !sourceSheetName || !defect.sourceSheetName || defect.sourceSheetName === sourceSheetName);
   const usedEvidence = new Set([...results, ...defects].flatMap(result => result.evidence.map(item => item.fileId)));
   const extraEvidence = testCase.evidence.filter(item => !usedEvidence.has(item.fileId));
   const renderResult = (result: TestResult, index: number) => <details key={`${result.id}:${result.sourceSheetName ?? ""}`} className="testcase-preview-result" open={index === 0}>
     <summary><strong>{testCase.stepDefinitions?.length || result.sharedSheetMappingVersion ? stepResultTitle(testCase, result) : `ผลที่ ${index + 1}`}</strong><span>{result.status}</span></summary>
-    <div className="testcase-preview-result-body"><div className="testcase-preview-result-meta">{result.sourceSheetName && <span>จากแท็บ {result.sourceSheetName}</span>}{result.testerName && <span>ผู้ทดสอบ: {result.testerName}</span>}{result.createdAt && <time>{formatFlexibleDate(result.createdAt)}</time>}</div><ReviewResultContent result={result} evidenceBasePath={evidenceBasePath} /></div>
+    <div className="testcase-preview-result-body"><div className="testcase-preview-result-meta">{sprintId && <span className="sprint-continuation-badge">{({current:"ทำใน Sprint นี้",carried:"ยกมาจาก Sprint ก่อน",unknown:"ไม่ทราบ Sprint ต้นกำเนิด"})[classifySprintResult(result,sprintId,[])]}</span>}{result.sourceSheetName && <span>จากแท็บ {result.sourceSheetName}</span>}{result.testerName && <span>ผู้ทดสอบ: {result.testerName}</span>}{result.createdAt && <time>{formatFlexibleDate(result.createdAt)}</time>}</div><ReviewResultContent result={result} evidenceBasePath={evidenceBasePath} /></div>
   </details>;
   return <section className="panel testcase-preview-page" aria-label={`Preview ${testCase.id}`}>
     <header className="testcase-preview-header"><div><span className="eyebrow">TEST CASE PREVIEW · ดูอย่างเดียว</span><h2>{testCase.id} · {testCase.name}</h2>{sourceSheetName && <p>แท็บต้นทาง: {sourceSheetName}</p>}</div><div className="testcase-preview-actions">{onBack ? <button type="button" className="secondary-button" onClick={onBack}><ArrowLeft size={16} />กลับ Test cases</button> : <Link href={backHref} className="secondary-button"><ArrowLeft size={16} />กลับ Test cases</Link>}{editHref && <Link href={editHref} className="primary-button"><Pencil size={16} />แก้ไข Test Case</Link>}</div></header>

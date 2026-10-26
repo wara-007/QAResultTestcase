@@ -12,6 +12,11 @@ test("keeps the existing image limit and rejects non-media uploads", () => {
   assert.match(validateEvidenceFile({ type: "image/png", size: 11 * 1024 * 1024 }), /10 MB/);
   assert.ok(validateEvidenceFile({ type: "text/html", size: 100 }));
 });
+test('preserves animated GIF evidence up to 25 MB, including the missing 23.5 MB source image', () => {
+  assert.equal(validateEvidenceFile({type:'image/gif',size:24629535}), '');
+  assert.equal(validateEvidenceFile({type:'image/gif',size:25*1024*1024}), '');
+  assert.match(validateEvidenceFile({type:'image/gif',size:25*1024*1024+1}), /25 MB/);
+});
 test("Sheets renders images but links to video", () => {
   const base = { fileId: "a", name: "evidence", provider: "cloudflare-r2" as const, url: "https://media.example/a.mp4" };
   assert.equal(evidenceSheetCell({ ...base, mimeType: "video/mp4" }), '=HYPERLINK("https://media.example/a.mp4","เปิดวิดีโอ")');

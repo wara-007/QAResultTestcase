@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { resolveAppRole } from "@/lib/app-session";
-import { authorizedDestination, pendingAccessDestination } from "@/lib/access-flow";
+import { authorizedDestination, pendingAccessDestination, accessRetryDestination } from "@/lib/access-flow";
 import { appOrigin, AUTH_RETURN_TO_COOKIE, GOOGLE_USER_COOKIE, safeReturnTo } from "@/lib/google-user-oauth";
 import { createClient } from "@/lib/supabase/server";
 
@@ -29,7 +29,12 @@ export async function GET(request: Request) {
   }
 
   const email = data.user.email?.toLowerCase() ?? "";
-  const role = email ? await resolveAppRole(supabase, email) : null;
+  const role = email ? await resolveAppRole(supabase, email).catch(() => undefined) : null;
+  if (role === undefined) {
+    const retry=NextResponse.redirect(new URL(accessRetryDestination(next),origin));
+    retry.cookies.delete(AUTH_RETURN_TO_COOKIE);
+    return retry;
+  }
   if (!role) {
     const denied = NextResponse.redirect(new URL(pendingAccessDestination(email, next), origin));
     denied.cookies.delete(GOOGLE_USER_COOKIE);

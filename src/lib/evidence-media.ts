@@ -2,12 +2,14 @@ import type { TestEvidence } from "./types";
 import { evidenceSheetUrl } from "./evidence";
 
 export const VIDEO_MAX_BYTES = 25 * 1024 * 1024;
+export const GIF_MAX_BYTES = 25 * 1024 * 1024;
 export const EVIDENCE_ACCEPT = "image/*,video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov";
 export function validateEvidenceFile(file: { type: string; size: number }) {
   const video = ["video/mp4", "video/webm", "video/quicktime"].includes(file.type);
   if (!video && !file.type.startsWith("image/")) return "รองรับรูปภาพและวิดีโอ MP4, WebM, MOV เท่านั้น";
   if (file.size <= 0) return "ไฟล์ว่างเปล่า";
-  if (file.size > (video ? VIDEO_MAX_BYTES : 10 * 1024 * 1024)) return `ไฟล์มีขนาดเกิน ${video ? 25 : 10} MB`;
+  const limit = video ? VIDEO_MAX_BYTES : file.type === "image/gif" ? GIF_MAX_BYTES : 10 * 1024 * 1024;
+  if (file.size > limit) return `ไฟล์มีขนาดเกิน ${limit / 1024 / 1024} MB`;
   return "";
 }
 export function evidenceExtension(type: string) {

@@ -1,6 +1,7 @@
+import { ACCESS_CHECK_UNAVAILABLE, isTemporaryAuthFailure } from "../auth-check";
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-import { pendingAccessDestination } from "@/lib/access-flow";
+import { accessRetryDestination, pendingAccessDestination } from "@/lib/access-flow";
 
 export async function updateSession(request: NextRequest) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -20,13 +21,24 @@ export async function updateSession(request: NextRequest) {
     },
   });
 
-  const { data } = await supabase.auth.getClaims();
+  const { data, error: claimsError } = await supabase.auth.getClaims();
   const signedIn = Boolean(data?.claims);
   const path = request.nextUrl.pathname;
   const protectedPage = path === "/groups" || path.startsWith("/groups/") || path.startsWith("/admin/");
   const protectedApi = path.startsWith("/api/projects/") || path.startsWith("/api/google/evidence/");
   const approvalPage = path === "/approvals" || path.startsWith("/approvals/");
   const approvalApi = path.startsWith("/api/approvals/");
+
+  const unavailable = () => {
+    const retry = protectedApi || approvalApi
+      ? NextResponse.json({error:ACCESS_CHECK_UNAVAILABLE,code:'AUTH_CHECK_UNAVAILABLE'},{status:503})
+      : NextResponse.redirect(new URL(accessRetryDestination(`${path}${request.nextUrl.search}`),request.nextUrl));
+    retry.headers.set('Cache-Control','no-store');
+    retry.headers.set('Retry-After','5');
+    response.cookies.getAll().forEach(cookie=>retry.cookies.set(cookie));
+    return retry;
+  };
+  if (isTemporaryAuthFailure(claimsError) && (protectedPage || approvalPage || protectedApi || approvalApi)) return unavailable();
 
   if (!signedIn && (protectedApi || approvalApi)) {
     return NextResponse.json({ error: "กรุณาเข้าสู่ระบบ" }, { status: 401 });
@@ -43,9 +55,9 @@ export async function updateSession(request: NextRequest) {
   }
 
   if (signedIn && (protectedPage || protectedApi)) {
-    const { data: authorized, error: accessError } = await supabase.rpc("is_app_authorized");
-    // Fail open only while the allowlist migration has not been installed yet.
-    if (!accessError && authorized !== true) {
+    const { data: authorized, error: accessError } = await supabase.rpc("is_app_authorized").abortSignal(AbortSignal.timeout(12_000));
+    if (accessError) return unavailable();
+    if (authorized !== true) {
       if (protectedApi) return NextResponse.json({ error: "บัญชีนี้ยังไม่ได้รับอนุมัติให้ใช้งาน" }, { status: 403 });
       const deniedUrl = request.nextUrl.clone();
       const email = typeof data?.claims?.email === "string" ? data.claims.email : "";

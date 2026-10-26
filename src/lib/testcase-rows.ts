@@ -30,9 +30,9 @@ export function casesFromRows(rows: unknown[][]): TestCase[] {
   if (stepCases) return stepCases;
   const aliases: Record<string, string[]> = {
     id: ["testcase id", "test case id", "case id"], platform: ["platform"], condition: ["condition"], scenario: ["test scenario", "scenario"],
-    name: ["test case name", "testcase name", "case name"], steps: ["test step description", "test step", "steps"], expected: ["expected result", "expected"],
-    status: ["test result", "status", "result"], device: ["device"], testData: ["data test", "test data"], appVersion: ["app version", "version"],
-    environment: ["env", "environment"], resultReference: ["ref result testing", "result testing", "result reference"], executedBy: ["executed by", "tester"],
+    name: ["test case name", "testcase name", "case name", "testcase"], steps: ["test step description", "test step", "steps"], expected: ["expected result", "expected"],
+    status: ["test result", "status", "result testing", "result"], device: ["device"], testData: ["data test", "test data"], appVersion: ["app version", "version"],
+    environment: ["env", "environment"], resultReference: ["ref result testing", "result reference"], executedBy: ["executed by", "tester"],
     executedDate: ["executed date", "test date"], executedTime: ["executed time", "test time"], remark: ["remark", "note", "notes"],
     evidence: ["evidence", "evidence images", "attachments"],
   };
@@ -43,7 +43,7 @@ export function casesFromRows(rows: unknown[][]): TestCase[] {
   let header = [...baseHeader];
   const detectIndexes = () => Object.fromEntries(Object.entries(aliases).map(([field, names]) => {
     const exact = header.findIndex(cell => names.includes(normalize(cell)));
-    return [field, exact >= 0 ? exact : header.findIndex(cell => names.some(name => normalize(cell).includes(name)))];
+    return [field, exact >= 0 ? exact : header.findIndex(cell => names.some(name => name !== "testcase" && normalize(cell).includes(name)))];
   }));
   let indexes = detectIndexes();
   const get = (row: unknown[], field: string) => indexes[field] >= 0 ? String(row[indexes[field]] ?? "").trim() : "";

@@ -1,3 +1,5 @@
+import { referencedSheetCaseIds } from "./sheet-mapping-model";
+import { displayTestCaseId } from "./register-case-identity";
 import type { TestCase, TestResult } from "./types";
 import { parseStepTestCases, stepHeaderKey, stepColumnName } from "./step-testcases";
 import { testCaseIdsMatchingSheetName } from "./sheet-mapping-model";
@@ -11,7 +13,8 @@ export function parseApiLogSheetResults(rows: unknown[][], testCase: TestCase, s
   const definitions = parseStepTestCases(rows.slice(0, headerRow), sheetName);
   const combinedIds = testCaseIdsMatchingSheetName(sheetName, cases);
   const combined = combinedIds.length > 1;
-  const owners = combined ? cases.filter(item => combinedIds.includes(item.id)) : definitions?.length ? definitions.map(item => cases.find(candidate => stepHeaderKey(candidate.id) === stepHeaderKey(item.id)) ?? item) : cases;
+  const referenced = referencedSheetCaseIds(sheetName, cases);
+  const owners = referenced.length ? cases.filter(item => referenced.includes(item.id)) : combined ? cases.filter(item => combinedIds.includes(item.id)) : definitions?.length ? definitions.flatMap(item => { const matches = cases.filter(candidate => stepHeaderKey(displayTestCaseId(candidate)) === stepHeaderKey(item.id)); return matches.length ? matches : [item]; }) : cases;
   const primary = owners[0]?.id ?? testCase.id;
   const issues: string[] = [];
   const results: TestResult[] = [];

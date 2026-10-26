@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { resolveAppRole } from "@/lib/app-session";
-import { destinationForRole, pendingAccessDestination } from "@/lib/access-flow";
+import { destinationForRole, pendingAccessDestination, accessRetryDestination } from "@/lib/access-flow";
 import { appOrigin } from "@/lib/google-user-oauth";
 import { createClient } from "@/lib/supabase/server";
 
@@ -27,7 +27,8 @@ export async function POST(request: Request) {
     errorUrl.searchParams.set("error", error.message);
     return NextResponse.redirect(errorUrl, 303);
   }
-  const role = await resolveAppRole(supabase, email);
+  const role = await resolveAppRole(supabase, email).catch(() => undefined);
+  if (role === undefined) return NextResponse.redirect(new URL(accessRetryDestination("/groups"),origin),303);
   if (!role) return NextResponse.redirect(new URL(pendingAccessDestination(email, "/groups"), origin), 303);
   return NextResponse.redirect(new URL(destinationForRole(role, "/"), origin), 303);
 }

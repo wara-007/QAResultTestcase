@@ -12,5 +12,7 @@ export function getProjectWorkbook(projectId: string, loader: () => Promise<Arra
 }
 
 export function clearProjectWorkbook(projectId: string) {
-  projectWorkbooks.delete(projectId);
+  for (const key of projectWorkbooks.keys()) {
+    if (key === projectId || key.startsWith(`${projectId}:`)) projectWorkbooks.delete(key);
+  }
 }

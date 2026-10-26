@@ -2,11 +2,13 @@ import type { TestCase, TestCaseCustomField, TestDefect, TestResult } from "./ty
 
 type StoredResultPayload = {
   sourceSheetName?: string;
+  registerIdentity?: TestCase["registerIdentity"];
   sourceFields?: TestCase["sourceFields"];
   version: 1 | 2 | 3 | 4;
   stepDefinitions?: TestCase["stepDefinitions"];
   importIssues?: string[];
   resultReference: string;
+  resultReferenceTargets?: string[];
   results: TestResult[];
   defects?: TestDefect[];
   customFields?: TestCaseCustomField[];
@@ -15,6 +17,7 @@ type StoredResultPayload = {
 
 function normalizeDefect(defect: Partial<TestDefect>, fallbackId: string): TestDefect {
   return {
+    ...defect,
     id: defect.id ?? fallbackId,
     title: defect.title ?? "Defect",
     description: defect.description ?? "",
@@ -34,10 +37,12 @@ export function parseStoredResults(value: string | undefined) {
     const results = Array.isArray(payload.results) ? payload.results : [];
     const migratedDefects = results.flatMap((result) => (result.defects ?? []).map((defect, index) => normalizeDefect(defect, `${result.id}-defect-${index + 1}`)));
     return {
+      registerIdentity: payload.registerIdentity && typeof payload.registerIdentity.sourceId === "string" && typeof payload.registerIdentity.fingerprint === "string" && typeof payload.registerIdentity.scope === "string" && Number.isInteger(payload.registerIdentity.occurrence) ? payload.registerIdentity : undefined,
       sourceFields: Array.isArray(payload.sourceFields) ? payload.sourceFields : undefined,
       sourceSheetName: typeof payload.sourceSheetName === "string" ? payload.sourceSheetName : undefined,
       stepDefinitions: Array.isArray(payload.stepDefinitions) ? payload.stepDefinitions : undefined,
       importIssues: Array.isArray(payload.importIssues) ? payload.importIssues : [],
+      resultReferenceTargets: Array.isArray(payload.resultReferenceTargets) ? payload.resultReferenceTargets.filter((value): value is string => typeof value === "string") : undefined,
       resultReference: typeof payload.resultReference === "string" ? payload.resultReference : "",
       results: results.map((result) => {
         const normalized = { ...result };
@@ -55,7 +60,7 @@ export function parseStoredResults(value: string | undefined) {
 }
 
 export function serializeStoredResults(testCase: TestCase) {
-  const payload: StoredResultPayload = { version: 4, sourceFields: testCase.sourceFields, stepDefinitions: testCase.stepDefinitions, importIssues: testCase.importIssues, resultReference: testCase.resultReference, results: testCase.results ?? [], defects: testCase.defects ?? [], customFields: testCase.customFields ?? [], resultFieldDefinitions: testCase.resultFieldDefinitions ?? [] };
+  const payload: StoredResultPayload = { version: 4, registerIdentity: testCase.registerIdentity, sourceFields: testCase.sourceFields, stepDefinitions: testCase.stepDefinitions, importIssues: testCase.importIssues, resultReference: testCase.resultReference, resultReferenceTargets: testCase.resultReferenceTargets, results: testCase.results ?? [], defects: testCase.defects ?? [], customFields: testCase.customFields ?? [], resultFieldDefinitions: testCase.resultFieldDefinitions ?? [] };
   payload.sourceSheetName = testCase.sourceSheetName;
   return `qa-results:${JSON.stringify(payload)}`;
 }

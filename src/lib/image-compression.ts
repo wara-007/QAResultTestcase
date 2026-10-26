@@ -23,6 +23,10 @@ export type CompressedImage = {
 /** Compress common screenshot formats before uploading. Unsupported formats keep their original file. */
 export async function compressEvidenceImage(file: File): Promise<CompressedImage> {
   const originalBytes = file.size;
+  if (file.type === 'image/gif') {
+    try { return await (await import('./gif-compression')).compressEvidenceGif(file); }
+    catch { return { file, originalBytes, compressed: false }; }
+  }
   if (!/^image\/(jpeg|png|webp)$/i.test(file.type)) {
     return { file, originalBytes, compressed: false };
   }

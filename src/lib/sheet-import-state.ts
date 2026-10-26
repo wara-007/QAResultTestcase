@@ -1,6 +1,10 @@
+import { isRegisterBaseline, type RegisterBaseline } from "./sheet-refresh";
 import type { RowLoadState } from "./result-preview";
+import { isEvidenceManifest, type ApprovalEvidenceTarget } from "./approval-evidence";
 
 export type SheetImportState = {
+  sourceRevision?: string;
+  registerBaseline?: RegisterBaseline;
   version: 1;
   spreadsheetId: string;
   states: Record<string, RowLoadState>;
@@ -8,11 +12,15 @@ export type SheetImportState = {
   attemptedAt: string;
   complete: boolean;
   refreshRequired?: boolean;
+  evidenceManifest?: ApprovalEvidenceTarget[];
 };
 
 export function readSheetImportState(value: unknown, spreadsheetId?: string): SheetImportState | undefined {
   if (!value || typeof value !== "object") return;
   const input = value as Partial<SheetImportState>;
+  if (input.sourceRevision !== undefined && (typeof input.sourceRevision !== "string" || !input.sourceRevision || input.sourceRevision.length > 512)) return;
+  if (input.registerBaseline !== undefined && !isRegisterBaseline(input.registerBaseline)) return;
+  if (input.evidenceManifest !== undefined && !isEvidenceManifest(input.evidenceManifest)) return;
   if (input.version !== 1 || typeof input.spreadsheetId !== "string" || (spreadsheetId !== undefined && input.spreadsheetId !== spreadsheetId)
     || !input.states || !input.loadedAt || !Number.isFinite(Date.parse(input.attemptedAt ?? ""))) return;
   const states: Record<string, RowLoadState> = {};
@@ -25,7 +33,10 @@ export function readSheetImportState(value: unknown, spreadsheetId?: string): Sh
     }
     states[key] = state === "loading" ? "queued" : state;
   }
-  return { version: 1, spreadsheetId: input.spreadsheetId, states, loadedAt, attemptedAt: input.attemptedAt!, complete: input.complete === true, refreshRequired: input.refreshRequired === true };
+  return { version: 1, spreadsheetId: input.spreadsheetId, states, loadedAt, attemptedAt: input.attemptedAt!, complete: input.complete === true, refreshRequired: input.refreshRequired === true,
+    ...(input.sourceRevision ? { sourceRevision: input.sourceRevision } : {}),
+    ...(input.registerBaseline ? { registerBaseline: input.registerBaseline } : {}),
+    ...(input.evidenceManifest ? { evidenceManifest: input.evidenceManifest } : {}) };
 }
 
 export function checkpointSheetImport(previous: SheetImportState | undefined, spreadsheetId: string, updates: Record<string, RowLoadState>, at: string, complete: boolean): SheetImportState {
@@ -37,7 +48,10 @@ export function checkpointSheetImport(previous: SheetImportState | undefined, sp
     states[key] = state === "loaded" || prior?.states[key] !== "loaded" ? state : "loaded";
     if (state === "loaded") loadedAt[key] = at;
   }
-  return { version: 1, spreadsheetId, states, loadedAt, attemptedAt: at, complete, refreshRequired: complete ? false : prior?.refreshRequired === true };
+  return { version: 1, spreadsheetId, states, loadedAt, attemptedAt: at, complete, refreshRequired: complete ? false : prior?.refreshRequired === true,
+    ...(prior?.sourceRevision ? { sourceRevision: prior.sourceRevision } : {}),
+    ...(prior?.registerBaseline ? { registerBaseline: prior.registerBaseline } : {}),
+    ...(prior?.evidenceManifest ? { evidenceManifest: prior.evidenceManifest } : {}) };
 }
 
 export function shouldStartSheetImport(spreadsheetId: string, canEdit: boolean, caseCount: number, saved: SheetImportState | undefined): boolean {

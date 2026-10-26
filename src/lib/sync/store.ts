@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { hashSnapshot } from "./canonical";
+import { hashSnapshot } from "./snapshot-hash";
 import type { CanonicalProjectSnapshot, CanonicalTestCase } from "./types";
 
 export type BaselineRow = {

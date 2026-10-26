@@ -31,6 +31,7 @@ export type TestDefect = {
 };
 
 export type TestResult = {
+  stepSheetMappingVersion?: 1 | 2;
   sharedSheetMappingVersion?: 1 | 2 | 3 | 4;
   sheetDefinitionTable?: { headers: string[]; rows: string[][] };
   editedLocally?: boolean;
@@ -77,6 +78,7 @@ export type TestCaseCustomField = {
 };
 
 export type TestCase = {
+  registerIdentity?: import("./register-case-identity").RegisterCaseIdentity;
   /** Original register columns, including mapped columns and empty cells. */
   sourceFields?: Array<{ column: number; label: string; value: string; field?: keyof TestCase }>;
   stepDefinitions?: TestCaseStep[];
@@ -99,6 +101,8 @@ export type TestCase = {
   appVersion: string;
   environment: string;
   resultReference: string;
+  /** Actual tabs targeted by register Ref links; display text remains unchanged. */
+  resultReferenceTargets?: string[];
   executedBy: string;
   executedDate: string;
   executedTime: string;
@@ -131,6 +135,8 @@ export type TestCaseStep = {
 };
 
 export type WorkbookSource = {
+  readonly sourceOrigin?: "upload" | "google-sheets";
+  workbookStorage?: "google-sheets" | "supabase";
   documentType?: "google-sheets" | "xlsx";
   coverSnapshot?: import("./workbook-validation").CoverSnapshot;
   sheetImport?: import("./sheet-import-state").SheetImportState;
@@ -183,6 +189,7 @@ export type WorkbookResultImage = WorkbookSheetContent["images"][number] & {
 };
 
 export type WorkbookFreeformResult = {
+  stepSheetMappingVersion?: TestResult["stepSheetMappingVersion"];
   stepId?: string;
   sourceRange?: TestResult["sourceRange"];
   sheetSections?: import("./sheet-sections").SheetSection[];

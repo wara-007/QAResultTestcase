@@ -1,3 +1,4 @@
+import { AccessCheckUnavailable } from "@/components/access-check-unavailable";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { ClipboardCheck, LockKeyhole, LogIn, Mail, ShieldCheck } from "lucide-react";
@@ -13,7 +14,9 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   const error = typeof query.error === "string" ? query.error : "";
 
   if (hasValidSupabasePublicConfig()) {
-    const session = await getCurrentAppSession();
+    const lookup = await getCurrentAppSession().then(session => ({session,error:false})).catch(() => ({session:null,error:true}));
+    if (lookup.error) return <AccessCheckUnavailable next={next}/>;
+    const session = lookup.session;
     if (session?.role) redirect(authorizedDestination(session.role, next, session.passwordConfigured));
     if (session) redirect(pendingAccessDestination(session.email, next));
   }

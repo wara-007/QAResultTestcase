@@ -19,7 +19,8 @@ export function orderedStepResults(testCase: TestCase) {
   return [...steps.flatMap(step => (testCase.results ?? []).filter(result => result.stepId === step.id)), ...(testCase.results ?? []).filter(result => !result.stepId || !ids.has(result.stepId))];
 }
 export function TestCaseSteps({ testCase, readOnly, onChange, renderResults, onAddResult, expandAll = false }: { testCase: TestCase; readOnly: boolean; expandAll?: boolean; onChange?: (testCase: TestCase) => void; renderResults?: (results: TestResult[]) => React.ReactNode; onAddResult?: (stepId: string) => void }) {
-  if (!testCase.stepDefinitions?.length) return null;
+  if (!testCase.stepDefinitions?.length) return testCase.importIssues?.length
+    ? <div role="alert" className="form-error"><ul>{testCase.importIssues.map((issue, index) => <li key={index}>{issue}</li>)}</ul></div> : null;
   const metadataFields = ["device", "environment", "appVersion", "executedBy", "executedDate"] as const;
   const referenceFields = ["classification", "resultReference", "remark"] as const;
   const metadataLabels = { device: "Device", environment: "Environment", appVersion: "App version", executedBy: "ผู้ทดสอบ", executedDate: "Executed Date" };

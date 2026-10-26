@@ -66,7 +66,7 @@ test("an explicit register result reference maps a shorter tab name without gues
   assert.deepEqual(result.associations.map(item=>item.testCase.id),['TAC_01_TC_01']);
   assert.deepEqual(result.unmapped,[]);
   assert.deepEqual(resolveSheetAssociations([sheet(10,'TC_01')],[unreferenced],[]).associations,[]);
-  assert.deepEqual(resolveSheetAssociations([sheet(10,'TC_01')],[owner,unreferenced],[mapping(10,'TC_01','OTHER_TC_01')]).associations.map(item=>item.testCase.id),['OTHER_TC_01']);
+  assert.deepEqual(resolveSheetAssociations([sheet(10,'TC_01')],[owner,unreferenced],[mapping(10,'TC_01','OTHER_TC_01')]).associations.map(item=>item.testCase.id),['TAC_01_TC_01']);
 });
 
 test("explicit Step references can share a result tab across registered cases",()=>{
@@ -186,4 +186,26 @@ test("manual mapping exposes the preserved tab result and image on its target, w
   assert.equal(output[0].results?.[0].actualResult, "Complete result");
   assert.equal(output[0].results?.[0].evidence[0].fileId, "img1");
   assert.equal(target.results?.length, 0);
+});
+
+test("register Ref wins over a conflicting tab-name ID, detail ID and saved mapping", () => {
+  const owner = { ...testCase("TC_02"), resultReference: "TC_01" };
+  const named = { ...testCase("TC_01"), resultReference: "Other proof" };
+  const source = { ...sheet(10, "TC_01", ["TC_01"]), definitionCaseIds: ["TC_01"] };
+  for (const mappings of [[], [mapping(10, "TC_01", "TC_01")]]) {
+    assert.deepEqual(resolveSheetAssociations([source], [named, owner], mappings).associations.map(item => item.testCase.id), ["TC_02"]);
+  }
+});
+
+test("a case with an explicit Ref to another tab cannot fall back to its matching case-ID tab", () => {
+  const owner = { ...testCase("TC_01"), resultReference: "Actual proof" };
+  assert.deepEqual(resolveSheetAssociations([sheet(10, "TC_01")], [owner], []).associations, []);
+  assert.deepEqual(resolveSheetAssociations([sheet(11, "Actual proof")], [owner], []).associations.map(item => item.testCase.id), ["TC_01"]);
+});
+
+test("a saved mapping cannot attach an unrelated tab to a case with an explicit Ref elsewhere", () => {
+  const owner = { ...testCase("TC01"), resultReference: "Proof B" };
+  const resolved = resolveSheetAssociations([sheet(10, "TC01"), sheet(11, "Proof B")], [owner], [mapping(10, "TC01", "TC01")]);
+  assert.deepEqual(resolved.associations.map(item => item.sheet.name), ["Proof B"]);
+  assert.deepEqual(resolved.unmapped.map(item => item.name), ["TC01"]);
 });

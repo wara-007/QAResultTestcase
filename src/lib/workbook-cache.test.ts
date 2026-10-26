@@ -28,3 +28,13 @@ test("explicit refresh discards old workbook bytes but preserves other Projects"
   assert.equal(new Uint8Array(fresh)[0], 2);
   assert.equal(new Uint8Array(await getProjectWorkbook("other", async () => { throw new Error("must not download"); }))[0], 3);
 });
+
+test('source-specific cached workbooks remain separate and are cleared together on project refresh',async()=>{
+ clearProjectWorkbook('versions');
+ const old=await getProjectWorkbook('versions:old',async()=>new Uint8Array([1]).buffer);
+ const newer=await getProjectWorkbook('versions:new',async()=>new Uint8Array([2]).buffer);
+ assert.notEqual(old,newer);
+ clearProjectWorkbook('versions');
+ const reloaded=await getProjectWorkbook('versions:old',async()=>new Uint8Array([3]).buffer);
+ assert.deepEqual([...new Uint8Array(reloaded)],[3]);
+});

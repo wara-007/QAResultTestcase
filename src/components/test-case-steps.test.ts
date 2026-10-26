@@ -19,3 +19,11 @@ test('Step status is hidden on both editable and read-only pages without changin
   assert.equal(item.stepDefinitions?.[0].status, 'Pass');
   assert.equal(item.status, 'Pass');
 });
+
+test('missing Ref tab warnings are visible on cases without a Step table', () => {
+  const item = casesFromRows([['Test Case Id', 'Test Case Name'], ['TC01', 'First']])[0];
+  item.importIssues = ['Ref (Result Testing): ไม่พบแท็บที่อ้างอิง "Proof A"'];
+  const html = renderToStaticMarkup(React.createElement(TestCaseSteps, { testCase: item, readOnly: true }));
+  assert.match(html, /ไม่พบแท็บที่อ้างอิง/);
+  assert.match(html, /Proof A/);
+});

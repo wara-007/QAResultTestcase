@@ -1,4 +1,11 @@
+import { buildRegisterExecutionWritePlan, registerResultSnapshotTargets, hasRegisterSnapshotData } from "./register-result-write-plan";
+import { caseResultReferences, safeResultSheetName } from "./sheet-mapping-model";
+import { displayTestCaseId } from "./register-case-identity";
+import { canonicalCaseId } from "./sync/canonical";
+import { prioritizeReferencedSheets, withResultReferenceIssues, resolveRegisterReferenceTargets } from "./register-result-references";
 import "server-only";
+import { needsCoverSnapshot } from "./google-sheet-read-plan";
+import { workbookContentRevision } from "./workbook-revision";
 import { googleDataRange } from "./google-data-range";
 import { sheetCellLink } from "./sheet-cell-link";
 import { driveWorkbookType, officeWorkbookData, OFFICE_SYNC_MESSAGE } from "./drive-workbook";
@@ -9,14 +16,15 @@ import { isSheetPayloadLabel } from "@/lib/sheet-sections";
 import type { googleOAuthClient } from "@/lib/google-user-oauth";
 import { parseFlexibleDate } from "@/lib/date-format";
 import { evidenceMimeFromUrl, evidenceSheetCell } from "@/lib/evidence-media";
-import { automaticSheetCaseIds, workbookSheetFromGoogleProperties } from "@/lib/sheet-mapping-model";
+import { automaticSheetCaseIds, registeredTestCases, workbookSheetFromGoogleProperties } from "@/lib/sheet-mapping-model";
+import { stepHeaderKey } from "./step-testcases";
 import { casesFromRows } from "@/lib/testcase-rows";
 import { parseStepSheetResults } from "@/lib/step-sheet-results";
 import { compactResultCaseIds } from "@/lib/compact-sheet-results";
 import { isProjectSummarySheet } from "@/lib/sheet-mapping-model";
 import { parseCoverSnapshot } from "@/lib/workbook-validation";
 import { stepHeaderColumns } from "@/lib/step-testcases";
-import { buildStepSheetWritePlan, stepResultSnapshotRows } from "@/lib/step-sheet-sync";
+import { buildStepSheetWritePlan, readStepResultSnapshots, readStepCaseSnapshot, snapshotOwnership, STEP_SNAPSHOT_START } from "@/lib/step-sheet-sync";
 import { freeformTextFromCells, selectDetailSheets } from "@/lib/sheet-detail";
 import { sheetTextHighlights, type StyledSheetText } from "@/lib/result-preview";
 import { isProjectDefectSheet, projectDefectsFromRows, defectRecordsForSync } from "@/lib/project-defects";
@@ -28,6 +36,24 @@ const GOOGLE_SCOPES = [
 ];
 
 type GoogleApiAuth = ReturnType<typeof getGoogleServiceAuth> | ReturnType<typeof googleOAuthClient>;
+
+export async function readGoogleSheetRevision(spreadsheetId: string, auth: GoogleApiAuth) {
+  try {
+    const file = await google.drive({ version: "v3", auth }).files.get({
+      fileId: spreadsheetId, fields: "id,version", supportsAllDrives: true,
+    }, { timeout: 30_000 });
+    if (!file.data.version) throw new Error("ตรวจการเปลี่ยนแปลงของ Sheets ไม่สำเร็จ");
+    return `drive:${file.data.version}`;
+  } catch (error) {
+    const reason = error as { code?: number | string; response?: { status?: number } };
+    // Existing connections use drive.file: native Sheets can be readable via
+    // spreadsheets scope while Drive returns 404. Check the authorized export
+    // contents (including drawings/media) rather than requesting wider access.
+    if (Number(reason.code ?? reason.response?.status) !== 404) throw error;
+    const bytes = new Uint8Array(await exportGoogleSheetWorkbook(spreadsheetId, auth));
+    return workbookContentRevision(bytes);
+  }
+}
 
 export function extractGoogleSheetId(value: string) {
   const trimmed = value.trim();
@@ -162,7 +188,7 @@ export async function readGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth
       sheet.defects = projectDefectsFromRows(rows.get(sheet.name) ?? [], sheet.name);
     });
     if (!options.summary) {
-      for (const sheet of selectDetailSheets(workbookSheets, options).filter(sheet => !isProjectSummarySheet(sheet.name) && !isProjectDefectSheet(sheet.name))) {
+      for (const sheet of prioritizeReferencedSheets(selectDetailSheets(workbookSheets, options), cases).filter(sheet => !isProjectSummarySheet(sheet.name) && !isProjectDefectSheet(sheet.name))) {
         appendSheetResults(cases, workbookSheets, sheet.name, rows.get(sheet.name) ?? [], readWorkbookStyledText(source, sheet));
       }
     }
@@ -183,19 +209,35 @@ async function readNativeGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth,
     sheets.spreadsheets.values.get({ spreadsheetId, range: "'Testcase'", valueRenderOption: "FORMATTED_VALUE", dateTimeRenderOption: "FORMATTED_STRING" }),
   ]);
   const workbookSheets: WorkbookSheet[] = (metadata.data.sheets ?? []).map((sheet, order) => workbookSheetFromGoogleProperties(sheet.properties ?? {}, order));
-  const cases = casesFromRows(values.data.values ?? []);
+  let cases = casesFromRows(values.data.values ?? []);
+  const referenceColumns = new Set(cases.flatMap(testCase => [
+    ...(testCase.sourceFields ?? []).filter(field => field.field === "resultReference" || ["refresulttesting", "resultreference"].includes(stepHeaderKey(field.label))).map(field => field.column),
+    ...(testCase.stepDefinitions ?? []).flatMap(step => (step.sourceFields ?? []).filter(field => ["refresulttesting", "resultreference"].includes(stepHeaderKey(field.label))).map(field => field.column)),
+  ]));
+  const referenceLinks = new Map<string, string>();
+  if (referenceColumns.size) {
+    const links = await sheets.spreadsheets.get({ spreadsheetId,
+      ranges: [...referenceColumns].map(column => `'Testcase'!${columnLetter(column)}1:${columnLetter(column)}${Math.max(1, values.data.values?.length ?? 1)}`),
+      fields: "sheets(data(startRow,startColumn,rowData(values(hyperlink,userEnteredValue,textFormatRuns,chipRuns))))",
+    });
+    for (const sheet of links.data.sheets ?? []) for (const grid of sheet.data ?? []) {
+      (grid.rowData ?? []).forEach((row, rowIndex) => (row.values ?? []).forEach((cell, colIndex) => {
+        const link = cell.hyperlink || sheetCellLink(cell) || cell.userEnteredValue?.formulaValue?.match(/^=HYPERLINK\(\s*"((?:[^"]|"")*)"/i)?.[1]?.replaceAll('""', '"');
+        if (link) referenceLinks.set(`${columnLetter((grid.startColumn ?? 0) + colIndex)}${(grid.startRow ?? 0) + rowIndex + 1}`, link);
+      }));
+    }
+  }
+  cases = withResultReferenceIssues(resolveRegisterReferenceTargets(cases, workbookSheets, referenceLinks, spreadsheetId), workbookSheets);
   const coverSheet = workbookSheets.find(sheet => isProjectSummarySheet(sheet.name));
-  const coverSnapshot = coverSheet ? parseCoverSnapshot((await sheets.spreadsheets.values.get({ spreadsheetId, range: `'${coverSheet.name.replaceAll("'", "''")}'!A:AZ`, valueRenderOption: "FORMATTED_VALUE" })).data.values ?? [], coverSheet.name) : undefined;
+  const coverSnapshot = coverSheet && needsCoverSnapshot(options, coverSheet.name) ? parseCoverSnapshot((await sheets.spreadsheets.values.get({ spreadsheetId, range: `'${coverSheet.name.replaceAll("'", "''")}'!A:AZ`, valueRenderOption: "FORMATTED_VALUE" })).data.values ?? [], coverSheet.name) : undefined;
   workbookSheets.forEach(sheet => { sheet.testCaseIds = automaticSheetCaseIds(sheet.name, cases); });
   await Promise.all(workbookSheets.filter(sheet => isProjectDefectSheet(sheet.name) && (options.summary || (!options.sheetName && !options.sheetNames && !options.testcaseId) || sheet.name === options.sheetName || options.sheetNames?.includes(sheet.name))).map(async sheet => {
     const response = await sheets.spreadsheets.values.get({ spreadsheetId, range: `'${sheet.name.replaceAll("'", "''")}'!A:AZ`, valueRenderOption: "FORMULA", dateTimeRenderOption: "FORMATTED_STRING" });
     sheet.defects = projectDefectsFromRows(response.data.values ?? [], sheet.name);
   }));
-  // Read every tab, not only tabs named exactly like a Test Case ID. Teams often
-  // place evidence/results in tabs with names such as "Regression", "Run 1" or
-  // "API logs". IDs are discovered from both the tab name and its cell content.
+  // Follow the register Ref first, while retaining other real tabs for preview.
   if (options.summary) return { title: metadata.data.properties?.title ?? "Google Sheet", cases, sheets: workbookSheets, coverSnapshot, documentType };
-  const detailSheets = selectDetailSheets(workbookSheets, options).filter(sheet => !isProjectSummarySheet(sheet.name) && !isProjectDefectSheet(sheet.name));
+  const detailSheets = prioritizeReferencedSheets(selectDetailSheets(workbookSheets, options), cases).filter(sheet => !isProjectSummarySheet(sheet.name) && !isProjectDefectSheet(sheet.name));
   const ranges = detailSheets.map(sheet => {
     const grid = metadata.data.sheets?.find(item => item.properties?.sheetId === sheet.sheetId)?.properties?.gridProperties;
     return `'${sheet.name.replaceAll("'", "''")}'!A1:${columnLetter((grid?.columnCount ?? 52) - 1)}${grid?.rowCount ?? 1000}`;
@@ -229,22 +271,35 @@ async function readNativeGoogleSheet(spreadsheetId: string, auth: GoogleApiAuth,
 
 function appendSheetResults(cases: TestCase[], workbookSheets: WorkbookSheet[], name: string, rows: unknown[][], styled: StyledSheetText[]) {
   const sheetIndexes = new Map(workbookSheets.map((sheet, index) => [sheet.name, index]));
-  // A Test Case ID in the tab name is authoritative. Result tabs commonly
-  // mention several other cases in their cells (references, defects, RCs),
-  // which must not make those cases aliases of the same tab.
+  // Register Ref is authoritative. Incidental IDs in result cells must not
+  // make unrelated cases aliases of the same tab.
   const definitionIds = compactResultCaseIds(rows, cases);
-  const ids = automaticSheetCaseIds(name, cases, definitionIds);
+  const snapshotOwners = registeredTestCases(cases).filter(item => !caseResultReferences(item).length || caseResultReferences(item).includes(name)).filter(item => {
+    const owned = readStepCaseSnapshot(rows, item.id, item.registerIdentity, !cases.some(other => other.id !== item.id && displayTestCaseId(other) === displayTestCaseId(item)), false, snapshotOwnership(item, cases, name));
+    return owned.results.length || owned.defects?.length || owned.customFields?.length;
+  }).map(item => item.id);
+  const ids = [...new Set([...automaticSheetCaseIds(name, cases, definitionIds).filter(id => !snapshotOwners.length || cases.find(item => item.id === id && caseResultReferences(item).length) || snapshotOwners.includes(id)), ...snapshotOwners])];
   const sheetIndex = sheetIndexes.get(name);
   if (sheetIndex != null) workbookSheets[sheetIndex] = { ...workbookSheets[sheetIndex], testCaseIds: ids, ...(definitionIds.length ? { definitionCaseIds: definitionIds } : {}) };
+  // A matching case ID cannot override an explicit Ref to a different tab.
+  // The unmatched tab remains available through its raw workbook preview.
+  if (!ids.length && registeredTestCases(cases).some(item => caseIdentity(item.id) === caseIdentity(name) || canonicalCaseId(item.id) === canonicalCaseId(name))) return;
   // Unmatched tabs retain a preview snapshot, never infer an owner from
   // arbitrary cell references or promote the snapshot into the case list.
+  const completeRows = rows;
   (ids.length ? ids : [name]).forEach((id) => {
+    let rows = completeRows;
     let testCase = cases.find((item) => caseIdentity(item.id) === caseIdentity(id));
     if (!testCase) {
       testCase = { id, sourceSheetName: name, sourceRow: 0, platform: "", condition: "", scenario: "", name, steps: "", expected: "", status: "Not Start", device: "", testData: "", appVersion: "", environment: "", resultReference: name, executedBy: "", executedDate: "", executedTime: "", remark: "", evidence: [], results: [], defects: [] };
       cases.push(testCase);
     }
-    const stepResults = parseStepSheetResults(rows, testCase, name, cases.filter(item => ids.some(id => caseIdentity(id) === caseIdentity(item.id))));
+    const uniqueDisplay = !cases.some(item => item.id !== testCase!.id && displayTestCaseId(item) === displayTestCaseId(testCase!));
+    const ownedCase = readStepCaseSnapshot(rows, testCase.id, testCase.registerIdentity, uniqueDisplay, uniqueDisplay, snapshotOwnership(testCase, cases, name));
+    if (ownedCase.defects) testCase.defects = [...new Map([...(testCase.defects ?? []), ...ownedCase.defects].map(item => [item.id, item])).values()];
+    if (ownedCase.customFields) testCase.customFields = [...new Map([...(testCase.customFields ?? []), ...ownedCase.customFields].map(item => [item.key, item])).values()];
+    if (ownedCase.resultFieldDefinitions) testCase.resultFieldDefinitions = ownedCase.resultFieldDefinitions;
+    const stepResults = parseStepSheetResults(rows, testCase, name, cases.filter(item => ids.some(id => caseIdentity(id) === caseIdentity(item.id))), { allowLegacySnapshots: !cases.some(item => item.id !== testCase!.id && displayTestCaseId(item) === displayTestCaseId(testCase!)) });
     if (stepResults) {
       stepResults.results.forEach(result => {
         result.sheetSections?.forEach(section => section.rows.forEach(row => row.fields.forEach(field => {
@@ -258,7 +313,11 @@ function appendSheetResults(cases: TestCase[], workbookSheets: WorkbookSheet[], 
       testCase.importIssues = [...(testCase.importIssues ?? []), ...stepResults.issues];
       return;
     }
-    const parsedResults = resultsFromRows(rows);
+    const ownedResults = readStepResultSnapshots(rows, testCase.id, testCase.registerIdentity, !cases.some(item => item.id !== testCase!.id && displayTestCaseId(item) === displayTestCaseId(testCase!)), !cases.some(item => item.id !== testCase!.id && displayTestCaseId(item) === displayTestCaseId(testCase!)), snapshotOwnership(testCase, cases, name));
+    const snapshotStart = rows.findIndex(row => row[0] === STEP_SNAPSHOT_START);
+    rows = snapshotStart >= 0 ? rows.slice(0, snapshotStart) : rows;
+    const sourceRows = rows;
+    const parsedResults = resultsFromRows(sourceRows);
     const detailFields = detailFieldsFromRows(rows, name);
     const representedRefs = detailFields.flatMap(field => {
       if (field.row == null || field.column == null) return [];
@@ -301,8 +360,8 @@ function appendSheetResults(cases: TestCase[], workbookSheets: WorkbookSheet[], 
       if (text.actualResult || text.apiResponse || text.log) parsedResults.push({ id: `SHEET-IMPORT-${name}`, source: "sheets", sourceSheetName: name, status: testCase.status, ...text, evidence: [], createdAt: "" });
     }
     testCase.resultFieldDefinitions = [...(testCase.resultFieldDefinitions ?? []), ...resultFieldDefinitionsFromRows(rows)];
-    testCase.customFields = [...(testCase.customFields ?? []), ...detailFields];
-    testCase.results = [...(testCase.results ?? []), ...parsedResults.map((result) => ({ ...result, sourceSheetName: name, defects: undefined, textHighlights: { actualResult: sheetTextHighlights(result.actualResult, styled), apiResponse: sheetTextHighlights(result.apiResponse, styled), log: sheetTextHighlights(result.log, styled) } }))];
+    testCase.customFields = [...new Map([...detailFields, ...(testCase.customFields ?? [])].map(field => [field.key, field])).values()];
+    testCase.results = [...(testCase.results ?? []), ...ownedResults, ...parsedResults.map((result) => ({ ...result, sourceSheetName: name, defects: undefined, textHighlights: { actualResult: sheetTextHighlights(result.actualResult, styled), apiResponse: sheetTextHighlights(result.apiResponse, styled), log: sheetTextHighlights(result.log, styled) } }))];
     testCase.defects = [...(testCase.defects ?? []), ...defectsFromRows(rows).map((defect) => ({ ...defect, sourceSheetName: name })), ...parsedResults.flatMap((result) => (result.defects ?? []).map((defect) => ({ ...defect, sourceSheetName: name })))];
   });
 }
@@ -465,7 +524,7 @@ export async function exportGoogleSheetWorkbook(spreadsheetId: string, auth: Goo
   if (!token) throw new Error("ขอ access token สำหรับ Google Sheets ไม่สำเร็จ");
   const response = await fetch(`https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/export?format=xlsx`, {
     headers: { Authorization: `Bearer ${token}` },
-    cache: "no-store",
+    cache: "no-store", signal: AbortSignal.timeout(120_000),
   });
   if (!response.ok) {
     if (!file && [400, 403, 404].includes(response.status)) throw new GoogleFileSelectionRequiredError();
@@ -483,22 +542,33 @@ export async function writeGoogleSheetResults(spreadsheetId: string, cases: Test
 
   const metadata = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets(properties(sheetId,title,gridProperties))" });
   const registerRows = (await sheets.spreadsheets.values.get({ spreadsheetId, range: "'Testcase'", valueRenderOption: "FORMULA" })).data.values ?? [];
-  if (registerRows.some(row => stepHeaderColumns(row))) {
-    if (cases.some(testCase => testCase.sourceRow > 0 && (!testCase.sourceSheetName || testCase.sourceSheetName === "Testcase") && !testCase.stepDefinitions?.length)) throw new Error("Project นี้ใช้ตารางแบบ Step กรุณาโหลดจาก Sheets ให้ครบก่อนซิงค์");
-    const stepCases = cases.filter(testCase => testCase.stepDefinitions?.length);
+  const duplicateRows = cases.some(item => item.registerIdentity && item.id !== displayTestCaseId(item));
+  const stepRegister = registerRows.some(row => stepHeaderColumns(row));
+  const safeRegister = duplicateRows || cases.some(item => caseResultReferences(item).length);
+  if (stepRegister || safeRegister) {
+    if (stepRegister && cases.some(testCase => testCase.sourceRow > 0 && (!testCase.sourceSheetName || testCase.sourceSheetName === "Testcase") && !testCase.stepDefinitions?.length)) throw new Error("Project นี้ใช้ตารางแบบ Step กรุณาโหลดจาก Sheets ให้ครบก่อนซิงค์");
+    const stepCases = stepRegister ? cases.filter(testCase => testCase.stepDefinitions?.length) : cases.filter(testCase => testCase.sourceRow > 0 && !testCase.sourceSheetName);
     if (!stepCases.length) throw new Error("ยังไม่มีข้อมูล Step ที่ตรวจสอบได้ กรุณาโหลดจาก Sheets ก่อนซิงค์");
-    const data = buildStepSheetWritePlan(stepCases, registerRows);
+    const data = stepRegister ? buildStepSheetWritePlan(stepCases, registerRows) : buildRegisterExecutionWritePlan(stepCases, registerRows);
     // Append owned snapshots beyond the existing grid, never over source text,
     // drawings, formulas or formatting. Prior snapshots are retained as history;
     // the reader selects the last complete snapshot.
-    const targets = stepCases.map(testCase => {
-      const matches = (metadata.data.sheets ?? []).filter(sheet => sheet.properties?.title === testCase.id);
-      if (matches.length !== 1) throw new Error(`ไม่พบแท็บรายละเอียด ${testCase.id} สำหรับซิงค์แบบปลอดภัย`);
-      const properties = matches[0].properties!;
-      const values = stepResultSnapshotRows(testCase);
-      const images = (testCase.results ?? []).filter(result => result.source !== "sheets" || result.editedLocally).flatMap(result => result.evidence.map(evidence => ({ resultId: result.id, evidence })));
-      const startRow = (properties.gridProperties?.rowCount ?? 1000) + 1;
+    const safeName = (item: TestCase) => safeResultSheetName(item.id);
+    const missingNames = [...new Set(stepCases.filter(item => !caseResultReferences(item).length && !item.sourceSheetName && hasRegisterSnapshotData(item)).map(safeName))].filter(name => !metadata.data.sheets?.some(sheet => sheet.properties?.title === name));
+    if (missingNames.length) {
+      await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: missingNames.map(title => ({ addSheet: { properties: { title } } })) } });
+      metadata.data.sheets = (await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets(properties(sheetId,title,gridProperties))" })).data.sheets;
+    }
+    const snapshotCases = stepCases.map(item => !caseResultReferences(item).length && hasRegisterSnapshotData(item) ? { ...item, sourceSheetName: safeName(item) } : item);
+    const planned = registerResultSnapshotTargets(snapshotCases, (metadata.data.sheets ?? []).map(sheet => ({ name: sheet.properties!.title!, rowCount: sheet.properties?.gridProperties?.rowCount ?? 1000 })));
+    const imageEnds = new Map<string, number>();
+    const targets = planned.map(target => {
+      const { testCase, values } = target;
+      const properties = metadata.data.sheets!.find(sheet => sheet.properties?.title === target.name)!.properties!;
+      const images = [...(testCase.results ?? []).filter(result => result.source !== "sheets" || result.editedLocally).flatMap(result => result.evidence.map(evidence => ({ resultId: result.id, evidence }))), ...(testCase.defects ?? []).flatMap(defect => defect.evidence.map(evidence => ({ resultId: defect.id, evidence })))];
+      const startRow = Math.max(target.startRow, (imageEnds.get(target.name) ?? 0) + 1);
       const imageRows = images.map(item => ["QA evidence preview", item.resultId, item.evidence.name]);
+      imageEnds.set(target.name, startRow + values.length + imageRows.length - 1);
       return { testCase, properties, startRow, values: [...values, ...imageRows], images, firstImageRow: startRow + values.length };
     });
     const drive = google.drive({ version: "v3", auth });
@@ -507,12 +577,13 @@ export async function writeGoogleSheetResults(spreadsheetId: string, cases: Test
       const permissions = await drive.permissions.list({ fileId, fields: "permissions(type,role)" });
       if (!permissions.data.permissions?.some(permission => permission.type === "anyone" && permission.role === "reader")) await drive.permissions.create({ fileId, requestBody: { type: "anyone", role: "reader" } });
     }
-    await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: targets.map(target => ({ appendDimension: { sheetId: target.properties.sheetId, dimension: "ROWS", length: target.values.length } })) } });
+    if (targets.length) await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: targets.map(target => ({ appendDimension: { sheetId: target.properties.sheetId, dimension: "ROWS", length: target.values.length } })) } });
     for (const target of targets) data.push({ range: `'${target.properties.title!.replaceAll("'", "''")}'!A${target.startRow}:H${target.startRow + target.values.length - 1}`, values: target.values });
     const result = await sheets.spreadsheets.values.batchUpdate({ spreadsheetId, requestBody: { valueInputOption: "RAW", data } });
     const imageData = targets.flatMap(target => target.images.map((item, index) => ({ range: `'${target.properties.title!.replaceAll("'", "''")}'!D${target.firstImageRow + index}`, values: [[evidenceSheetCell(item.evidence)]] })));
     if (imageData.length) await sheets.spreadsheets.values.batchUpdate({ spreadsheetId, requestBody: { valueInputOption: "USER_ENTERED", data: imageData } });
-    return { updatedCells: result.data.totalUpdatedCells ?? 0, resultSheets: targets.length, defects: 0 };
+    const defects = await writeSafeDefectRegister(spreadsheetId, stepCases, targets, metadata.data.sheets ?? [], sheets);
+    return { updatedCells: result.data.totalUpdatedCells ?? 0, resultSheets: targets.length, defects };
   }
   if (cases.some(testCase => testCase.stepDefinitions?.length)) throw new Error("รูปแบบตาราง Step เปลี่ยน กรุณาโหลดจาก Sheets ใหม่ก่อนซิงค์");
   const existing = new Map((metadata.data.sheets ?? []).map((sheet) => [sheet.properties?.title ?? "", sheet.properties?.sheetId]));
@@ -638,6 +709,73 @@ export async function writeGoogleSheetResults(spreadsheetId: string, cases: Test
     if (String(values[0]?.[0] ?? "") !== "Defected Id" || values.length !== defectedValues.length) throw new Error("เขียนข้อมูลลงแท็บ Defected ไม่สำเร็จ");
   }
   return { updatedCells: result.data.totalUpdatedCells ?? 0, resultSheets: resultCases.length, defects: defectRecords.length };
+}
+
+/** Patch known defect cells or append records; never replace an existing register. */
+async function writeSafeDefectRegister(
+  spreadsheetId: string,
+  cases: TestCase[],
+  targets: { testCase: TestCase; properties: { title?: string | null; sheetId?: number | null }; startRow: number }[],
+  sheetsMetadata: { properties?: { title?: string | null; sheetId?: number | null; gridProperties?: { rowCount?: number | null } | null } | null }[],
+  sheets: ReturnType<typeof google.sheets>,
+) {
+  if (!cases.some(item => item.defects?.length)) return 0;
+  const existing = sheetsMetadata.find(sheet => isProjectDefectSheet(sheet.properties?.title ?? ""));
+  const name = existing?.properties?.title ?? "Defected";
+  const quoted = `'${name.replaceAll("'", "''")}'`;
+  const rows = existing ? (await sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoted}!A:AZ`, valueRenderOption: "FORMULA" })).data.values ?? [] : [];
+  const registered = projectDefectsFromRows(rows, name);
+  const records = defectRecordsForSync(cases, registered).filter(record => cases.some(item => item.defects?.includes(record.defect)));
+  let headerIndex = rows.findIndex(row => row.some(cell => ["defect id", "defected id"].includes(normalize(cell))));
+  if (existing && headerIndex < 0) throw new Error("รูปแบบตาราง Defects เปลี่ยน กรุณาอัปเดตจาก Sheets ก่อนซิงค์");
+  const data: { range: string; values: unknown[][] }[] = [];
+  if (!existing) {
+    await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: [{ addSheet: { properties: { title: name } } }] } });
+    headerIndex = 0;
+    rows.push(["Defected Id", "Platform", "App version", "Defected Description", "Jira Card", "Status", "Reporter", "Report Date", "Ref (Testcase)", "Ref (RC)"]);
+    data.push({ range: `${quoted}!A1:J1`, values: [rows[0]] });
+  }
+  const headers = rows[headerIndex].map(normalize);
+  let ownerColumn = headers.indexOf("qa workspace defect id");
+  if (ownerColumn < 0) {
+    ownerColumn = Math.max(headers.length, ...rows.map(row => row.length));
+    headers[ownerColumn] = "qa workspace defect id";
+    data.push({ range: `${quoted}!${columnLetter(ownerColumn)}${headerIndex + 1}`, values: [["QA Workspace Defect ID"]] });
+  }
+  const idColumn = headers.findIndex(header => ["defect id", "defected id"].includes(header));
+  const appendRow = Math.max(rows.length, existing?.properties?.gridProperties?.rowCount ?? 1) + 1;
+  const additions: unknown[][] = [];
+  for (const record of records) {
+    const ownedRow = rows.find((row, index) => index > headerIndex && String(row[ownerColumn] ?? "") === record.defect.id);
+    const ownedDisplay = ownedRow && projectDefectsFromRows([rows[headerIndex], ownedRow], name)[0]?.id;
+    if (ownedDisplay) record.displayId = ownedDisplay;
+    const target = targets.find(item => item.testCase.id === record.testCase.id);
+    const link = target?.properties.sheetId != null ? `#gid=${target.properties.sheetId}&range=A${target.startRow}` : "";
+    const values: Record<string, string> = {
+      "qa workspace defect id": record.defect.id, "defect id": record.displayId, "defected id": record.displayId, platform: record.testCase.platform, "app version": record.testCase.appVersion,
+      "defect title": record.defect.title, title: record.defect.title,
+      "defect description": [record.defect.title, record.defect.description].filter(Boolean).join("\n"),
+      "defected description": [record.defect.title, record.defect.description].filter(Boolean).join("\n"),
+      "jira card": record.defect.jiraUrl, "jira url": record.defect.jiraUrl, status: record.defect.status, "defect status": record.defect.status,
+      reporter: record.testCase.executedBy, "report date": record.defect.createdAt,
+      "ref testcase": displayTestCaseId(record.testCase), "ref rc": link ? `=HYPERLINK("${link}","RC : ${record.displayId}")` : record.defect.rcReference ?? "",
+    };
+    const match = rows.findIndex((row, index) => index > headerIndex && projectDefectsFromRows([rows[headerIndex], row], name)[0]?.id === record.displayId);
+    if (match >= 0) {
+      headers.forEach((header, column) => {
+        if (column === idColumn || !(header in values) || String(rows[match][column] ?? "").startsWith("=")) return;
+        data.push({ range: `${quoted}!${columnLetter(column)}${match + 1}`, values: [[values[header]]] });
+      });
+    } else {
+      additions.push(headers.map(header => values[header] ?? ""));
+    }
+  }
+  if (additions.length) {
+    if (existing?.properties?.sheetId != null) await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: [{ appendDimension: { sheetId: existing.properties.sheetId, dimension: "ROWS", length: additions.length } }] } });
+    data.push({ range: `${quoted}!A${appendRow}:${columnLetter(headers.length - 1)}${appendRow + additions.length - 1}`, values: additions });
+  }
+  if (data.length) await sheets.spreadsheets.values.batchUpdate({ spreadsheetId, requestBody: { valueInputOption: "USER_ENTERED", data } });
+  return records.length;
 }
 
 function resultSheetValues(testCase: TestCase, defectDisplayIds = new Map<string, string>()) {

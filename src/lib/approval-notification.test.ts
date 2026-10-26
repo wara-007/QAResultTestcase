@@ -11,7 +11,8 @@ test("resending preserves approval, review and existing links", () => {
   assert.equal(updated.token_hash, original.token_hash);
   assert.equal(updated.id, original.id);
   assert.equal(updated.requested_at, "2026-10-04");
-  assert.equal(updated.email_id, "mailto-update");
+  assert.equal(updated.email_sent_at, null);
+  assert.equal(updated.email_id, "gmail-pending-update");
 });
 
 test("update notice is independent of approval status and stops after review", () => {
@@ -19,4 +20,13 @@ test("update notice is independent of approval status and stops after review", (
   assert.equal(approvalUpdateNotice("mailto-update", "2026-10-04", null), true);
   assert.equal(approvalUpdateNotice("mailto-update", "2026-10-04", "2026-10-05"), false);
   assert.equal(approvalUpdateNotice("mailto", "2026-10-04", null), false);
+  assert.equal(approvalUpdateNotice("smtp-update:<message>", "2026-10-04", "2026-10-01"), true);
+  assert.equal(approvalUpdateNotice("gmail-update:message", "2026-10-04", "2026-10-01"), true);
+  assert.equal(approvalUpdateNotice("smtp-pending-update", "2026-10-04", null), false);
+});
+
+test("Microsoft resends keep PO decisions and are recognized as updates", () => {
+  const patch = approvalNotificationPatch("2026-10-22","qa","QA",true,"microsoft");
+  assert.equal(patch.email_id,"microsoft-pending-update");
+  assert.equal(approvalUpdateNotice("microsoft-update:accepted:op","2026-10-22","2026-10-21"),true);
 });

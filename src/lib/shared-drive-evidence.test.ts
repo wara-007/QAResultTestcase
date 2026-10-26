@@ -1,6 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { storedDriveEvidenceMatches, serveSharedDriveEvidence } from "./shared-drive-evidence";
+import { storedDriveEvidenceMatches, storedDriveEvidenceProjectIds, serveSharedDriveEvidence } from "./shared-drive-evidence";
+
+test("evidence authorization searches all candidate pages and ignores text-only matches", async () => {
+  const fileId = "drive-file-123";
+  const rows = [
+    ...Array.from({ length: 501 }, () => ({ project_id: "text-only", result_reference: `qa-results:${JSON.stringify({ log: fileId })}` })),
+    ...Array.from({ length: 2 }, () => ({ project_id: "evidence-project", result_reference: `qa-results:${JSON.stringify({ results: [{ evidence: [{ fileId }] }] })}` })),
+  ];
+  const pages: number[] = [];
+  const projects = await storedDriveEvidenceProjectIds(fileId, async (start, end) => {
+    pages.push(start);
+    return { data: rows.slice(start, end + 1), error: null };
+  });
+  assert.deepEqual(projects, ["evidence-project"]);
+  assert.deepEqual(pages, [0, 500]);
+});
+
+test("evidence authorization fails closed on a later candidate page error", async () => {
+  await assert.rejects(storedDriveEvidenceProjectIds("drive-file-123", async start => start === 0
+    ? { data: Array.from({ length: 500 }, () => ({ project_id: "project", result_reference: "" })), error: null }
+    : { data: null, error: { message: "database unavailable" } }), /database unavailable/);
+});
 
 test("only exact Drive evidence references grant access, not arbitrary text or another provider", () => {
   const reference = (evidence: unknown) => `qa-results:${JSON.stringify({ results: [{ evidence: [evidence] }] })}`;

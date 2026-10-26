@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { TestCase } from "../types";
-import { canonicalCaseId, canonicalChildId, canonicalizeCases, hashSnapshot } from "./canonical";
+import { canonicalCaseId, canonicalChildId, canonicalizeCases } from "./canonical";
+import { hashSnapshot } from "./snapshot-hash";
 import { casesFromRows } from "../testcase-rows";
 test("Step execution changes remain detectable even when aggregate case status is unchanged", () => {
   const testCase = casesFromRows([["Test Case (TC ID)", "Step#", "Description Step", "Expected Result", "Status"], ["ENQ_01_TC_01", "step 01", "Landing", "Correct", "TESTING"], ["", "step 02", "Coin", "Updated", "NotStart"]])[0];

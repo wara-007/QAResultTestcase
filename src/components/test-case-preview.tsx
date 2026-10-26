@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import { displayTestCaseId } from "../lib/register-case-identity";
 import Link from "next/link";
 import { ArrowLeft, ExternalLink, Pencil } from "lucide-react";
 import type { TestCase, TestResult, WorkbookSheet } from "../lib/types";
@@ -13,9 +14,10 @@ import { ImageViewerGallery } from "./image-viewer-gallery";
 import { evidenceImageUrl } from "../lib/evidence";
 import { classifySprintResult } from '../lib/sprint-result-scope';
 
-export function TestCasePreview({ testCase, projectId, backHref, editHref, sourceSheetName = "", loading = false, associatedSheets = [], onBack, evidenceBasePath: providedEvidenceBasePath, sprintId }: {
+export function TestCasePreview({ testCase, projectId, backHref, editHref, sourceSheetName = "", loading = false, associatedSheets = [], caseDisplayNames = {}, onBack, evidenceBasePath: providedEvidenceBasePath, sprintId }: {
   testCase: TestCase; projectId: string; backHref: string; editHref?: string;
   sourceSheetName?: string; loading?: boolean; associatedSheets?: WorkbookSheet[]; onBack?: () => void;
+  caseDisplayNames?: Record<string,string>;
   evidenceBasePath?:string;
   sprintId?:string;
 }) {
@@ -28,12 +30,12 @@ export function TestCasePreview({ testCase, projectId, backHref, editHref, sourc
     <summary><strong>{testCase.stepDefinitions?.length || result.sharedSheetMappingVersion ? stepResultTitle(testCase, result) : `ผลที่ ${index + 1}`}</strong><span>{result.status}</span></summary>
     <div className="testcase-preview-result-body"><div className="testcase-preview-result-meta">{sprintId && <span className="sprint-continuation-badge">{({current:"ทำใน Sprint นี้",carried:"ยกมาจาก Sprint ก่อน",unknown:"ไม่ทราบ Sprint ต้นกำเนิด"})[classifySprintResult(result,sprintId,[])]}</span>}{result.sourceSheetName && <span>จากแท็บ {result.sourceSheetName}</span>}{result.testerName && <span>ผู้ทดสอบ: {result.testerName}</span>}{result.createdAt && <time>{formatFlexibleDate(result.createdAt)}</time>}</div><ReviewResultContent result={result} evidenceBasePath={evidenceBasePath} /></div>
   </details>;
-  return <section className="panel testcase-preview-page" aria-label={`Preview ${testCase.id}`}>
-    <header className="testcase-preview-header"><div><span className="eyebrow">TEST CASE PREVIEW · ดูอย่างเดียว</span><h2>{testCase.id} · {testCase.name}</h2>{sourceSheetName && <p>แท็บต้นทาง: {sourceSheetName}</p>}</div><div className="testcase-preview-actions">{onBack ? <button type="button" className="secondary-button" onClick={onBack}><ArrowLeft size={16} />กลับ Test cases</button> : <Link href={backHref} className="secondary-button"><ArrowLeft size={16} />กลับ Test cases</Link>}{editHref && <Link href={editHref} className="primary-button"><Pencil size={16} />แก้ไข Test Case</Link>}</div></header>
+  return <section className="panel testcase-preview-page" aria-label={`Preview ${displayTestCaseId(testCase)}`}>
+    <header className="testcase-preview-header"><div><span className="eyebrow">TEST CASE PREVIEW · ดูอย่างเดียว</span><h2>{displayTestCaseId(testCase)} · {testCase.name}</h2>{sourceSheetName && <p>แท็บต้นทาง: {sourceSheetName}</p>}</div><div className="testcase-preview-actions">{onBack ? <button type="button" className="secondary-button" onClick={onBack}><ArrowLeft size={16} />กลับ Test cases</button> : <Link href={backHref} className="secondary-button"><ArrowLeft size={16} />กลับ Test cases</Link>}{editHref && <Link href={editHref} className="primary-button"><Pencil size={16} />แก้ไข Test Case</Link>}</div></header>
     <div className="testcase-preview-body">
       <dl className="testcase-preview-metadata">{[["สถานะ", testCase.status], ["Platform", testCase.platform], ["Environment", testCase.environment], ["Device", testCase.device], ["App version", testCase.appVersion], ["ผู้ทดสอบ", testCase.executedBy], ["Test data", testCase.testData]].filter(([, value]) => value).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
       <TestCaseSourceDetails testCase={testCase} />
-      {associatedSheets.filter(sheet => sheet.testCaseIds.length > 1 && (!sourceSheetName || sheet.name === sourceSheetName)).map(sheet => <SharedSheetDefinition key={sheet.path} caseId={testCase.id} sheetName={sheet.name} caseIds={sheet.testCaseIds} table={results.find(result => result.sourceSheetName === sheet.name && result.sheetDefinitionTable)?.sheetDefinitionTable} />)}
+      {associatedSheets.filter(sheet => sheet.testCaseIds.length > 1 && (!sourceSheetName || sheet.name === sourceSheetName)).map(sheet => <SharedSheetDefinition key={sheet.path} caseId={displayTestCaseId(testCase)} sheetName={sheet.name} caseIds={sheet.testCaseIds.map(id=>caseDisplayNames[id] ?? id)} table={results.find(result => result.sourceSheetName === sheet.name && result.sheetDefinitionTable)?.sheetDefinitionTable} />)}
       <TestCaseSteps testCase={testCase} readOnly expandAll />
       <section aria-label="Results"><div className="result-sheet-heading"><h3>Results</h3><strong>{results.length} รายการ</strong></div>
         {results.map(renderResult)}

@@ -15,7 +15,7 @@ export type SnapshotHeader = {
 };
 export type SnapshotCase = { snapshotId:string; position:number; testCase:import('./types').TestCase };
 export type SprintProjectEntry = {
-  projectId:string; sprintId:string; name:string; kind:'current'|'continued'; participationId:string;
+  projectId:string; sprintId:string; name:string; description?:string; kind:'current'|'continued'; participationId:string;
   destination:{sprintId:string;sprintName:string;year:number}|null; historical:SnapshotHeader|null;
   previousSprintName?:string;
   qaIds?:string[];

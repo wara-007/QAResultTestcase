@@ -7,6 +7,13 @@ const header = ["Test Scenario*", "Test Scenario Description*\n(High Level Test 
 const definition = ["ENQ_01", "Enquiry", "ENQ_01_TC_01", "Payment", "Positive", "step 01", "Landing page", "Correct"];
 const next = ["", "", "", "", "Positive", "step 02", "Coin", "Updated"];
 const main = parseStepTestCases([header, definition, next], "Testcase")![0];
+test("an image-only result marker maps to its unique named register Step", () => {
+  const owner = { ...main, stepDefinitions: main.stepDefinitions!.map((step, index) => ({ ...step, name: `Step${index + 1}` })) };
+  const detail = [...definition]; detail[5] = "Step1";
+  const parsed = parseStepSheetResults([header, detail, next, [], ["Result Testing"], ["Step1"]], owner, "TC_01")!;
+  assert.equal(parsed.results[0].stepId, "Testcase:2");
+  assert.deepEqual(parsed.issues, []);
+});
 const compactRows = [["Test case No.", "TestCase", "Test Steps", "Expected Result "],
   ["TC05", "Login", "Click Login Home page", "Login successfully"],
   ["TC06", "Login", "Click Login TOL Landing page", "Login successfully"],
@@ -148,9 +155,10 @@ test("detail Results retain extra columns with source titles and never discard d
   assert.ok(fields?.some(field => field.ref === "C4" && field.value === "Different expected"));
   assert.ok(fields?.some(field => field.ref === "I5" && field.value === "more proof"));
 });
-test("unique Step name without descriptive evidence remains unassigned", () => {
+test("a Step heading identifies its unique Step without needing repeated descriptions", () => {
   const parsed = parseStepSheetResults([["Result Testing"], ["step 01"], ["log data"]], main, main.id)!;
-  assert.equal(parsed.results[0].stepId, undefined);
+  assert.equal(parsed.results[0].stepId, "Testcase:2");
+  assert.deepEqual(parsed.issues, []);
 });
 
 test("detail definition table is excluded and results retain individual Step ranges and highlights", () => {
@@ -208,4 +216,22 @@ test("duplicate Step names use description and expected result, ambiguous sectio
   const parsed = parseStepSheetResults([["Result Testing"], ["step 01"], ["log data"]], caseWithDuplicates, main.id)!;
   assert.equal(parsed.results[0].stepId, undefined);
   assert.ok(parsed.issues.length);
+});
+
+
+test("inline Result Testing tables scope repeated Step names to the explicit case ID block", () => {
+  const rows = [[...header, "Result Testing"],
+    ["", "", "FG01_TC01", "First", "Positive", "Step 01", "Open", "Works", "first proof"],
+    ["", "", "", "", "Positive", "Step 02", "Check", "Works", "first response"],
+    ["", "", "FG01_TC02", "Second", "Positive", "Step 01", "Open", "Works", "second proof"],
+    ["", "", "", "", "Positive", "Step 02", "Check", "Works", "second response"]];
+  const cases = parseStepTestCases(rows, "Testcase")!;
+  for (const [index, owner] of cases.entries()) {
+    const parsed = parseStepSheetResults(rows, owner, "FG01", cases)!;
+    assert.deepEqual(parsed.results.map(result => result.sourceRange), index === 0
+      ? [{ startRow: 2, endRow: 2 }, { startRow: 3, endRow: 3 }]
+      : [{ startRow: 4, endRow: 4 }, { startRow: 5, endRow: 5 }]);
+    assert.ok(parsed.results.every(result => owner.stepDefinitions!.some(step => step.id === result.stepId)));
+    assert.ok(!JSON.stringify(parsed.results).includes(index === 0 ? "second proof" : "first proof"));
+  }
 });

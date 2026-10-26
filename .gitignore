@@ -10,3 +10,6 @@ node_modules
 coverage
 *.tsbuildinfo
 supabase/.temp
+
+# Embedded local checkout; preserve it outside the parent repository.
+/QAResultTestcase/

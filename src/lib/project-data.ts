@@ -1,8 +1,13 @@
+import { writeProjectRowBatches } from "./project-row-batches";
+import { storeSourceWorkbook, loadSourceWorkbookBytes } from "./source-workbook-storage";
+import { uploadSourceChunks } from "./source-chunk-upload";
 import { createClient } from "@/lib/supabase/client";
 import { readSheetImportState } from "./sheet-import-state";
 import type { SheetImportState } from "./sheet-import-state";
 import type { RowLoadState } from "./result-preview";
 import type { TestCase, TestStatus, WorkbookSheet, WorkbookSource } from "@/lib/types";
+import { readAllRows } from "./paged-rows";
+import { retryTimedOutProjectWrite, enqueueProjectDetailWrite } from "./project-detail-lock";
 
 const SOURCE_BUCKET = "testcase-source-files";
 const SOURCE_CHUNK_SIZE = 8 * 1024 * 1024;
@@ -72,11 +77,21 @@ export async function assembleWorkbookBytes({ chunkCount, storageKey, download, 
   return combined.buffer;
 }
 
-async function downloadSourceWorkbook(sourceRow: SourceRow, includeWorkbook: boolean) {
+async function downloadSourceWorkbook(projectId: string, sourceRow: SourceRow, includeWorkbook: boolean) {
   const supabase = createClient();
   const mapping = sourceRow.column_mapping ?? {};
+  if (includeWorkbook && mapping.storageCleanup && !sourceRow.storage_key) throw new Error("ไฟล์รุ่นเก่าถูกนำออกจาก Storage แล้ว กรุณารีเฟรชหน้าเพื่อใช้ข้อมูลล่าสุด");
   const chunkCount = typeof mapping.chunkCount === "number" ? mapping.chunkCount : 0;
-  return assembleWorkbookBytes({
+  return loadSourceWorkbookBytes({mapping,includeWorkbook,
+    readSheets: async () => {
+      const response = await fetch(`/api/projects/${projectId}/google-sheet/workbook?sourceId=${encodeURIComponent(sourceRow.id)}`, {cache:"no-store"});
+      if (!response.ok) {
+        const data=await response.json().catch(()=>null);
+        throw new Error(data?.error ?? "โหลดไฟล์จาก Sheets ไม่สำเร็จ");
+      }
+      return response.arrayBuffer();
+    },
+    readStored: () => assembleWorkbookBytes({
     chunkCount,
     storageKey: sourceRow.storage_key,
     includeWorkbook,
@@ -85,21 +100,20 @@ async function downloadSourceWorkbook(sourceRow: SourceRow, includeWorkbook: boo
       if (result.error) throw new Error(`โหลดไฟล์ต้นฉบับไม่สำเร็จ: ${result.error.message}`);
       return new Uint8Array(await result.data.arrayBuffer());
     },
-  });
+  })});
 }
 
-export async function loadProjectWorkbook(projectId: string) {
+export async function loadProjectWorkbook(projectId: string, sourceId?: string) {
   const supabase = createClient();
-  const result = await supabase
+  let query = supabase
     .from("source_files")
     .select("id, original_name, storage_key, sheet_name, column_mapping")
-    .eq("project_id", projectId)
-    .order("version_no", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .eq("project_id", projectId);
+  if (sourceId) query = query.eq("id",sourceId);
+  const result = await query.order("version_no", { ascending: false }).limit(1).maybeSingle();
   if (result.error) throw new Error(result.error.message);
   if (!result.data) throw new Error("ไม่พบไฟล์ต้นฉบับของ Project");
-  return downloadSourceWorkbook(result.data as SourceRow, true);
+  return downloadSourceWorkbook(projectId, result.data as SourceRow, true);
 }
 
 export async function loadProjectWorkspace(projectId: string, options: { includeWorkbook?: boolean } = {}): Promise<ProjectWorkspace> {
@@ -112,29 +126,32 @@ export async function loadProjectWorkspace(projectId: string, options: { include
       .order("version_no", { ascending: false })
       .limit(1)
       .maybeSingle(),
-    supabase
+    readAllRows<CaseRow>((start, end) => supabase
       .from("test_cases")
       .select("id, testcase_key, source_row, sort_order, platform, condition_text, scenario, case_name, steps, expected_result, test_data, test_executions(id, status, device, app_version, environment, remark, result_reference, executed_by_name, executed_date, executed_time, attempt_no)")
       .eq("project_id", projectId)
       .order("sort_order", { ascending: true })
-      .order("source_row", { ascending: true }),
+      .order("source_row", { ascending: true })
+      .order("id", { ascending: true })
+      .range(start, end), 10, { shrinkOnTimeout: true }),
   ]);
 
   if (sourceResult.error) throw new Error(sourceResult.error.message);
-  if (casesResult.error) throw new Error(casesResult.error.message);
 
   let source: WorkbookSource | null = null;
   const sourceRow = sourceResult.data as SourceRow | null;
   if (sourceRow) {
     const mapping = sourceRow.column_mapping ?? {};
     const includeWorkbook = options.includeWorkbook ?? false;
-    const buffer = await downloadSourceWorkbook(sourceRow, includeWorkbook);
+    const buffer = await downloadSourceWorkbook(projectId, sourceRow, includeWorkbook);
     const sheetPath = typeof mapping.sheetPath === "string" ? mapping.sheetPath : "";
     const sheets = Array.isArray(mapping.sheets) ? mapping.sheets as WorkbookSheet[] : [];
     const columns = Object.fromEntries(Object.entries(mapping).filter(([key, value]) =>
-      key !== "sheetPath" && key !== "chunkCount" && key !== "sheets" && key !== "documentType" && typeof value === "string",
+      key !== "sourceOrigin" && key !== "workbookStorage" && key !== "sheetPath" && key !== "chunkCount" && key !== "sheets" && key !== "documentType" && typeof value === "string",
     )) as Record<string, string>;
     source = {
+      sourceOrigin: mapping.sourceOrigin === "upload" || mapping.sourceOrigin === "google-sheets" ? mapping.sourceOrigin : undefined,
+      workbookStorage: mapping.workbookStorage === "google-sheets" ? "google-sheets" : "supabase",
       documentType: mapping.documentType === "xlsx" ? "xlsx" : mapping.documentType === "google-sheets" ? "google-sheets" : undefined,
       coverSnapshot: mapping.coverSnapshot as WorkbookSource["coverSnapshot"],
       sheetImport: readSheetImportState(mapping.sheetImport),
@@ -151,7 +168,7 @@ export async function loadProjectWorkspace(projectId: string, options: { include
 
   let previousScenario = "";
   let previousSteps = "";
-  const cases = ((casesResult.data ?? []) as CaseRow[]).map((row) => {
+  const cases = casesResult.map((row) => {
     const execution = [...(row.test_executions ?? [])].sort((a, b) => b.attempt_no - a.attempt_no)[0];
     const stored = parseStoredResults(execution?.result_reference);
     const scenario = row.scenario || previousScenario;
@@ -178,6 +195,8 @@ export async function loadProjectWorkspace(projectId: string, options: { include
       appVersion: execution?.app_version ?? "",
       environment: execution?.environment ?? "",
       resultReference: stored.resultReference,
+      resultReferenceTargets: stored.resultReferenceTargets,
+      registerIdentity: stored.registerIdentity,
       executedBy: execution?.executed_by_name ?? "",
       executedDate: execution?.executed_date ?? "",
       executedTime: execution?.executed_time ?? "",
@@ -195,26 +214,20 @@ export async function loadProjectWorkspace(projectId: string, options: { include
   return { cases, source };
 }
 
-export async function persistImportedWorkbook(projectId: string, cases: TestCase[], source: WorkbookSource, persistCases = true) {
+export async function persistImportedWorkbook(projectId: string, cases: TestCase[], source: WorkbookSource, persistCases = true, origin: "upload" | "google-sheets" = "upload") {
   const supabase = createClient();
   const { data: userResult, error: userError } = await supabase.auth.getUser();
   if (userError || !userResult.user) throw new Error("กรุณาเข้าสู่ระบบอีกครั้งก่อนอัปโหลดไฟล์");
   const sourceId = crypto.randomUUID();
-  const safeName = source.fileName.replace(/[^a-zA-Z0-9._-]+/g, "_");
-  const storageKey = `${projectId}/${sourceId}/${safeName}`;
-  const contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-  const file = new Blob([source.buffer], { type: contentType });
-  const chunkCount = Math.ceil(file.size / SOURCE_CHUNK_SIZE);
-  for (let index = 0; index < chunkCount; index += 1) {
-    const chunk = file.slice(index * SOURCE_CHUNK_SIZE, Math.min((index + 1) * SOURCE_CHUNK_SIZE, file.size));
-    const upload = await supabase.storage
-      .from(SOURCE_BUCKET)
-      .upload(`${storageKey}/part-${String(index).padStart(3, "0")}`, chunk, {
-        contentType: "application/octet-stream",
-        upsert: false,
-      });
-    if (upload.error) throw new Error(`อัปโหลดไฟล์ต้นฉบับส่วนที่ ${index + 1}/${chunkCount} ไม่สำเร็จ: ${upload.error.message}`);
-  }
+  const project = await supabase.from("projects").select("google_sheet_id").eq("id",projectId).single();
+  if (project.error) throw new Error(project.error.message);
+  const stored = await storeSourceWorkbook(source,projectId,sourceId,project.data.google_sheet_id ?? "",async (key,buffer)=>{
+    const storage = supabase.storage.from(SOURCE_BUCKET);
+    return uploadSourceChunks(new Blob([buffer]),SOURCE_CHUNK_SIZE,key,{
+      upload: async (path,chunk)=>storage.upload(path,chunk,{contentType:"application/octet-stream",upsert:false}),
+      download: async path=>storage.download(path),
+    });
+  },origin);
 
   const versionResult = await supabase
     .from("source_files")
@@ -229,25 +242,23 @@ export async function persistImportedWorkbook(projectId: string, cases: TestCase
     id: sourceId,
     project_id: projectId,
     original_name: source.fileName,
-    storage_provider: "supabase",
-    storage_key: storageKey,
-    byte_size: source.buffer.byteLength,
+    storage_provider: stored.storageProvider,
+    storage_key: stored.storageKey,
+    byte_size: stored.byteSize,
     sheet_name: source.sheetName,
-    column_mapping: { ...source.columns, documentType: source.documentType, sheetPath: source.sheetPath, chunkCount, sheets: source.sheets, sheetImport: source.sheetImport, coverSnapshot: source.coverSnapshot },
+    column_mapping: { ...source.columns, sourceOrigin: stored.sourceOrigin, documentType: source.documentType, sheetPath: source.sheetPath, workbookStorage: stored.workbookStorage, chunkCount: stored.chunkCount, sheets: source.sheets, sheetImport: source.sheetImport, coverSnapshot: source.coverSnapshot },
     version_no: (versionResult.data?.version_no ?? 0) + 1,
     uploaded_by: userResult.user.id,
   });
   if (sourceInsert.error) throw new Error(sourceInsert.error.message);
 
-  if (!persistCases) return { cases, source: { ...source, id: sourceId } };
+  if (!persistCases) return { cases, source: { ...source, id: sourceId, sourceOrigin: stored.sourceOrigin, workbookStorage: stored.workbookStorage } };
 
-  const caseResult = await supabase
-    .from("test_cases")
-    .upsert(cases.map((testCase, index) => ({
+  const caseRows = cases.map((testCase, index) => ({
       project_id: projectId,
       source_file_id: sourceId,
       testcase_key: testCase.id,
-      source_row: testCase.sourceRow,
+      source_row: testCase.sourceRow > 0 ? testCase.sourceRow : null,
       sort_order: index,
       platform: testCase.platform,
       condition_text: testCase.condition,
@@ -256,14 +267,14 @@ export async function persistImportedWorkbook(projectId: string, cases: TestCase
       steps: testCase.steps,
       expected_result: testCase.expected,
       test_data: testCase.testData,
-    })), { onConflict: "project_id,testcase_key" })
-    .select("id, testcase_key");
-  if (caseResult.error) throw new Error(caseResult.error.message);
-
-  const caseIds = new Map((caseResult.data ?? []).map((row) => [row.testcase_key, row.id]));
-  const executionResult = await supabase
-    .from("test_executions")
-    .upsert(cases.map((testCase) => ({
+    }));
+  const savedCaseRows = await writeProjectRowBatches(caseRows, async batch => {
+    const result = await supabase.from("test_cases").upsert(batch, { onConflict: "project_id,testcase_key" }).select("id,testcase_key");
+    if (result.error) throw new Error(`บันทึก Testcases ไม่สำเร็จ: ${result.error.message}`);
+    return result.data ?? [];
+  });
+  const caseIds = new Map(savedCaseRows.map(row => [row.testcase_key, row.id]));
+  const executionRows = cases.map((testCase) => ({
       project_id: projectId,
       test_case_id: caseIds.get(testCase.id),
       attempt_no: 1,
@@ -277,16 +288,25 @@ export async function persistImportedWorkbook(projectId: string, cases: TestCase
       executed_date: testCase.executedDate,
       executed_time: testCase.executedTime,
       executed_by: null,
-    })), { onConflict: "test_case_id,attempt_no" });
-  if (executionResult.error) throw new Error(executionResult.error.message);
-
-  return loadProjectWorkspace(projectId);
+    }));
+  await writeProjectRowBatches(executionRows, async batch => {
+    const result = await supabase.from("test_executions").upsert(batch, { onConflict: "test_case_id,attempt_no" });
+    if (result.error) throw new Error(`บันทึกผลทดสอบไม่สำเร็จ: ${result.error.message}`);
+    return [];
+  });
+  const workspace = await loadProjectWorkspace(projectId, { includeWorkbook: false });
+  // The caller already holds the uploaded workbook. Reuse those bytes instead
+  // of downloading every part again while the import is still in memory.
+  if (workspace.source?.id === sourceId) {
+    workspace.source = { ...workspace.source, buffer: source.buffer, bufferLoaded: true };
+  }
+  return workspace;
 }
 
-export async function persistSheetImportState(projectId: string, sourceId: string, spreadsheetId: string, states: Record<string, RowLoadState>, complete: boolean, invalidate = false): Promise<SheetImportState> {
+export async function persistSheetImportState(projectId: string, sourceId: string, spreadsheetId: string, states: Record<string, RowLoadState>, complete: boolean, invalidate = false, evidenceManifest?: SheetImportState["evidenceManifest"], sourceRevision?: string, registerBaseline?: SheetImportState["registerBaseline"]): Promise<SheetImportState> {
   const response = await fetch(`/api/projects/${projectId}/import-state`, {
     method: "PATCH", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sourceId, spreadsheetId, states, complete, invalidate }),
+    body: JSON.stringify({ sourceId, spreadsheetId, states, complete, invalidate, evidenceManifest, sourceRevision, registerBaseline }),
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error ?? "บันทึกสถานะนำเข้าไม่สำเร็จ");
@@ -296,17 +316,21 @@ export async function persistSheetImportState(projectId: string, sourceId: strin
 }
 
 export async function persistTestCaseResult(projectId: string, testCase: TestCase) {
+  return enqueueProjectDetailWrite(projectId, () => saveTestCaseResult(projectId, testCase));
+}
+
+async function saveTestCaseResult(projectId: string, testCase: TestCase) {
   const supabase=createClient();
-  const saved=await supabase.rpc('save_test_case_result',{
+  const saved=await retryTimedOutProjectWrite(async () => await supabase.rpc('save_test_case_result',{
     requested_project_id:projectId,
     requested_case:{recordId:testCase.recordId,id:testCase.id,sourceRow:testCase.sourceRow,platform:testCase.platform,condition:testCase.condition,scenario:testCase.scenario,name:testCase.name,steps:testCase.steps,expected:testCase.expected,testData:testCase.testData},
     requested_execution:{status:testCase.status,device:testCase.device,appVersion:testCase.appVersion,environment:testCase.environment,remark:testCase.remark,resultReference:serializeStoredResults(testCase),executedBy:testCase.executedBy,executedDate:testCase.executedDate,executedTime:testCase.executedTime},
-  });
+  }));
   if(saved.error) {
     // Before schema installation continuation is gated off. Keep ordinary saves
     // compatible; never fall back on a real transaction/authorization failure.
     if(['PGRST202','42883'].includes(saved.error.code)) return persistTestCaseResultLegacy(projectId,testCase);
-    throw new Error(saved.error.message);
+    throw new Error(`บันทึกผล ${testCase.id} ไม่สำเร็จ: ${saved.error.message}`);
   }
   if(!saved.data?.recordId || !saved.data?.executionId) throw new Error('บันทึก Result ไม่สำเร็จ');
   return {...testCase,results:parseStoredResults(saved.data.resultReference).results,recordId:saved.data.recordId,executionId:saved.data.executionId,persistedLocally:true};

@@ -1,3 +1,4 @@
+import { isMissingResultReferenceIssue } from "./register-result-references";
 import type { TestCase, TestResult, WorkbookSource } from "./types";
 import { isProjectSummarySheet, testCaseIdsMatchingSheetName } from "./sheet-mapping-model";
 
@@ -15,6 +16,8 @@ export function needsStepTemplateRefresh(cases: TestCase[], source: WorkbookSour
   });
   if (missingSharedResults) return true;
   return cases.some(testCase => testCase.stepDefinitions?.some(step => !step.sourceFields)
+    || testCase.results?.some(result => result.id.startsWith("SHEET-IMPORT-") && /-STEP-\d+$/.test(result.id)
+      && result.source !== "web" && !result.editedLocally && result.stepSheetMappingVersion !== 1 && result.stepSheetMappingVersion !== 2)
     || (testCase.stepDefinitions?.length && (testCase.results ?? []).some(result => result.id === `SHEET-IMPORT-${result.sourceSheetName}` && !result.editedLocally))
     || (!testCase.stepDefinitions?.length && /\bstep\s*\d+/i.test(testCase.steps) && source?.sheets.some(sheet => isProjectSummarySheet(sheet.name))));
 }
@@ -40,10 +43,15 @@ export function replaceLegacyStepPreviews(localResults: TestResult[], freshResul
 export function reconcileStepCases(stored: TestCase, incoming: TestCase): { testCase: TestCase; issues: string[] } {
   const issues = [...(incoming.importIssues ?? [])];
   const resolvedNames = new Set(issues.filter(issue => issue.includes(": จับคู่จากเลข Step ")).map(issue => issue.split(": จับคู่จากเลข Step ")[0]));
+  for (const result of incoming.results ?? []) {
+    if (result.source !== "sheets" || !result.id.includes("-STEP-") || !result.stepId) continue;
+    const step = incoming.stepDefinitions?.find(step => step.id === result.stepId);
+    if (step) resolvedNames.add(step.name);
+  }
   const sharedNames = new Set((incoming.results ?? []).filter(result => (result.sharedSheetMappingVersion ?? 0) >= 2).flatMap(result => result.sheetSections?.map(section => section.title.split(" · ผลร่วม:")[0]) ?? []));
   const retainedIssues = (stored.importIssues ?? []).filter(issue => {
     const sharedWarning = /: (?:ไม่พบ Step ที่ตรงกัน|อ้างอิงหลาย Test Case|ยังผูกผลกับ Step ไม่ได้)/.test(issue) && [...sharedNames].some(name => issue.startsWith(`${name}: `));
-    return !sharedWarning && (!issue.includes(": ยังผูกผลกับ Step ไม่ได้") || !resolvedNames.has(issue.split(": ยังผูกผลกับ Step ไม่ได้")[0]));
+    return !isMissingResultReferenceIssue(issue) && !sharedWarning && (!issue.includes(": ยังผูกผลกับ Step ไม่ได้") || !resolvedNames.has(issue.split(": ยังผูกผลกับ Step ไม่ได้")[0]));
   });
   const local = new Map((stored.stepDefinitions ?? []).map(step => [step.id, step]));
   const stepDefinitions = (incoming.stepDefinitions ?? stored.stepDefinitions ?? []).map(step => {

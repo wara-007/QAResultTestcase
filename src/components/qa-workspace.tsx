@@ -1,9 +1,14 @@
 "use client";
+import { revisionBoundSource, revisionBoundCheckpoint } from "@/lib/revision-bound-source";
+import { canRenderStoredCaseDetails } from "@/lib/source-workbook-storage";
+import { alignRegisterCaseIdentities, displayTestCaseId } from "@/lib/register-case-identity";
+
+import { prioritizeReferencedSheets, unreferencedSnapshotAssignments } from "../lib/register-result-references";
 import { SprintProjectList } from './sprint-project-list';
 import type { SprintDashboardData } from '../lib/sprint-dashboard';
 import { GlobalProjectSearch } from './global-project-search';
 import { ProjectBreadcrumb } from './project-breadcrumb';
-import { TestCasePreview } from './test-case-preview';
+import { ProjectEvidenceProgress } from './project-evidence-progress';
 
 import {
   Check,
@@ -42,7 +47,8 @@ import { assignmentModeReducer, isAssignmentEditing } from '@/lib/case-assignmen
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { GoogleCleanupWarning } from './google-cleanup-warning';
-import { createProject, createProjectApprovalRequest, deleteProject, getLatestProjectApproval, updateProjectGoogleSheet, type ProjectApprovalSummary } from "@/app/actions";
+import { createProject, createProjectApprovalRequest, deleteProject, getLatestProjectApproval, getApprovalMailConnection, updateProjectGoogleSheet, type ProjectApprovalSummary } from "@/app/actions";
+import { mailConnectUrl, mailProvider, mailProviderLabel, mailDeliveryLabel, type MailConnection } from "@/lib/mail-provider";
 import { GoogleDrivePickerButton } from "@/components/google-drive-picker-button";
 import { ProjectFileActions } from "@/components/project-file-actions";
 import { googleAuthorizationTarget } from "@/lib/google-authorization";
@@ -53,13 +59,19 @@ import { ImageViewerGallery } from "@/components/image-viewer-gallery";
 import { ResultTextViewer } from "@/components/result-text-viewer";
 import { SheetResultSections } from "@/components/sheet-result-sections";
 import { isSheetPayloadLabel } from "@/lib/sheet-sections";
-import { batchRowLoader, sheetRowState, caseDetailLoadKeys, canReuseSheetDetails, completeResultTabLoad, isImportedEvidenceDisplayed, type RowLoadState } from "@/lib/result-preview";
-import { runSheetEvidenceImports, runSheetTextImports, sheetImportSummary, sheetImportProgressLabel, showSheetImportNotice, type SheetImportProgress } from "@/lib/sheet-import-progress";
+import { ResultActualText } from "./result-actual-text";
+import { batchRowLoader, sheetRowState, caseDetailLoadKeys, canReuseSheetDetails, completeResultTabLoad, isImportedEvidenceDisplayed, unrepresentedResultSheets, type RowLoadState } from "@/lib/result-preview";
+import { runSheetEvidenceImports, runSheetTextImports, sheetImportProgressLabel, sheetImportAction, type SheetImportProgress } from "@/lib/sheet-import-progress";
 import { withImportTimeout } from "@/lib/import-timeout";
 import { workspaceReadyFirst, shouldFetchGoogleWorkspace } from "@/lib/workspace-loading";
 import { selectDetailSheets } from "@/lib/sheet-detail";
 import { collectProjectDefects, isProjectDefectSheet, summarizeProjectDefects } from "@/lib/project-defects";
 import { ProjectManagement } from "@/components/project-management";
+import { approvalDraftBody, isApprovalDraft } from "@/lib/approval-draft";
+import { workspaceEnvironment } from "@/lib/workspace-environment";
+import { approvalEvidenceReadiness, importedEvidenceKey } from "@/lib/approval-evidence";
+import { evidenceUploadBatch, sharedEvidenceFiles } from "@/lib/evidence-upload-batch";
+import { waitForProjectDetailWrites, beginProjectDetailRefresh, completeProjectDetailWrites, projectDetailRefreshPending } from "@/lib/project-detail-lock";
 import { TestCaseAssignmentDialog, type AssignmentData } from './test-case-assignment-dialog';
 import { getTestCaseAssignments } from '@/app/planning-actions';
 import type { Sprint } from "@/lib/types";
@@ -70,14 +82,16 @@ import { compressEvidenceImage } from "@/lib/image-compression";
 import { compressEvidenceVideo } from "@/lib/video-compression";
 import { EVIDENCE_ACCEPT, validateEvidenceFile } from "@/lib/evidence-media";
 import { loadProjectWorkbook, loadProjectWorkspace, persistImportedWorkbook, persistTestCaseResult, persistSheetImportState } from "@/lib/project-data";
-import { checkpointSheetImport, readSheetImportState, shouldStartSheetImport, pendingImportSheets, initialSheetImportStates } from "@/lib/sheet-import-state";
+import { automaticSheetImportMode, withWorkbookDefinitions, withSavedCaseIdentity, sheetImportRevisionStatus, sheetRefreshRequired, registerBaseline, refreshRegisterCases } from "@/lib/sheet-refresh";
+import { checkpointSheetImport, readSheetImportState, pendingImportSheets, initialSheetImportStates } from "@/lib/sheet-import-state";
 import { filterProjects } from "@/lib/project-search";
 import { resolveSheetAssociations } from "@/lib/sheet-mapping-resolution";
 import { workspaceCasesForRegister } from "@/lib/sheet-register-cases";
 import { clearProjectWorkbook, getProjectWorkbook } from "@/lib/workbook-cache";
 import { detectBootstrapCaseConflicts, detectThreeWayCaseConflicts, mergeCaseChoices, type CaseChoice, type CaseConflict } from "@/lib/sync/client-conflicts";
 import type { CanonicalProjectSnapshot } from "@/lib/sync/types";
-import { mergeWorkspaceAndGoogleCases } from "@/lib/sync/workspace-merge";
+import { mergeWorkspaceAndGoogleCases, scopeGoogleDetailCases } from "@/lib/sync/workspace-merge";
+import { workbookResultFallback, refreshWorkbookStepEvidence } from "@/lib/workbook-step-refresh";
 import { TestCaseSteps, orderedStepResults, stepResultTitle } from "./test-case-steps";
 import { TestCaseSourceDetails } from "./test-case-source-details";
 import { aggregateStepStatus } from "@/lib/step-testcases";
@@ -490,12 +504,12 @@ function ProjectsHome({ projects, error, onAdd, projectHref, canCreate, onUpdate
       <section className="projects-heading"><div><p className="eyebrow">WORKSPACE</p><h1>Projects</h1><span>เลือก Project เพื่อดู Testcase และผลทดสอบ</span></div>{canCreate && <button className="primary-button" onClick={onAdd}><PlusIcon />เพิ่ม Project</button>}</section>
       {!error && projects.length > 0 && <section className="project-search-bar"><label><Search size={18} /><input value={projectSearch} onChange={(event) => setProjectSearch(event.target.value)} placeholder="ค้นหาชื่อ Project, Environment, Sprint หรือ Google Sheets" aria-label="ค้นหา Projects" />{hasQuery && <button type="button" onClick={() => setProjectSearch("")} aria-label="ล้างการค้นหา"><X size={16} /></button>}</label><span>{hasQuery ? `พบ ${visibleProjects.length} จาก ${projects.length} Projects` : `${projects.length} Projects`}</span></section>}
       {error ? <section className="project-error"><CircleAlert size={20} /><div><strong>โหลด Projects ไม่สำเร็จ</strong><span>{error}</span></div></section> : visibleProjects.length ? <section className="panel project-row-list"><div className="project-list-header"><span>Project</span><span>Environment</span><span>ปี / Sprint</span><span>สร้างเมื่อ</span><span>จัดการ</span></div>{visibleProjects.map((project) => <article className="project-list-row" key={project.id}><Link className="project-row-title" href={projectHref(project)}><FolderKanban size={19} /><div><strong>{project.name}</strong><small>{project.description || "ไม่มีรายละเอียด"}</small>{!project.canEdit && <span className="read-only-card-pill">ดูอย่างเดียว</span>}</div></Link><span>{project.environment}</span><span>{project.year} · {project.sprintNo}</span><time>{formatFlexibleDate(project.createdAt, false)}</time><button className="secondary-button" onClick={() => setManagedId(project.id)}>{project.canManage ? "แก้ไข / ย้าย" : "ประวัติ"}</button></article>)}</section> : projects.length && hasQuery ? <section className="panel project-zero project-search-empty"><Search size={34} /><h2>ไม่พบ Project</h2><p>ไม่พบ Project ที่ตรงกับ “{projectSearch.trim()}”</p><button className="secondary-button" onClick={() => setProjectSearch("")}>ล้างการค้นหา</button></section> : <section className="panel project-zero"><FolderKanban size={34} /><h2>ยังไม่มี Project</h2><p>สร้าง Project แรกเพื่ออัปโหลด Testcase และเริ่มบันทึกผล</p>{canCreate && <button className="primary-button" onClick={onAdd}><PlusIcon />เพิ่ม Project</button>}</section>}
-      {managed && <div className="modal-backdrop"><div className="project-dialog project-management-dialog"><button className="icon-button close-button" onClick={() => setManagedId(null)} aria-label="ปิด"><X size={18} /></button><ProjectManagement project={managed} onSaved={(project) => { onUpdated(project); }} /></div></div>}
+      {managed && <div className="modal-backdrop"><div className="project-dialog project-management-dialog"><button className="icon-button close-button" onClick={() => setManagedId(null)} aria-label="ปิด"><X size={18} /></button><ProjectManagement key={managed.id} project={managed} onSaved={(project) => { onUpdated(project); }} /></div></div>}
     </div>
   );
 }
 
-function ProjectApprovalPanel({ project, cases, counts, testingFinished, loading, currentEnvironment, currentUser, canSubmit, onConnectSheet, flash }: {
+function ProjectApprovalPanel({ project, cases, counts, testingFinished, loading, currentEnvironment, currentUser, canSubmit, onConnectSheet, flash, evidenceReady, evidenceNotice, preparingEvidence, onPrepareEvidence, evidenceProgressVisible }: {
   project: Project;
   cases: TestCase[];
   counts: Record<TestStatus, number>;
@@ -506,36 +520,57 @@ function ProjectApprovalPanel({ project, cases, counts, testingFinished, loading
   canSubmit: boolean;
   onConnectSheet: () => void;
   flash: (message: string) => void;
+  evidenceReady: boolean;
+  evidenceNotice: string;
+  preparingEvidence: boolean;
+  onPrepareEvidence: () => Promise<void>;
+  evidenceProgressVisible?: boolean;
 }) {
+  const draftKey = `qa-approval-draft:${currentUser?.id ?? ""}:${project.id}`;
   const saved = useMemo(() => {
-    try { return JSON.parse(window.localStorage.getItem(`qa-approval-email:${project.id}`) ?? "{}") as { poEmail?: string; note?: string }; }
+    try {
+      const draft = JSON.parse(window.sessionStorage.getItem(draftKey) ?? "null");
+      if (isApprovalDraft(draft)) return draft;
+      return JSON.parse(window.localStorage.getItem(`qa-approval-email:${project.id}`) ?? "{}") as { poEmail?: string; cc?: string; subject?: string; body?: string };
+    }
     catch { return {}; }
-  }, [project.id]);
+  }, [project.id, draftKey]);
   const [poEmail, setPoEmail] = useState(saved.poEmail ?? "");
-  const [senderEmail, setSenderEmail] = useState(currentUser?.email ?? "");
-  const [ccEmail, setCcEmail] = useState("");
-  const [emailSubject, setEmailSubject] = useState(`[QA Approval] ${project.name}`);
-  const [emailBody, setEmailBody] = useState("");
+  const [ccEmail, setCcEmail] = useState(saved.cc ?? "");
+  const [emailSubject, setEmailSubject] = useState(saved.subject ?? `[QA Approval] ${project.name}`);
+  const [editedEmailBody, setEmailBody] = useState<string | null>(saved.body ?? null);
+  const emailBody = approvalDraftBody(editedEmailBody, { projectName: project.name,
+    environment: currentEnvironment || project.environment, totalCases: cases.length, counts });
+  const [mailConnection, setMailConnection] = useState<MailConnection | null>(null);
+  const [mailNotice, setMailNotice] = useState("");
   const [showUntestedConfirmation, setShowUntestedConfirmation] = useState(false);
   const [approval, setApproval] = useState<ProjectApprovalSummary | null>(null);
   const [sendingApproval, setSendingApproval] = useState(false);
   const untested = counts["Not Start"] + counts["In Progress"];
 
   useEffect(() => {
-    // Populate the editable template after the live testcase counts load.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (!emailBody) setEmailBody([
-      "เรียน PO,",
-      "",
-      `ขอส่งผลการทดสอบ Project: ${project.name}`,
-      `Environment: ${currentEnvironment || project.environment || "-"}`,
-      `Test cases ทั้งหมด: ${cases.length}`,
-      `Pass: ${counts.Pass} | Failed: ${counts.Failed} | Skip: ${counts.Skip}`,
-      `Not Start: ${counts["Not Start"]} | Inprogress: ${counts["In Progress"]}`,
-      "",
-      "กรุณาเปิดลิงก์ Review ในอีเมลนี้เพื่อตรวจสอบและกด Approved",
-    ].join("\n"));
-  }, [cases.length, counts, currentEnvironment, emailBody, project.environment, project.name]);
+    if (!canSubmit) return;
+    let active = true;
+    void getApprovalMailConnection(project.id).then(result => {
+      if (!active) return;
+      setMailConnection("email" in result ? result : {email: currentUser?.email ?? "", provider: mailProvider(currentUser?.email ?? ""), configured: true, connected: false, error: result.error});
+      const query = new URLSearchParams(window.location.search);
+      setMailNotice(query.get("mailAuthError") ?? query.get("gmailAuthError") ?? (query.has("mailAuth") || query.has("gmailAuth") ? "เชื่อมบัญชีส่งเมลแล้ว กรุณาตรวจร่างและกดส่งอีเมลอีกครั้ง" : ""));
+    }).catch(() => { if (active) setMailConnection({email: currentUser?.email ?? "", provider: mailProvider(currentUser?.email ?? ""), configured: true, connected: false, error: "โหลดสถานะส่งเมลไม่สำเร็จ กรุณาโหลดหน้าใหม่"}); });
+    return () => { active = false; };
+  }, [project.id, canSubmit, currentUser?.email]);
+
+  const senderProvider = mailConnection?.provider ?? mailProvider(currentUser?.email ?? "");
+  const senderProviderLabel = mailProviderLabel(senderProvider);
+
+  function connectMail() {
+    if (!senderProvider) return flash("รองรับบัญชี QA @gmail.com และ @truecorp.co.th สำหรับส่งเมล");
+    if (mailConnection?.configured === false) return flash(mailConnection.error || "กรุณาให้ผู้ดูแลตั้งค่าระบบส่งเมลก่อน");
+    try { window.sessionStorage.setItem(draftKey, JSON.stringify({poEmail, cc: ccEmail, subject: emailSubject, body: editedEmailBody})); }
+    catch { return flash("เก็บร่างอีเมลไม่ได้ กรุณาคัดลอกร่างไว้และอนุญาต Session Storage ก่อนเชื่อมบัญชีเมล"); }
+    const current = new URL(window.location.href);
+    window.location.assign(mailConnectUrl(senderProvider, `${current.pathname}${current.search}${current.hash}`));
+  }
 
   useEffect(() => {
     let active = true;
@@ -549,11 +584,12 @@ function ProjectApprovalPanel({ project, cases, counts, testingFinished, loading
   }, [project.id]);
 
   function openApprovalEmail() {
-    if (loading) return;
+    if (loading || sendingApproval) return;
+    if (!evidenceReady || preparingEvidence) return flash("กรุณานำเข้ารายละเอียดและรูปหลักฐานทั้งโปรเจคให้เสร็จก่อนส่งให้ PO");
     const recipient = poEmail.trim();
-    if (!/^\S+@\S+\.\S+$/.test(senderEmail.trim())) return flash("กรุณากรอกอีเมลผู้ส่งให้ถูกต้อง");
     if (!/^\S+@\S+\.\S+$/.test(recipient)) return flash("กรุณากรอกอีเมล PO ให้ถูกต้อง");
     if (!project.googleSheetUrl) return flash("กรุณาเชื่อม Google Sheet ก่อนส่งขอ Approve");
+    if (!mailConnection?.connected) { connectMail(); return; }
     if (!testingFinished) {
       setShowUntestedConfirmation(true);
       return;
@@ -562,37 +598,49 @@ function ProjectApprovalPanel({ project, cases, counts, testingFinished, loading
   }
 
   async function launchApprovalEmail() {
+    if (sendingApproval) return;
+    if (!evidenceReady || preparingEvidence) return flash("หลักฐานยังไม่พร้อมส่ง กรุณานำเข้าทั้งโปรเจคให้เสร็จก่อน");
     const recipient = poEmail.trim();
     setShowUntestedConfirmation(false);
     setSendingApproval(true);
-    const created = await createProjectApprovalRequest({
-      projectId: project.id,
-      senderEmail: senderEmail.trim(),
-      recipientEmail: recipient,
-      cc: ccEmail.trim(),
-      subject: emailSubject,
-      body: emailBody,
-      note: "",
-      environment: currentEnvironment || project.environment,
-      counts: { total: cases.length, pass: counts.Pass, failed: counts.Failed, skip: counts.Skip, notStart: counts["Not Start"], inProgress: counts["In Progress"] },
-    });
-    setSendingApproval(false);
-    if (!("request" in created)) {
-      return flash(created.error ?? "สร้างลิงก์รีวิวไม่สำเร็จ");
+    try {
+      const created = await createProjectApprovalRequest({
+        projectId: project.id,
+        recipientEmail: recipient,
+        cc: ccEmail.trim(),
+        subject: emailSubject,
+        body: emailBody,
+        note: "",
+        environment: currentEnvironment || project.environment,
+        counts: { total: cases.length, pass: counts.Pass, failed: counts.Failed, skip: counts.Skip, notStart: counts["Not Start"], inProgress: counts["In Progress"] },
+      });
+      if (!("request" in created)) {
+        if (created.authUrl) { connectMail(); return; }
+        flash(created.error ?? "สร้างลิงก์รีวิวไม่สำเร็จ");
+        const latest = await getLatestProjectApproval(project.id);
+        if ("approval" in latest) setApproval(latest.approval);
+        return;
+      }
+      setApproval(created.request);
+      try { window.localStorage.setItem(`qa-approval-email:${project.id}`, JSON.stringify({ poEmail: recipient })); } catch { /* Browser storage must not change the delivery outcome. */ }
+      try { window.sessionStorage.removeItem(draftKey); } catch { /* Delivery already succeeded. */ }
+      flash(created.warning ?? `${senderProviderLabel} รับคำขอส่งแล้ว กรุณาตรวจ Sent เพื่อดูเมลที่ส่ง`);
+    } catch {
+      flash("ยังยืนยันผลการส่งไม่ได้ กรุณาตรวจ Sent ของบัญชี QA ก่อนส่งซ้ำ");
+    } finally {
+      setSendingApproval(false);
     }
-    setApproval(created.request);
-    window.localStorage.setItem(`qa-approval-email:${project.id}`, JSON.stringify({ poEmail: recipient }));
-    window.location.href = created.mailtoUrl;
   }
 
   const approvalLabel = approval?.status === "approved" ? "Approved" : approval?.status === "changes_requested" ? "ขอให้แก้ไข" : approval?.status === "pending" ? "รอ PO รีวิว" : "";
   const approvalMatchesRecipient = approval?.recipientEmail === poEmail.trim().toLowerCase();
 
   return <><section className="panel approval-panel">
-    <div className="approval-heading"><div className="approval-icon"><Mail size={23} /></div><div><h2>ส่งผลทดสอบให้ PO Approve</h2><p>เปิดโปรแกรมอีเมลพร้อมสรุปผลและลิงก์รีวิว ส่งให้ PO หลายคนหรือส่งอัปเดตซ้ำได้ โดยคงสถานะอนุมัติเดิม</p></div><span className={`approval-readiness ${testingFinished ? "ready" : "pending"}`}>{loading ? "กำลังโหลด..." : testingFinished ? "พร้อมส่ง" : cases.length ? `ยังไม่ได้ทดสอบ ${untested} cases` : "ยังไม่มี Test Case"}</span></div>
-    {canSubmit && <div className="approval-form"><label className="text-field"><span>ผู้ส่ง *</span><input type="email" value={senderEmail} onChange={(event) => setSenderEmail(event.target.value)} placeholder="owner@company.com" /><small>เลือกบัญชีผู้ส่งในโปรแกรมอีเมลก่อนกดส่ง</small></label><label className="text-field"><span>ผู้รับ *</span><input type="email" value={poEmail} onChange={(event) => setPoEmail(event.target.value)} placeholder="po@company.com" /></label><label className="text-field approval-wide-field"><span>CC</span><input type="text" value={ccEmail} onChange={(event) => setCcEmail(event.target.value)} placeholder="qa-lead@company.com, manager@company.com" /></label><label className="text-field approval-wide-field"><span>หัวข้ออีเมล</span><input value={emailSubject} onChange={(event) => setEmailSubject(event.target.value)} /></label><label className="text-field approval-note"><span>เนื้อหาอีเมล (แก้ไขได้)</span><textarea rows={9} value={emailBody} onChange={(event) => setEmailBody(event.target.value)} /></label></div>}
-    {approval && <div className={`approval-status-card ${approval.status}`}><div><strong>{approvalLabel}</strong><span>ส่งให้ {approval.recipientEmail} เมื่อ {formatFlexibleDate(approval.requestedAt)}</span></div>{approval.reviewerName && <span>โดย {approval.reviewerName}</span>}{approval.reviewerComment && <p>{approval.reviewerComment}</p>}</div>}
-    <div className="approval-footer"><div>{project.googleSheetUrl ? <a href={project.googleSheetUrl} target="_blank" rel="noreferrer"><FileSpreadsheet size={16} />เปิด Google Sheets</a> : canSubmit ? <button type="button" className="text-button" onClick={onConnectSheet}>เชื่อม Google Sheet ก่อนส่ง</button> : <span>ยังไม่ได้เชื่อม Google Sheet</span>}<small>{canSubmit ? (testingFinished ? "อีเมลจะมีลิงก์ให้ PO เปิดรีวิวและกด Approved" : "กดส่งได้ แต่ระบบจะแจ้งเตือนให้ยืนยันก่อน") : "คุณมีสิทธิ์ดูสถานะ Approval เท่านั้น"}</small></div>{canSubmit && <button type="button" className="primary-button" onClick={openApprovalEmail} disabled={loading || sendingApproval || !project.googleSheetUrl}>{sendingApproval ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}{approvalMatchesRecipient ? "ส่งอัปเดตให้ PO" : "ส่งอีเมลขอ Approve"}</button>}</div>
+    {canSubmit && !evidenceProgressVisible && <section className="approval-evidence-status" aria-label="ความพร้อมของรูปหลักฐาน"><p role="status"><strong>{preparingEvidence ? "กำลังนำเข้ารายละเอียดและรูปหลักฐานทั้งโปรเจค…" : evidenceNotice}</strong></p><p>ระบบต้องอัปโหลดและบันทึกรูปครบก่อนส่งให้ PO โดยไม่ต้องเปิด Test case ทีละรายการ</p>{!evidenceReady && project.googleSheetId && <button type="button" className="secondary-button" disabled={loading || preparingEvidence || sendingApproval} onClick={() => void onPrepareEvidence()}>{preparingEvidence ? "กำลังนำเข้าหลักฐาน…" : "นำเข้าข้อมูลจาก Sheets"}</button>}</section>}
+    <div className="approval-heading"><div className="approval-icon"><Mail size={23} /></div><div><h2>ส่งผลทดสอบให้ PO Approve</h2><p>ส่งจากอีเมล QA ที่เข้าสู่ระบบถึงผู้รับที่ระบุ พร้อมสรุปผลและลิงก์รีวิว · PO กด Reply ในเมลเพื่อตอบกลับ QA ได้</p></div><span className={`approval-readiness ${testingFinished && evidenceReady ? "ready" : "pending"}`}>{loading ? "กำลังโหลด..." : !evidenceReady ? "หลักฐานยังไม่พร้อม" : testingFinished ? "พร้อมส่ง" : cases.length ? `ยังไม่ได้ทดสอบ ${untested} cases` : "ยังไม่มี Test Case"}</span></div>
+    {canSubmit && <div className="approval-form"><label className="text-field"><span>ผู้ส่ง (บัญชี QA)</span><input type="email" value={mailConnection?.email || currentUser?.email || ""} readOnly /><small>{!mailConnection ? "กำลังตรวจสิทธิ์ส่งเมล…" : mailConnection.connected ? `เชื่อม ${senderProviderLabel} แล้ว · ส่งจากบัญชีนี้โดยตรง · PO กด Reply กลับหาคุณได้` : `ต้องเชื่อม ${senderProviderLabel} และอนุญาตส่งเมลก่อนใช้งานครั้งแรก`}</small></label><label className="text-field"><span>ผู้รับ *</span><input type="email" value={poEmail} onChange={(event) => setPoEmail(event.target.value)} placeholder="po@company.com" /></label><div className="approval-wide-field">{mailConnection && <button type="button" className="secondary-button" onClick={connectMail} disabled={sendingApproval || !senderProvider || !mailConnection.configured}>{mailConnection.connected ? `เชื่อมสิทธิ์ ${senderProviderLabel} ใหม่` : `เชื่อม ${senderProviderLabel} เพื่อส่งอีเมล`}</button>}{(mailNotice || mailConnection?.error) && <p role="status">{mailConnection?.error || mailNotice}</p>}</div><label className="text-field approval-wide-field"><span>CC</span><input type="text" value={ccEmail} onChange={(event) => setCcEmail(event.target.value)} placeholder="qa-lead@company.com, manager@company.com (ไม่เกิน 10 คน)" /></label><label className="text-field approval-wide-field"><span>หัวข้ออีเมล</span><input value={emailSubject} onChange={(event) => setEmailSubject(event.target.value)} maxLength={300} /></label><label className="text-field approval-note"><span>เนื้อหาอีเมล (แก้ไขได้)</span><textarea rows={9} value={emailBody} onChange={(event) => setEmailBody(event.target.value)} maxLength={50000} /></label></div>}
+    {approval && <div className={`approval-status-card ${approval.status}`}><div><strong>{approvalLabel}</strong><span>{approval.recipientEmail} · {mailDeliveryLabel(approval.emailId, approval.emailSentAt)}</span>{approval.emailError && <p role="status">{approval.emailError}</p>}</div>{approval.reviewerName && <span>โดย {approval.reviewerName}</span>}{approval.reviewerComment && <p>{approval.reviewerComment}</p>}</div>}
+    <div className="approval-footer"><div>{project.googleSheetUrl ? <a href={project.googleSheetUrl} target="_blank" rel="noreferrer"><FileSpreadsheet size={16} />เปิด Google Sheets</a> : canSubmit ? <button type="button" className="text-button" onClick={onConnectSheet}>เชื่อม Google Sheet ก่อนส่ง</button> : <span>ยังไม่ได้เชื่อม Google Sheet</span>}<small>{canSubmit ? (!evidenceReady ? "นำเข้าหลักฐานให้ครบเพื่อเปิดการส่งให้ PO" : testingFinished ? "อีเมลจะมีลิงก์ให้ PO เปิดรีวิวและกด Approved" : "กดส่งได้ แต่ระบบจะแจ้งเตือนให้ยืนยันก่อน") : "คุณมีสิทธิ์ดูสถานะ Approval เท่านั้น"}</small></div>{canSubmit && <button type="button" className="primary-button" onClick={openApprovalEmail} disabled={loading || sendingApproval || preparingEvidence || !evidenceReady || !project.googleSheetUrl || !mailConnection || mailConnection.configured === false}>{sendingApproval ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}{approvalMatchesRecipient ? "ส่งอัปเดตให้ PO" : "ส่งอีเมลขอ Approve"}</button>}</div>
   </section>
   {canSubmit && showUntestedConfirmation && <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowUntestedConfirmation(false)}><section className="approval-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="approval-confirm-title" onMouseDown={(event) => event.stopPropagation()}>
     <button type="button" className="icon-button close-button" onClick={() => setShowUntestedConfirmation(false)} aria-label="ปิด"><X size={19} /></button>
@@ -668,7 +716,7 @@ function ResultSheetViewer({ source, sheet, imagesOnly = false, displayedEvidenc
   </div>;
 }
 
-function CaseDrawer({ value, projectId, source, associatedSheets, currentUserName, readOnly = false, pageMode = false, loadingSheetDetails = false, focusedSheetName = "", onClose, onSave, onSaveResult, onEnsureWorkbook }: { value: TestCase; projectId: string; source: WorkbookSource | null; associatedSheets?: WorkbookSheet[]; currentUserName: string; readOnly?: boolean; pageMode?: boolean; loadingSheetDetails?: boolean; focusedSheetName?: string; onClose: () => void; onSave: (value: TestCase) => Promise<void>; onSaveResult: (value: TestCase) => Promise<TestCase>; onEnsureWorkbook: () => Promise<WorkbookSource> }) {
+function CaseDrawer({ value, projectId, source, associatedSheets, caseDisplayNames = {}, currentUserName, readOnly = false, pageMode = false, loadingSheetDetails = false, focusedSheetName = "", onClose, onSave, onSaveResult, onEnsureWorkbook }: { value: TestCase; projectId: string; source: WorkbookSource | null; associatedSheets?: WorkbookSheet[]; caseDisplayNames?: Record<string,string>; currentUserName: string; readOnly?: boolean; pageMode?: boolean; loadingSheetDetails?: boolean; focusedSheetName?: string; onClose: () => void; onSave: (value: TestCase) => Promise<void>; onSaveResult: (value: TestCase) => Promise<TestCase>; onEnsureWorkbook: () => Promise<WorkbookSource> }) {
   const [draft, setDraft] = useState<TestCase>(() => {
     if (readOnly) return { ...value };
     let remembered: { platform?: string; environment?: string; device?: string; appVersion?: string; executedBy?: string; testData?: string } = {};
@@ -720,17 +768,20 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
   const resultSheets = focusedSheetName
     ? source?.sheets.filter((sheet) => sheet.name === focusedSheetName) ?? []
     : associatedSheets ?? source?.sheets.filter((sheet) => sheet.name.trim().toUpperCase() === value.id.trim().toUpperCase() || testCaseIdsFromSheet(sheet).some((id) => testCaseIdentity(id) === testCaseIdentity(value.id))) ?? [];
-  const evidenceCount = resultSheets.reduce((total, sheet) => total + sheet.imageCount, 0);
+  const remainingResultSheets = unrepresentedResultSheets(resultSheets, draft.results ?? []);
+  const evidenceCount = remainingResultSheets.reduce((total, sheet) => total + sheet.imageCount, 0);
+  const focusedResultCaptured = !!focusedSheetName && !remainingResultSheets.some(sheet => sheet.name === focusedSheetName);
   const sharedSheets = resultSheets.filter(sheet => sheet.testCaseIds.length > 1);
   const displayedResultEvidence = useMemo(() => (draft.results ?? []).flatMap(result => result.evidence), [draft.results]);
   const focusedEvidence = useMemo(() => {
+    if (focusedResultCaptured) return { sheet: undefined, content: null, remaining: 0 };
     const sheet = source?.sheets.find(sheet => sheet.name === focusedSheetName);
     if (!source?.bufferLoaded || !sheet) return { sheet, content: null, remaining: sheet?.imageCount ?? 0 };
     try {
       const content = readWorkbookSheet(source, sheet);
       return { sheet, content, remaining: content.images.filter(image => !isImportedEvidenceDisplayed(sheet.name, image.row, image.column, displayedResultEvidence)).length };
     } catch { return { sheet, content: null, remaining: 0 }; }
-  }, [source, focusedSheetName, displayedResultEvidence]);
+  }, [source, focusedSheetName, displayedResultEvidence, focusedResultCaptured]);
   const additionalCustomFields = [...new Map(
     (draft.customFields ?? [])
       .filter((field) => field.column >= 0 && !isResultRecordField(field.label) && !(field.source === "detail" && isSheetPayloadLabel(field.label)))
@@ -927,7 +978,7 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
     setError("");
     try {
       for (const file of selectedFiles) {
-        setUploadStage(`เตรียม ${file.name}`);
+        setUploadStage(`${file.type === "image/gif" ? "บีบอัด GIF" : "เตรียม"} ${file.name}`);
         const prepared = file.type.startsWith("video/") && compressVideo
           ? await compressEvidenceVideo(file, (percent) => setUploadStage(`บีบอัด ${file.name} · ${percent}%`))
           : await compressEvidenceImage(file);
@@ -947,6 +998,8 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
           setDraft((current) => ({ ...current, evidence: [...current.evidence, data.evidence] }));
           continue;
         }
+        const imageSize = prepared.file.size >= 1024 * 1024 ? `${(prepared.file.size / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(prepared.file.size / 1024)} KB`;
+        setUploadStage(`อัปโหลด ${file.name}${prepared.compressed ? ` · ลดเหลือ ${imageSize}` : ""}`);
         const form = new FormData();
         form.set("file", prepared.file);
         form.set("testCaseId", draft.id);
@@ -993,7 +1046,7 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
     >
       <input ref={evidenceInput} type="file" accept={EVIDENCE_ACCEPT} multiple hidden onChange={(event) => void uploadEvidence(event.target.files ?? undefined)} />
       {uploadingEvidence ? <LoaderCircle className="spin" size={24} /> : <Upload size={24} />}
-      <div><strong>{uploadingEvidence ? uploadStage : "ลากรูปหรือวิดีโอมาวางที่นี่"}</strong><small>{uploadingEvidence ? "กรุณารอสักครู่" : `หรือคลิกเลือกหลักฐานสำหรับ${label} · รูปไม่เกิน 10 MB · วิดีโอ MP4, WebM, MOV ไม่เกิน 25 MB`}</small></div>
+      <div><strong>{uploadingEvidence ? uploadStage : "ลากรูปหรือวิดีโอมาวางที่นี่"}</strong><small>{uploadingEvidence ? "กรุณารอสักครู่" : `หรือคลิกเลือกหลักฐานสำหรับ${label} · รูปไม่เกิน 10 MB · GIF และวิดีโอ MP4, WebM, MOV ไม่เกิน 25 MB`}</small></div>
       <span>{draft.evidence.length} ไฟล์</span>
     </div>;
   }
@@ -1003,7 +1056,7 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
       <label className="text-field"><span>ผลที่พบ / Actual result</span><textarea rows={3} value={actualResult} onChange={(event) => setActualResult(event.target.value)} placeholder="รายละเอียดผลทดสอบรอบนี้" /></label>
       <div className="result-input-grid"><label className="text-field"><span>API response</span><textarea className="code-input" rows={7} value={apiResponse} onChange={(event) => setApiResponse(event.target.value)} placeholder="วาง response JSON หรือข้อความ" /></label>
       <label className="text-field"><span>Log</span><textarea className="code-input" rows={7} value={log} onChange={(event) => setLog(event.target.value)} placeholder="วาง application log" /></label></div>
-      {resultCustomFields.length > 0 && <div className="result-custom-fields"><div className="result-form-heading"><div><span>ฟิลด์ Result จาก tab {draft.id}</span><small>ดึงจากหัวตาราง Result ของชีตนี้</small></div><strong>{resultCustomFields.length} fields</strong></div><div className="dynamic-field-grid">{resultCustomFields.map((field) => <label className="text-field" key={field.key}><span>{field.label}</span>{field.value.includes("\n") || field.value.length > 100 ? <textarea rows={3} value={field.value} onChange={(event) => setResultCustomFields((current) => current.map((item) => item.key === field.key ? { ...item, value: event.target.value } : item))} /> : <input value={field.value} onChange={(event) => setResultCustomFields((current) => current.map((item) => item.key === field.key ? { ...item, value: event.target.value } : item))} />}</label>)}</div></div>}
+      {resultCustomFields.length > 0 && <div className="result-custom-fields"><div className="result-form-heading"><div><span>ฟิลด์ Result จาก tab {displayTestCaseId(draft)}</span><small>ดึงจากหัวตาราง Result ของชีตนี้</small></div><strong>{resultCustomFields.length} fields</strong></div><div className="dynamic-field-grid">{resultCustomFields.map((field) => <label className="text-field" key={field.key}><span>{field.label}</span>{field.value.includes("\n") || field.value.length > 100 ? <textarea rows={3} value={field.value} onChange={(event) => setResultCustomFields((current) => current.map((item) => item.key === field.key ? { ...item, value: event.target.value } : item))} /> : <input value={field.value} onChange={(event) => setResultCustomFields((current) => current.map((item) => item.key === field.key ? { ...item, value: event.target.value } : item))} />}</label>)}</div></div>}
       <div className="result-evidence-entry">
         <span className="field-label">หลักฐานของ Result นี้</span>
         <label className="video-compression-option"><input type="checkbox" checked={compressVideo} onChange={(event) => setCompressVideo(event.target.checked)} disabled={uploadingEvidence} />บีบอัดวิดีโอก่อนอัปโหลด (คลิปไม่เกิน 2 นาที · ใช้เวลาใกล้เคียงความยาวคลิป)</label>
@@ -1026,27 +1079,27 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
       <div className="result-editor-actions">{onCancel && <button className="secondary-button" type="button" onClick={onCancel} disabled={savingResult}>ยกเลิกการแก้ไข</button>}<button className="primary-button add-result-button" type="button" onClick={() => void saveDefect()} disabled={savingResult}>{savingResult ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}{submitLabel}</button></div>
     </>;
   }
-  const renderResults = (results: TestResult[], title = "ผลการทดสอบ") => (
+  const renderResults = (results: TestResult[], title = "Result Testing") => (
           results.length > 0 && <div className="result-preview-list">
-            <div className="result-sheet-heading"><span>{title}</span><strong>{results.length} รายการ</strong></div>
-            {results.map((result, index) => { const resultKey = testResultIdentity(result); return <article key={resultKey} className={editingResultId === resultKey ? "editing" : ""}><header><strong>{draft.stepDefinitions?.length || result.sharedSheetMappingVersion ? stepResultTitle(draft, result) : `ผลที่ ${index + 1}`}</strong><StatusBadge status={result.status} /><time>{formatFlexibleDate(result.createdAt)}</time>{!readOnly && editingResultId !== resultKey && <><button type="button" className="secondary-button result-edit-button" onClick={() => editResult(result)}>แก้ไข</button><button type="button" className="danger-button result-delete-button" disabled={savingResult} onClick={() => void deleteResult(result)}><Trash2 size={13} />ลบ</button></>}</header>{draft.stepDefinitions?.length && !result.sharedSheetMappingVersion && !readOnly && <ResultStepMapping result={result} steps={draft.stepDefinitions} saving={savingResult} onSave={async (stepId) => { setSavingResult(true); setError(""); try { const next = { ...draft, results: (draft.results ?? []).map(item => testResultIdentity(item) === resultKey ? { ...item, stepId: stepId || undefined, stepMappingHistory: [...(item.stepMappingHistory ?? []), { fromStepId: item.stepId ?? null, toStepId: stepId || null, by: currentUserName, at: new Date().toISOString() }] } : item) }; setDraft(await onSaveResult(next)); } catch (reason) { setError(reason instanceof Error ? reason.message : "บันทึกการจับคู่ไม่สำเร็จ"); throw reason; } finally { setSavingResult(false); } }} />}{result.origin && <small className="result-origin-label">{result.origin.inferred ? 'Sprint ที่อนุมานจากข้อมูลเดิม/นำเข้า' : 'Sprint ต้นกำเนิด'}: {result.origin.sprintName} · {result.origin.year}{!result.origin.inferred && result.origin.authorName ? ` · ผู้บันทึก: ${result.origin.authorName}` : ' · ไม่ระบุผู้บันทึกต้นกำเนิด'}</small>}{editingResultId === resultKey ? <div className="result-entry-block inline-result-editor"><div className="result-form-heading"><div><span>{`แก้ไขผลที่ ${index + 1} ของ ${draft.id}`}</span><small>บันทึกแล้วจะแทนที่ Result รายการนี้</small></div></div>{renderResultFields("บันทึกการแก้ไข Result", resetResultForm)}</div> : <>{(result.sheetSections?.length ?? 0) > 0 && <SheetResultSections sections={result.sheetSections!} images={evidenceViewerImages(result.evidence)} sheetName={result.sourceSheetName ?? ""} />}{!result.sheetSections?.length && result.actualResult && <ResultTextViewer title="ผลการทดสอบ / ข้อมูลเพิ่มเติม" text={result.actualResult} highlights={result.textHighlights?.actualResult} />}{(result.customFields?.length ?? 0) > 0 && <dl className="result-custom-preview">{result.customFields?.map((field) => <div key={field.key}><dt>{field.label}</dt><dd><ResultTextViewer title={field.label} text={field.value || "—"} /></dd></div>)}</dl>}{!result.sheetSections?.length && result.apiResponse && <ResultTextViewer title="API response" text={result.apiResponse} highlights={result.textHighlights?.apiResponse} onSave={readOnly ? undefined : async (text, highlights) => { const next = { ...draft, results: (draft.results ?? []).map(item => testResultIdentity(item) === resultKey ? { ...item, apiResponse: text, textHighlights: { ...item.textHighlights, apiResponse: highlights } } : item) }; const saved = await onSaveResult(next); setDraft(saved); }} />}{!result.sheetSections?.length && result.log && <ResultTextViewer title="Log" text={result.log} highlights={result.textHighlights?.log} onSave={readOnly ? undefined : async (text, highlights) => { const next = { ...draft, results: (draft.results ?? []).map(item => testResultIdentity(item) === resultKey ? { ...item, log: text, textHighlights: { ...item.textHighlights, log: highlights } } : item) }; const saved = await onSaveResult(next); setDraft(saved); }} />}{!result.sheetSections?.length && <ImageViewerGallery className="drive-evidence-gallery result-evidence-gallery" images={evidenceViewerImages(result.evidence)} />}</>}</article>; })}
+            <div className="result-sheet-heading"><h3 className="result-testing-heading">{title}</h3><strong>{results.length} รายการ</strong></div>
+            {results.map((result, index) => { const resultKey = testResultIdentity(result); return <article key={resultKey} className={editingResultId === resultKey ? "editing" : ""}><header><strong>{draft.stepDefinitions?.length || result.sharedSheetMappingVersion ? stepResultTitle(draft, result) : `ผลที่ ${index + 1}`}</strong><StatusBadge status={result.status} /><time>{formatFlexibleDate(result.createdAt)}</time>{!readOnly && editingResultId !== resultKey && <><button type="button" className="secondary-button result-edit-button" onClick={() => editResult(result)}>แก้ไข</button><button type="button" className="danger-button result-delete-button" disabled={savingResult} onClick={() => void deleteResult(result)}><Trash2 size={13} />ลบ</button></>}</header>{draft.stepDefinitions?.length && !result.sharedSheetMappingVersion && !readOnly && <ResultStepMapping result={result} steps={draft.stepDefinitions} saving={savingResult} onSave={async (stepId) => { setSavingResult(true); setError(""); try { const next = { ...draft, results: (draft.results ?? []).map(item => testResultIdentity(item) === resultKey ? { ...item, stepId: stepId || undefined, stepMappingHistory: [...(item.stepMappingHistory ?? []), { fromStepId: item.stepId ?? null, toStepId: stepId || null, by: currentUserName, at: new Date().toISOString() }] } : item) }; setDraft(await onSaveResult(next)); } catch (reason) { setError(reason instanceof Error ? reason.message : "บันทึกการจับคู่ไม่สำเร็จ"); throw reason; } finally { setSavingResult(false); } }} />}{result.origin && <small className="result-origin-label">{result.origin.inferred ? 'Sprint ที่อนุมานจากข้อมูลเดิม/นำเข้า' : 'Sprint ต้นกำเนิด'}: {result.origin.sprintName} · {result.origin.year}{!result.origin.inferred && result.origin.authorName ? ` · ผู้บันทึก: ${result.origin.authorName}` : ' · ไม่ระบุผู้บันทึกต้นกำเนิด'}</small>}{editingResultId === resultKey ? <div className="result-entry-block inline-result-editor"><div className="result-form-heading"><div><span>{`แก้ไขผลที่ ${index + 1} ของ ${displayTestCaseId(draft)}`}</span><small>บันทึกแล้วจะแทนที่ Result รายการนี้</small></div></div>{renderResultFields("บันทึกการแก้ไข Result", resetResultForm)}</div> : <>{(result.sheetSections?.length ?? 0) > 0 && <SheetResultSections sections={result.sheetSections!} images={evidenceViewerImages(result.evidence)} sheetName={result.sourceSheetName ?? ""} />}{!result.sheetSections?.length && result.actualResult && <ResultActualText text={result.actualResult} highlights={result.textHighlights?.actualResult} />}{(result.customFields?.length ?? 0) > 0 && <dl className="result-custom-preview">{result.customFields?.map((field) => <div key={field.key}><dt>{field.label}</dt><dd><ResultTextViewer title={field.label} text={field.value || "—"} /></dd></div>)}</dl>}{!result.sheetSections?.length && result.apiResponse && <ResultTextViewer title="API response" text={result.apiResponse} highlights={result.textHighlights?.apiResponse} onSave={readOnly ? undefined : async (text, highlights) => { const next = { ...draft, results: (draft.results ?? []).map(item => testResultIdentity(item) === resultKey ? { ...item, apiResponse: text, textHighlights: { ...item.textHighlights, apiResponse: highlights } } : item) }; const saved = await onSaveResult(next); setDraft(saved); }} />}{!result.sheetSections?.length && result.log && <ResultTextViewer title="Log" text={result.log} highlights={result.textHighlights?.log} onSave={readOnly ? undefined : async (text, highlights) => { const next = { ...draft, results: (draft.results ?? []).map(item => testResultIdentity(item) === resultKey ? { ...item, log: text, textHighlights: { ...item.textHighlights, log: highlights } } : item) }; const saved = await onSaveResult(next); setDraft(saved); }} />}{!result.sheetSections?.length && <ImageViewerGallery className="drive-evidence-gallery result-evidence-gallery" images={evidenceViewerImages(result.evidence)} />}</>}</article>; })}
           </div>
   );
   return (
     <div className={`drawer-backdrop ${pageMode ? "case-route-backdrop" : ""}`} role="presentation" onMouseDown={pageMode ? undefined : onClose}>
       <aside className={`case-drawer ${pageMode ? "case-route-editor" : ""} ${readOnly ? "read-only-case" : ""}`} role="dialog" aria-modal="true" aria-labelledby="case-title" onMouseDown={(event) => event.stopPropagation()}>
         <header className="drawer-header">
-          <div><span className="case-id">{draft.id}</span><h2 id="case-title">{draft.name}</h2></div>
+          <div><span className="case-id">{displayTestCaseId(draft)}</span><h2 id="case-title">{draft.name}</h2></div>
           <div className="case-header-actions">{readOnly && <span className="read-only-badge">ดูอย่างเดียว</span>}{!readOnly && !editingCaseDetails && !draft.stepDefinitions?.length && <button type="button" className="secondary-button" onClick={() => setEditingCaseDetails(true)}>แก้ไข Test Case</button>}<button className="icon-button" onClick={onClose} aria-label="ปิด"><X size={20} /></button></div>
         </header>
         <div className="drawer-body">
           <div className="case-context"><span>{draft.platform || "ไม่ระบุ Platform"}</span><span>{draft.environment || "ไม่ระบุ Env"}</span><span>{draft.appVersion || "ไม่ระบุ Build"}</span></div>
-          {sharedSheets.map(sheet => <SharedSheetDefinition key={sheet.path} caseId={draft.id} sheetName={sheet.name} caseIds={sheet.testCaseIds} table={draft.results?.find(result => result.sourceSheetName === sheet.name && result.sheetDefinitionTable)?.sheetDefinitionTable} />)}
+          {sharedSheets.map(sheet => <SharedSheetDefinition key={sheet.path} caseId={displayTestCaseId(draft)} sheetName={sheet.name} caseIds={sheet.testCaseIds.map(id=>caseDisplayNames[id] ?? id)} table={draft.results?.find(result => result.sourceSheetName === sheet.name && result.sheetDefinitionTable)?.sheetDefinitionTable} />)}
           {!editingCaseDetails && !sharedSheets.length && <TestCaseSourceDetails testCase={draft} />}
           {!sharedSheets.length && <TestCaseSteps testCase={draft} readOnly={readOnly} onChange={setDraft} renderResults={renderResults} onAddResult={stepId => { resetResultForm(); setResultStepId(stepId); setShowResultEntry(true); }} />}
           {editingCaseDetails ? <section className="testcase-details-editor">
             <div className="result-form-heading"><div><span>แก้ไข Test Case</span><small>การแก้ไขจะถูกบันทึกในระบบ และรอซิงค์กลับ Google Sheets</small></div></div>
-            <div className="two-column-fields"><label><span>Test Case ID *</span><input value={draft.id} onChange={(event) => update("id", event.target.value)} /></label><label><span>Platform</span><input value={draft.platform} onChange={(event) => update("platform", event.target.value)} /></label></div>
+            <div className="two-column-fields"><label><span>Test Case ID *</span><input value={displayTestCaseId(draft)} readOnly={Boolean(draft.registerIdentity)} onChange={(event) => update("id", event.target.value)} /></label><label><span>Platform</span><input value={draft.platform} onChange={(event) => update("platform", event.target.value)} /></label></div>
             <label className="text-field"><span>Test Case Name *</span><input value={draft.name} onChange={(event) => update("name", event.target.value)} /></label>
             <label className="text-field"><span>Test Scenario</span><textarea rows={3} value={draft.scenario} onChange={(event) => update("scenario", event.target.value)} /></label>
             <label className="text-field"><span>Condition</span><textarea rows={2} value={draft.condition} onChange={(event) => update("condition", event.target.value)} /></label>
@@ -1072,23 +1125,23 @@ function CaseDrawer({ value, projectId, source, associatedSheets, currentUserNam
             {(["testcase", "detail"] as const).map((sourceType) => {
               const fields = additionalCustomFields.filter((field) => field.source === sourceType);
               if (!fields.length) return null;
-              return <div className="dynamic-field-group" key={sourceType}><h3>{sourceType === "testcase" ? "จาก tab Testcase" : `จาก tab ${draft.id}`}</h3><div className="dynamic-field-grid">{fields.map((field) => <label className="text-field" key={field.key}><span>{field.label}</span>{field.value.includes("\n") || field.value.length > 100 ? <textarea rows={3} value={field.value} onChange={(event) => updateCustomField(field.key, event.target.value)} /> : <input value={field.value} onChange={(event) => updateCustomField(field.key, event.target.value)} />}</label>)}</div></div>;
+              return <div className="dynamic-field-group" key={sourceType}><h3>{sourceType === "testcase" ? "จาก tab Testcase" : `จาก tab ${displayTestCaseId(draft)}`}</h3><div className="dynamic-field-grid">{fields.map((field) => <label className="text-field" key={field.key}><span>{field.label}</span>{field.value.includes("\n") || field.value.length > 100 ? <textarea rows={3} value={field.value} onChange={(event) => updateCustomField(field.key, event.target.value)} /> : <input value={field.value} onChange={(event) => updateCustomField(field.key, event.target.value)} />}</label>)}</div></div>;
             })}
           </section>}
           </fieldset>
-          {renderResults(sharedSheets.length ? draft.results ?? [] : draft.stepDefinitions?.length ? orderedStepResults(draft).filter(result => !draft.stepDefinitions!.some(step => step.id === result.stepId)) : draft.results ?? [], sharedSheets.length ? "Results จากแท็บรวม · แยกตาม Step ใน Sheets" : draft.stepDefinitions?.length ? "ผลที่ยังไม่ได้ผูกกับ Step" : "Preview Results")}
+          {renderResults(sharedSheets.length ? draft.results ?? [] : draft.stepDefinitions?.length ? orderedStepResults(draft).filter(result => !draft.stepDefinitions!.some(step => step.id === result.stepId)) : draft.results ?? [], !sharedSheets.length && draft.stepDefinitions?.length ? "ผลที่ยังไม่ได้ผูกกับ Step" : "Result Testing")}
           {focusedSheetName && loadingSheetDetails && <div className="result-preview-list sheet-result-evidence"><SheetContentShimmer /></div>}
           {focusedSheetName && !loadingSheetDetails && source && focusedEvidence.sheet && focusedEvidence.remaining > 0 && <div className="result-preview-list sheet-result-evidence"><div className="result-sheet-heading"><span>รูปหลักฐานเพิ่มเติมจาก {focusedSheetName}</span><strong>{focusedEvidence.remaining} รูป</strong></div>{source.bufferLoaded ? <ResultSheetViewer source={source} sheet={focusedEvidence.sheet} imagesOnly displayedEvidence={displayedResultEvidence} contentOverride={focusedEvidence.content} /> : <SheetContentShimmer />}</div>}
           {!readOnly && !showResultEntry && !editingResultId && !showDefectEntry && !editingDefectId && <div className="entry-type-actions"><button type="button" className="primary-button open-result-button" onClick={() => { resetResultForm(); setShowResultEntry(true); }}><PlusIcon />Add Result</button><button type="button" className="secondary-button add-defect-button" onClick={() => { resetResultForm(); setShowDefectEntry(true); }}><CircleAlert size={16} />Add Defect</button></div>}
           {showResultEntry && <div className="result-entry-block result-entry-highlight">
-            <div className="result-form-heading"><div><span>{`เพิ่ม Result ให้ ${draft.id}`}</span><small>Result ใหม่จะแสดงบนสุดของรายการ</small></div><strong>{draft.results?.length ?? 0} results</strong></div>
+            <div className="result-form-heading"><div><span>{`เพิ่ม Result ให้ ${displayTestCaseId(draft)}`}</span><small>Result ใหม่จะแสดงบนสุดของรายการ</small></div><strong>{draft.results?.length ?? 0} results</strong></div>
             {renderResultFields("บันทึก Result รายการนี้", resetResultForm)}
           </div>}
-          {showDefectEntry && <div className="result-entry-block defect-entry"><div className="result-form-heading"><div><span>{`เพิ่ม Defect ให้ ${draft.id}`}</span><small>Defect นี้จะผูกกับ Test case โดยตรง</small></div><strong>{draft.defects?.length ?? 0} defects</strong></div>{renderDefectFields("บันทึก Defect รายการนี้", resetResultForm)}</div>}
+          {showDefectEntry && <div className="result-entry-block defect-entry"><div className="result-form-heading"><div><span>{`เพิ่ม Defect ให้ ${displayTestCaseId(draft)}`}</span><small>Defect นี้จะผูกกับ Test case โดยตรง</small></div><strong>{draft.defects?.length ?? 0} defects</strong></div>{renderDefectFields("บันทึก Defect รายการนี้", resetResultForm)}</div>}
           {(draft.defects?.length ?? 0) > 0 && <div className="result-preview-list defect-preview-list"><div className="result-sheet-heading"><span>Defects ของ Test case</span><strong>{draft.defects?.length} รายการ</strong></div>{draft.defects?.map((defect, index) => <article key={defect.id} className={editingDefectId === defect.id ? "editing" : ""}><header><strong>Defect {index + 1}: {defect.title}</strong><span className="status-badge status-failed">{defect.status}</span><time>{formatFlexibleDate(defect.createdAt)}</time>{!readOnly && editingDefectId !== defect.id && <><button type="button" className="secondary-button result-edit-button" onClick={() => editDefect(defect)}>แก้ไข</button><button type="button" className="danger-button result-delete-button" disabled={savingResult} onClick={() => void deleteDefect(defect)}><Trash2 size={13} />ลบ</button></>}</header>{editingDefectId === defect.id ? <div className="result-entry-block inline-result-editor">{renderDefectFields("บันทึกการแก้ไข Defect", resetResultForm)}</div> : <>{defect.description && <p>{defect.description}</p>}{defect.apiResponse && <details><summary>API response</summary><pre>{defect.apiResponse}</pre></details>}{defect.log && <details><summary>Log</summary><pre>{defect.log}</pre></details>}<ImageViewerGallery className="drive-evidence-gallery result-evidence-gallery" images={evidenceViewerImages(defect.evidence)} />{defect.jiraUrl && <a className="secondary-button" href={defect.jiraUrl} target="_blank" rel="noreferrer">เปิด Jira</a>}</>}</article>)}</div>}
-          {!focusedSheetName && <div className="result-sheet-block">
-            <div className="result-sheet-heading"><span>ผลและหลักฐานจาก Sheets</span><strong>{resultSheets.length} sheets · {evidenceCount} รูป</strong></div>
-            {loadingSheetDetails || loadingWorkbook ? <SheetContentShimmer /> : <>{resultSheets.length ? <div className="result-sheet-list">{resultSheets.map((sheet) => <button className={viewingSheet?.path === sheet.path ? "active" : ""} onClick={() => { if (source?.bufferLoaded) return setViewingSheet(sheet); setLoadingWorkbook(true); void onEnsureWorkbook().then(() => setViewingSheet(sheet)).catch((reason) => setError(reason instanceof Error ? reason.message : "โหลดไฟล์ต้นฉบับไม่สำเร็จ")).finally(() => setLoadingWorkbook(false)); }} key={sheet.path}><FileSpreadsheet size={16} /><span><strong>{sheet.name}</strong><small>{sheet.imageCount ? `${sheet.imageCount} รูปหลักฐาน` : "ไม่มีรูปในชีต"}</small></span><ChevronRight size={15} /></button>)}</div> : <p className="no-result-sheet">ไม่พบชีตผลลัพธ์ที่อ้างอิง {value.id}</p>}{source?.bufferLoaded && resultSheets.map(sheet => <ResultSheetViewer key={sheet.path} source={source} sheet={sheet} imagesOnly displayedEvidence={displayedResultEvidence} />)}{viewingSheet && source?.bufferLoaded && <ResultSheetViewer key={viewingSheet.path} source={source} sheet={viewingSheet} displayedEvidence={displayedResultEvidence} showImages={false} />}</>}
+          {!focusedSheetName && remainingResultSheets.length > 0 && <div className="result-sheet-block">
+            <div className="result-sheet-heading"><span>ผลและหลักฐานจาก Sheets</span><strong>{remainingResultSheets.length} sheets · {evidenceCount} รูป</strong></div>
+            {loadingSheetDetails || loadingWorkbook ? <SheetContentShimmer /> : <>{remainingResultSheets.length ? <div className="result-sheet-list">{remainingResultSheets.map((sheet) => <button className={viewingSheet?.path === sheet.path ? "active" : ""} onClick={() => { if (source?.bufferLoaded) return setViewingSheet(sheet); setLoadingWorkbook(true); void onEnsureWorkbook().then(() => setViewingSheet(sheet)).catch((reason) => setError(reason instanceof Error ? reason.message : "โหลดไฟล์ต้นฉบับไม่สำเร็จ")).finally(() => setLoadingWorkbook(false)); }} key={sheet.path}><FileSpreadsheet size={16} /><span><strong>{sheet.name}</strong><small>{sheet.imageCount ? `${sheet.imageCount} รูปหลักฐาน` : "ไม่มีรูปในชีต"}</small></span><ChevronRight size={15} /></button>)}</div> : <p className="no-result-sheet">ไม่พบชีตผลลัพธ์ที่อ้างอิง {value.id}</p>}{source?.bufferLoaded && remainingResultSheets.map(sheet => <ResultSheetViewer key={sheet.path} source={source} sheet={sheet} imagesOnly displayedEvidence={displayedResultEvidence} />)}{viewingSheet && remainingResultSheets.some(sheet => sheet.path === viewingSheet.path) && source?.bufferLoaded && <ResultSheetViewer key={viewingSheet.path} source={source} sheet={viewingSheet} displayedEvidence={displayedResultEvidence} showImages={false} />}</>}
           </div>}
           <label className="field-label">สถานะผลทดสอบ</label>
           {readOnly || draft.stepDefinitions?.length ? <><StatusBadge status={draft.status} />{!!draft.stepDefinitions?.length && <small>คำนวณจากสถานะของทุก Step</small>}</> : <div className="status-picker">
@@ -1115,8 +1168,6 @@ export function QaWorkspace({
   activePage,
   currentUser,
   testCaseId,
-  previewMode = false,
-  previewSheetName,
   sheetName,
   planningSprint,
   sprintProjectData,
@@ -1130,8 +1181,6 @@ export function QaWorkspace({
   activePage: WorkspacePage;
   currentUser: CurrentUser | null;
   testCaseId?: string;
-  previewMode?: boolean;
-  previewSheetName?: string;
   sheetName?: string;
   planningSprint?: Sprint;
   sprintProjectData?: SprintDashboardData;
@@ -1197,9 +1246,12 @@ export function QaWorkspace({
   const [toast, setToast] = useState("");
   const [exporting, setExporting] = useState(false);
   const [syncingGoogle, setSyncingGoogle] = useState(false);
-  const [syncConflictState, setSyncConflictState] = useState<{ operation: "pull" | "push"; conflicts: CaseConflict[]; googleCases: TestCase[] } | null>(null);
+  const [syncConflictState, setSyncConflictState] = useState<{ operation: "push"; conflicts: CaseConflict[]; googleCases: TestCase[] } | null>(null);
   const [pullingGoogle, setPullingGoogle] = useState(Boolean(selectedProjectId && activeProjectImports.has(selectedProjectId)));
-  const [autoImportPending, setAutoImportPending] = useState(false);
+  const [checkingSheetsProject, setCheckingSheetsProject] = useState<string | null>(() => selectedProject?.googleSheetId && canEditProject ? selectedProject.id : null);
+  const checkingSheets = checkingSheetsProject === selectedProjectId;
+  const [sheetCheckErrorProject, setSheetCheckErrorProject] = useState<string | null>(null);
+  const sheetCheckFailed = sheetCheckErrorProject === selectedProjectId;
   const autoImportAttempted = useRef(new Set<string>());
   const [sheetRowLoads, setSheetRowLoads] = useState<Record<string, RowLoadState>>(cachedWorkspace?.sheetRowLoads ?? {});
   const [sheetLoadProgress, setSheetLoadProgress] = useState<Record<string, SheetImportProgress>>(cachedWorkspace?.sheetLoadProgress ?? {});
@@ -1226,34 +1278,33 @@ export function QaWorkspace({
     if (!selectedProject || !source) throw new Error("ไม่พบไฟล์ต้นฉบับของ Project");
     if (source.bufferLoaded) return source;
     const buffer = !source.id && selectedProject.googleSheetId ? await getGoogleWorkbook()
-      : await getProjectWorkbook(selectedProject.id, () => loadProjectWorkbook(selectedProject.id));
+      : await getProjectWorkbook(`${selectedProject.id}:${source.id}`, () => loadProjectWorkbook(selectedProject.id, source.id));
     const loadedSource = { ...source, buffer, bufferLoaded: true };
     setSource(loadedSource);
     const cached = workspaceNavigationCache.get(selectedProject.id);
     if (cached) workspaceNavigationCache.set(selectedProject.id, { ...cached, source: loadedSource });
     return loadedSource;
   }
-  const getGoogleWorkbook = useCallback((refresh = false) => {
+  const getGoogleWorkbook = useCallback((refresh = false, expectedRevision?: string) => {
     if (!selectedProject?.googleSheetId) return Promise.reject(new Error("ไม่พบ Google Sheets ของ Project"));
-    const key = `${selectedProject.id}:google:${selectedProject.googleSheetId}`;
+    const key = `${selectedProject.id}:google:${selectedProject.googleSheetId}:${expectedRevision ?? "live"}`;
     if (refresh) clearProjectWorkbook(key);
     return getProjectWorkbook(key, async () => {
       return withImportTimeout(async signal => {
-        const response = await fetch(`/api/projects/${selectedProject.id}/google-sheet/workbook`, { cache: "no-store", signal });
+        const response = await fetch(`/api/projects/${selectedProject.id}/google-sheet/workbook${expectedRevision ? `?expectedRevision=${encodeURIComponent(expectedRevision)}` : ""}`, { cache: "no-store", signal });
         if (!response.ok) {
           const data = await response.json().catch(() => null);
           if (response.status === 401 && data?.authUrl) continueGoogleAuthorization(data.authUrl);
           throw new Error(data?.error ?? "โหลดรูปหลักฐานจาก Google Sheets ไม่สำเร็จ");
         }
         return response.arrayBuffer();
-      }, 90_000, "ดาวน์โหลดไฟล์ต้นฉบับเพื่อตรวจรูป");
+      }, 180_000, "ดาวน์โหลดไฟล์ต้นฉบับเพื่อตรวจรูป");
     });
   }, [selectedProject]);
-  const currentEnvironment = cases.find((item) => item.environment.trim())?.environment ?? selectedProject?.environment;
-  const workbookStats = useMemo(() => ({
-    results: source?.sheets.filter((sheet) => sheet.kind === "result").length ?? 0,
-    images: source?.sheets.reduce((total, sheet) => total + sheet.imageCount, 0) ?? 0,
-  }), [source]);
+  const currentEnvironment = workspaceEnvironment(cases, selectedProject?.environment);
+  const evidenceReadiness = approvalEvidenceReadiness(readSheetImportState(source?.sheetImport, selectedProject?.googleSheetId), workspaceCases, source?.sheets.map(sheet => sheet.name));
+  const importAction = sheetImportAction(source?.sheetImport);
+  const showProjectImportProgress = !loadingWorkspace && !!selectedProject?.googleSheetId && (pullingGoogle || !!source?.sheetImport);
 
   useEffect(() => {
     if (!testCaseScrollKey || activePage !== "test-cases" || testCaseId || sheetName || loadingWorkspace) return;
@@ -1312,20 +1363,6 @@ export function QaWorkspace({
     const path=sheetAlias && !shared ? `/groups/${groupId}/projects/${selectedProject.id}/sheets/${encodeURIComponent(sheetAlias)}` : `/groups/${groupId}/projects/${selectedProject.id}/test-cases/${encodeURIComponent(item.id)}`;
     openTestCaseDetail(path);
   }
-  function previewRegisterRow({item,sheetAlias}:CaseRegisterRow) {
-    if (!selectedProject) return;
-    const query = sheetAlias ? `?${new URLSearchParams({sheet:sheetAlias})}` : "";
-    openTestCaseDetail(`/groups/${groupId}/projects/${selectedProject.id}/test-cases/${encodeURIComponent(item.id)}/preview${query}`);
-  }
-  function registerRowState({item,sheetAlias}:CaseRegisterRow) {
-    return sheetRowState(sheetAlias || caseDetailLoadKeys((associatedSheetsByCase.get(testCaseIdentity(item.id)) ?? []).map(sheet=>sheet.name),item.id),activeSheetRowLoads);
-  }
-  function registerRowLoadLabel(row: CaseRegisterRow) {
-    const names = row.sheetAlias ? [row.sheetAlias] : caseDetailLoadKeys((associatedSheetsByCase.get(testCaseIdentity(row.item.id)) ?? []).map(sheet => sheet.name), row.item.id);
-    const active = names.find(name => activeSheetRowLoads[name] === "loading") ?? names.find(name => activeSheetRowLoads[name] !== "loaded");
-    return sheetImportProgressLabel(registerRowState(row), rowLoadProjectId === selectedProjectId && active ? sheetLoadProgress[active] : undefined);
-  }
-  const sheetImportTotals = sheetImportSummary((source?.sheets ?? []).map(sheet => sheet.name), activeSheetRowLoads, rowLoadProjectId === selectedProjectId ? sheetLoadProgress : {});
   const assignmentRowKey=(id:string,sheetAlias:string)=>JSON.stringify([id,sheetAlias]);
   const assignmentTargets=cases.flatMap(item=>{
     const aliases=caseSheetAliases.get(testCaseIdentity(item.id)) ?? [];
@@ -1420,9 +1457,10 @@ export function QaWorkspace({
         ? { sheetName: decodeURIComponent(sheetName) }
         : { testcaseId: decodeURIComponent(testCaseId!) }).map(sheet => sheet.name);
       const loadKeys = caseDetailLoadKeys(names, decodeURIComponent(testCaseId ?? ""));
-      if (canReuseSheetDetails(loadKeys, cached.sheetRowLoads, cached.source.bufferLoaded || !names.length)) return;
+      if (canReuseSheetDetails(loadKeys, cached.sheetRowLoads, cached.source.bufferLoaded || !names.length || canRenderStoredCaseDetails(cached.source, Boolean(testCaseId || cached.cases.some(item=>item.results?.some(result=>result.sourceSheetName===decodeURIComponent(sheetName ?? "")))) ))) return;
     }
     let active = true;
+    const releaseDetailRefresh = needsDetailedData ? beginProjectDetailRefresh(selectedProject.id) : () => {};
     queueMicrotask(() => { if (active) setLoadingWorkspace(!cached); });
     const workspaceRequest = cached ? Promise.resolve({ cases: cached.cases, source: cached.source }) : loadProjectWorkspace(selectedProject.id, { includeWorkbook: false });
     const googleRequest = selectedProject.googleSheetId
@@ -1434,14 +1472,21 @@ export function QaWorkspace({
           if (!shouldFetchGoogleWorkspace(Boolean(workspace.source || workspace.cases.length), needsDetailedData, detailsLoaded,
             Boolean(saved?.refreshRequired || needsStepTemplateRefresh(workspace.cases, workspace.source)))) return null;
           if (active && needsDetailedData) setLoadingSheetPreview(true);
-          const response = await fetch(`/api/projects/${selectedProject.id}/google-sheet${sheetName ? `?sheet=${encodeURIComponent(decodeURIComponent(sheetName))}` : testCaseId ? `?testcase=${encodeURIComponent(decodeURIComponent(testCaseId))}` : "?summary=1"}`, { cache: "no-store" });
+          const sourceRevision = needsDetailedData ? await readSourceRevision(selectedProject.id) : undefined;
+          const requestedSheets = testCaseId && names.length ? `?${names.map(name => `sheet=${encodeURIComponent(name)}`).join('&')}` : '';
+          const response = await fetch(`/api/projects/${selectedProject.id}/google-sheet${requestedSheets || (sheetName ? `?sheet=${encodeURIComponent(decodeURIComponent(sheetName))}` : testCaseId ? `?testcase=${encodeURIComponent(decodeURIComponent(testCaseId))}` : "?summary=1")}`, { cache: "no-store" });
           const data = await response.json();
           if (response.status === 401 && data.authUrl) {
             continueGoogleAuthorization(data.authUrl);
             return null;
           }
           if (!response.ok) throw new Error(data.error ?? "โหลด Google Sheet ไม่สำเร็จ");
-          return data as { cases: TestCase[]; sheets: WorkbookSource["sheets"]; coverSnapshot?: WorkbookSource["coverSnapshot"]; documentType?: WorkbookSource["documentType"] };
+          const incoming = data as { cases: TestCase[]; sheets: WorkbookSource["sheets"]; coverSnapshot?: WorkbookSource["coverSnapshot"]; documentType?: WorkbookSource["documentType"] };
+          const aligned = alignRegisterCaseIdentities(workspace.cases, incoming.cases);
+          const ids = new Map(incoming.cases.map((item, index) => [item.id, aligned[index].id]));
+          incoming.cases = aligned;
+          incoming.sheets = incoming.sheets.map(sheet => ({ ...sheet, testCaseIds: sheet.testCaseIds.map(id => ids.get(id) ?? id), definitionCaseIds: sheet.definitionCaseIds?.map(id => ids.get(id) ?? id) }));
+          return needsDetailedData ? { ...incoming, sourceRevision, cases: scopeGoogleDetailCases(workspace.cases, incoming.cases) } : { ...incoming, sourceRevision };
         })
       : Promise.resolve(null);
     const mappingsRequest = cached?.hasLoadedSheetMappings ? Promise.resolve(cached.sheetMappings) : selectedProject.googleSheetId
@@ -1470,7 +1515,7 @@ export function QaWorkspace({
         if (workspaceResult.status === "rejected") throw workspaceResult.reason;
         const workspace = workspaceResult.value;
         const savedImport = readSheetImportState(workspace.source?.sheetImport, selectedProject.googleSheetId);
-        setAutoImportPending(shouldStartSheetImport(selectedProject.googleSheetId, selectedProject.canEdit, workspace.cases.length, savedImport));
+
         const googleWorkspace = googleResult.status === "fulfilled" ? googleResult.value : null;
         if (googleWorkspace) {
           if (selectedProject.canEdit && workspace.source?.id && !sheetName && !testCaseId) {
@@ -1517,10 +1562,11 @@ export function QaWorkspace({
             setLoadingWorkspace(false);
             setLoadingSheetPreview(true);
             try {
-              const buffer = workspace.source.bufferLoaded ? workspace.source.buffer
-                : await getProjectWorkbook(selectedProject.id, () => loadProjectWorkbook(selectedProject.id));
+              const storedDetails=canRenderStoredCaseDetails(workspace.source,Boolean(testCaseId || workspace.cases.some(item=>item.results?.some(result=>result.sourceSheetName===decodeURIComponent(sheetName ?? "")))));
+              const buffer = workspace.source.bufferLoaded || storedDetails ? workspace.source.buffer
+                : await getProjectWorkbook(`${selectedProject.id}:${workspace.source.id}`, () => loadProjectWorkbook(selectedProject.id, workspace.source!.id));
               if (active) {
-                setSource({ ...workspace.source, buffer, bufferLoaded: true });
+                setSource({ ...workspace.source, buffer, bufferLoaded: workspace.source.bufferLoaded || !storedDetails });
                 setHasGoogleWorkbook(true);
                 setHasDetailedGoogleData(true);
               }
@@ -1543,8 +1589,10 @@ export function QaWorkspace({
                 }
                 return;
               }
-              const workbookSource = cached?.source?.bufferLoaded ? cached.source
-                : importTestCases(await getGoogleWorkbook(), `${selectedProject.name}.xlsx`).source;
+              const workbookSource = await revisionBoundSource(googleWorkspace.sourceRevision ?? "", cached?.source,
+                revision => getGoogleWorkbook(false, revision), bytes => importTestCases(bytes, `${selectedProject.name}.xlsx`).source,
+                () => readSourceRevision(selectedProject.id));
+              if (!active) return;
               let loadedSource = { ...workbookSource, sheets: mergeGoogleSheetsWithSource(workbookSource.sheets, googleWorkspace.sheets) };
               // Parse every requested tab before claiming that its evidence is available.
               for (const detail of details) {
@@ -1552,15 +1600,20 @@ export function QaWorkspace({
                 if (!sheet) throw new Error(`ไม่พบรูปแบบรายละเอียดของ ${detail.name}`);
                 readWorkbookSheet(loadedSource, sheet);
               }
+              const detailSource = { ...loadedSource, sheets: loadedSource.sheets.filter(sheet => details.some(detail => detail.name === sheet.name)) };
+              const refreshedCases = refreshWorkbookStepEvidence(mergedCases,
+                readWorkbookFreeformResults(detailSource, mergedCases), readWorkbookResultImages(detailSource, mergedCases));
+              if (active) setCases(refreshedCases);
               if (selectedProject.canEdit) {
-                await Promise.all(mergedCases.filter(item => item.id === decodeURIComponent(testCaseId ?? "") || item.results?.some(result => details.some(sheet => sheet.name === result.sourceSheetName)))
+                await completeProjectDetailWrites(refreshedCases.filter(item => item.id === decodeURIComponent(testCaseId ?? "") || item.results?.some(result => details.some(sheet => sheet.name === result.sourceSheetName)))
                   .map(item => persistTestCaseResult(selectedProject.id, item)));
+                if (!active) return;
                 const states = Object.fromEntries(loadKeys.map(key => [key, "loaded" as const]));
                 if (!loadedSource.id) {
-                  const saved = await persistImportedWorkbook(selectedProject.id, mergedCases, {
-                    ...loadedSource, sheetImport: checkpointSheetImport(savedImport, selectedProject.googleSheetId, states, new Date().toISOString(), savedImport?.complete ?? false),
-                  }, false);
-                  loadedSource = { ...loadedSource, id: saved.source!.id, sheetImport: saved.source!.sheetImport };
+                  const saved = await persistImportedWorkbook(selectedProject.id, refreshedCases, {
+                    ...loadedSource, documentType: googleWorkspace.documentType, sheetImport: revisionBoundCheckpoint(savedImport, selectedProject.googleSheetId, states, new Date().toISOString(), googleWorkspace.sourceRevision ?? ""),
+                  }, false,"google-sheets");
+                  loadedSource = { ...loadedSource, id: saved.source!.id, workbookStorage: saved.source!.workbookStorage, sourceOrigin: saved.source!.sourceOrigin, sheetImport: saved.source!.sheetImport };
                   clearProjectWorkbook(selectedProject.id);
                 } else {
                   loadedSource = { ...loadedSource, sheetImport: await persistSheetImportState(selectedProject.id, loadedSource.id, selectedProject.googleSheetId, states, savedImport?.complete ?? false) };
@@ -1581,6 +1634,7 @@ export function QaWorkspace({
         setWorkspaceError(reason instanceof Error ? reason.message : "โหลด Testcase ไม่สำเร็จ");
       })
       .finally(() => {
+        releaseDetailRefresh();
         if (active) { setLoadingWorkspace(false); setLoadingSheetPreview(false); }
       });
     return () => { active = false; };
@@ -1595,7 +1649,8 @@ export function QaWorkspace({
   async function saveCase(next: TestCase) {
     if (!selectedProject) throw new Error("กรุณาเลือก Project");
     if (!canEditProject) throw new Error("Project นี้เปิดให้คุณดูอย่างเดียว");
-    if (activeProjectImports.has(selectedProject.id)) throw new Error("กำลังนำเข้าข้อมูล Project กรุณารอให้เสร็จก่อนบันทึก");
+    if (projectDetailRefreshPending(selectedProject.id)) throw new Error("กำลังโหลดรายละเอียดจาก Sheets กรุณารอให้เสร็จก่อนบันทึก");
+    if (checkingSheets || activeProjectImports.has(selectedProject.id)) throw new Error("กำลังนำเข้าข้อมูล Project กรุณารอให้เสร็จก่อนบันทึก");
     const saved = await persistTestCaseResult(selectedProject.id, next);
     setCases((current) => {
       const matched = current.some((item) => (saved.recordId && item.recordId === saved.recordId) || item.id === activeSelectedCase?.id || item.id === saved.id);
@@ -1614,7 +1669,7 @@ export function QaWorkspace({
   async function createTestCase(next: TestCase) {
     if (!selectedProject) throw new Error("กรุณาเลือก Project");
     if (!canEditProject) throw new Error("Project นี้เปิดให้คุณดูอย่างเดียว");
-    if (activeProjectImports.has(selectedProject.id)) throw new Error("กำลังนำเข้าข้อมูล Project กรุณารอให้เสร็จก่อนบันทึก");
+    if (checkingSheets || activeProjectImports.has(selectedProject.id)) throw new Error("กำลังนำเข้าข้อมูล Project กรุณารอให้เสร็จก่อนบันทึก");
     const saved = await persistTestCaseResult(selectedProject.id, next);
     locallyCreatedCaseIds.current.add(saved.id);
     setCases((current) => [...current, saved].sort((a, b) => a.sourceRow - b.sourceRow));
@@ -1631,7 +1686,8 @@ export function QaWorkspace({
   async function saveResult(next: TestCase) {
     if (!selectedProject) throw new Error("กรุณาเลือก Project");
     if (!canEditProject) throw new Error("Project นี้เปิดให้คุณดูอย่างเดียว");
-    if (activeProjectImports.has(selectedProject.id)) throw new Error("กำลังนำเข้าข้อมูล Project กรุณารอให้เสร็จก่อนบันทึก");
+    if (projectDetailRefreshPending(selectedProject.id)) throw new Error("กำลังโหลดรายละเอียดจาก Sheets กรุณารอให้เสร็จก่อนบันทึก");
+    if (checkingSheets || activeProjectImports.has(selectedProject.id)) throw new Error("กำลังนำเข้าข้อมูล Project กรุณารอให้เสร็จก่อนบันทึก");
     const saved = await persistTestCaseResult(selectedProject.id, next);
     setCases((current) => current.some((item) => item.id === saved.id) ? current.map((item) => item.id === saved.id ? saved : item) : [...current, saved]);
     setSelectedCase(saved);
@@ -1640,17 +1696,32 @@ export function QaWorkspace({
     return saved;
   }
 
-  async function pullFromGoogle(conflictChoices?: Record<string, CaseChoice>, resume = false) {
+  async function readSourceRevision(projectId: string, signal?: AbortSignal): Promise<string> {
+    const response = await fetch(`/api/projects/${projectId}/google-sheet?revision=1`, { cache: "no-store", signal });
+    const data = await response.json();
+    if (response.status === 401 && data.authUrl) {
+      continueGoogleAuthorization(data.authUrl);
+      throw new Error("กรุณาเชื่อมต่อ Google เพื่ออัปเดตข้อมูลล่าสุด");
+    }
+    if (!response.ok || typeof data.revision !== "string" || !data.revision) throw new Error(data.error ?? "ตรวจการเปลี่ยนแปลงของ Sheets ไม่สำเร็จ");
+    return data.revision;
+  }
+
+  async function pullFromGoogle(resume = false, checkedRevision?: string) {
     if (!selectedProject?.googleSheetId) return setShowGoogleSheetDialog(true);
     if (!canEditProject) return flash("Project นี้เปิดให้คุณดูอย่างเดียว");
     if (activeProjectImports.has(selectedProject.id)) return;
     activeProjectImports.add(selectedProject.id);
     setPullingGoogle(true);
+    setWorkspaceError("");
     setRowLoadProjectId(selectedProject.id);
     const completedResultTabs = new Set<string>();
     const incompleteEvidenceTabs = new Set<string>();
-    const previousImport = readSheetImportState(source?.sheetImport, selectedProject.googleSheetId);
+    let previousImport = readSheetImportState(source?.sheetImport, selectedProject.googleSheetId);
+    let importWorkspaceCases = workspaceCases;
     let importSource: WorkbookSource | null = null;
+    let sourceDefinitionsReady = false;
+    let savedSource = source;
     const importStates = initialSheetImportStates((source?.sheets ?? []).map(sheet => sheet.name), previousImport, resume);
     setSheetLoadProgress({ Testcase: { phase: "details" } });
     setSheetRowLoads(importStates);
@@ -1664,15 +1735,33 @@ export function QaWorkspace({
     };
     const publishProgress = (nextCases: TestCase[], nextSource: WorkbookSource | null, states: Record<string, RowLoadState>) => {
       workspaceNavigationCache.set(selectedProject.id, {
-        cases: [...nextCases], source: nextSource ? { ...nextSource } : null, sheetMappings,
+        cases: refreshRegisterCases(importWorkspaceCases, nextCases, { definitionsReady: sourceDefinitionsReady }).cases, source: nextSource ? { ...nextSource } : null, sheetMappings,
         hasLoadedSheetMappings, hasUnsyncedChanges: false, hasDetailedGoogleData: Boolean(nextSource?.bufferLoaded),
         hasGoogleWorkbook: Boolean(nextSource?.bufferLoaded), sheetRowLoads: { ...states }, sheetLoadProgress: { ...progress },
       });
       window.dispatchEvent(new CustomEvent("qa-project-import-progress", { detail: selectedProject.id }));
     };
     try {
-      const workbookPending = resume && previousImport && source?.id
-        ? getProjectWorkbook(selectedProject.id, () => withImportTimeout(() => loadProjectWorkbook(selectedProject.id), 90_000, "โหลดไฟล์ต้นฉบับที่บันทึกไว้")) : getGoogleWorkbook(true);
+      await waitForProjectDetailWrites(selectedProject.id);
+      const latestWorkspace = await loadProjectWorkspace(selectedProject.id, { includeWorkbook: false });
+      importWorkspaceCases = latestWorkspace.cases;
+      savedSource = latestWorkspace.source && source && latestWorkspace.source.id === source.id && source.bufferLoaded
+        ? { ...latestWorkspace.source, buffer: source.buffer, bufferLoaded: true }
+        : latestWorkspace.source;
+      previousImport = readSheetImportState(latestWorkspace.source?.sheetImport, selectedProject.googleSheetId);
+      const sourceRevision = checkedRevision ?? await readSourceRevision(selectedProject.id);
+      setSheetCheckErrorProject(null);
+      // Never resume a workbook captured from a different source revision.
+      resume = resume && savedSource?.sourceOrigin === "google-sheets" && !!previousImport?.sourceRevision
+        && !sheetRefreshRequired(previousImport, sourceRevision);
+      if (savedSource?.id) {
+        const pendingCheckpoint = await persistSheetImportState(selectedProject.id, savedSource.id, selectedProject.googleSheetId, {}, false, true);
+        savedSource = { ...savedSource, sheetImport: pendingCheckpoint };
+        setSource(savedSource);
+        publishProgress(importWorkspaceCases, savedSource, importStates);
+      }
+      const workbookPending = resume && previousImport && savedSource?.id
+        ? getProjectWorkbook(`${selectedProject.id}:${savedSource.id}`, () => withImportTimeout(() => loadProjectWorkbook(selectedProject.id, savedSource!.id), 90_000, "โหลดไฟล์ต้นฉบับที่บันทึกไว้")) : getGoogleWorkbook(true, sourceRevision);
       // Attach a rejection handler immediately while the text requests run.
       void workbookPending.catch(() => {});
       const { response, data } = await withImportTimeout(async signal => {
@@ -1684,19 +1773,25 @@ export function QaWorkspace({
         return;
       }
       if (!response.ok) throw new Error(data.error ?? "โหลด Google Sheet ไม่สำเร็จ");
-      if (source?.id) await cacheProjectDefectMetadata(selectedProject.id, data.sheets);
-      const detailedCases = new Map<string, TestCase>(mergeWorkspaceAndGoogleCases(cases, data.cases, currentUser?.name ?? "").cases.map(item => [item.id, item]));
+      if (savedSource?.id) await cacheProjectDefectMetadata(selectedProject.id, data.sheets);
+      const alignedSummaryCases = alignRegisterCaseIdentities(importWorkspaceCases, data.cases as TestCase[]);
+      const summaryCaseIds = new Map((data.cases as TestCase[]).map((item, index) => [item.id, alignedSummaryCases[index].id]));
+      data.cases = alignedSummaryCases;
+      data.sheets = (data.sheets as WorkbookSheet[]).map(sheet => ({ ...sheet, testCaseIds: sheet.testCaseIds.map(id => summaryCaseIds.get(id) ?? id), definitionCaseIds: sheet.definitionCaseIds?.map(id => summaryCaseIds.get(id) ?? id) }));
+      const detailedCases = new Map<string, TestCase>((data.cases as TestCase[]).map(item => [item.id, item]));
       setCases(current => mergeWorkspaceAndGoogleCases(current, data.cases, currentUser?.name ?? "").cases);
       setSource(current => current ? { ...current, sheets: mergeGoogleSheetsWithSource(current.sheets, data.sheets) } : current);
-      const detailSheets = (data.sheets as WorkbookSheet[]).filter(sheet => sheet.name.trim().toLowerCase() !== "testcase");
+      const detailSheets = prioritizeReferencedSheets((data.sheets as WorkbookSheet[]).filter(sheet => sheet.name.trim().toLowerCase() !== "testcase"), data.cases as TestCase[]);
       updateProgress("Testcase", { phase: "workbook" });
       setSheetRowLoads({ Testcase: importStates.Testcase, ...Object.fromEntries(detailSheets.map(sheet => [sheet.name, resume && previousImport?.states[sheet.name] === "loaded" ? "loaded" as const : "queued" as const])) });
       const detailNames = resume ? pendingImportSheets(detailSheets.map(sheet => sheet.name), previousImport) : detailSheets.map(sheet => sheet.name);
       detailNames.forEach(name => { importStates[name] = "queued"; });
-      const metadataSource: WorkbookSource = source ? { ...source, sheets: mergeGoogleSheetsWithSource(source.sheets, data.sheets) }
+      const metadataSource: WorkbookSource = savedSource ? { ...savedSource, sheets: mergeGoogleSheetsWithSource(savedSource.sheets, data.sheets) }
         : { fileName: `${selectedProject.name}.xlsx`, buffer: new ArrayBuffer(0), bufferLoaded: false, sheetName: "Testcase", sheetPath: "", columns: {}, sheets: data.sheets };
       publishProgress([...detailedCases.values()], metadataSource, { ...importStates });
-      const readBatch = batchRowLoader(detailNames, 3, async names => {
+      // Each batch also reads register, metadata and formatting. Group more
+      // tabs to avoid repeating those requests for every three-sheet group.
+      const readBatch = batchRowLoader(detailNames, 6, async names => {
         const query = new URLSearchParams();
         names.forEach(name => query.append("sheet", name));
         const { result, detail } = await withImportTimeout(async signal => {
@@ -1708,7 +1803,8 @@ export function QaWorkspace({
       });
       const rows = await runSheetTextImports(detailNames, readBatch, async (name, detail) => {
         const affected = new Set<string>();
-        for (const item of detail.cases as TestCase[]) {
+        detail.cases = alignRegisterCaseIdentities([...detailedCases.values()], detail.cases as TestCase[]);
+        for (const item of detail.cases) {
           const incoming = (item.results ?? []).filter(result => result.sourceSheetName === name);
           if (incoming.length || item.customFields?.some(field => field.sheetName === name) || item.defects?.some(defect => defect.sourceSheetName === name)) affected.add(item.id);
           const previous = detailedCases.get(item.id) ?? item;
@@ -1718,17 +1814,13 @@ export function QaWorkspace({
         completedResultTabs.add(name);
         // Unmapped raw content still needs its workbook snapshot. Never claim
         // that it has been saved just because its API response arrived.
-        if (!affected.size || conflictChoices) return "deferred";
+        if (!resume || !affected.size) return "deferred";
         const incomingCases = [...detailedCases.values()].filter(item => affected.has(item.id));
-        const baseline = data.baseline as CanonicalProjectSnapshot | undefined;
-        const conflicts = baseline && Object.keys(baseline.cases).length
-          ? detectThreeWayCaseConflicts(cases, incomingCases, baseline)
-          : detectBootstrapCaseConflicts(cases, incomingCases);
-        if (hasUnsyncedChanges || conflicts.length) return false;
-        const safeCases = mergeWorkspaceAndGoogleCases(cases, incomingCases, currentUser?.name ?? "").cases.filter(item => affected.has(item.id));
+        const safeCases = refreshRegisterCases(importWorkspaceCases, incomingCases, { definitionsReady: false }).cases.filter(item => affected.has(item.id));
         for (const item of safeCases) {
           const saved = await persistTestCaseResult(selectedProject.id, item);
-          detailedCases.set(item.id, saved);
+          const sourceCase = detailedCases.get(item.id);
+          if (sourceCase) detailedCases.set(item.id, withSavedCaseIdentity(sourceCase, saved));
         }
         return true;
       }, updateProgress, (name, state) => {
@@ -1739,41 +1831,34 @@ export function QaWorkspace({
       const failedRows = rows.filter(row => row.status === "rejected").length;
       rows.forEach((row, index) => { if (row.status === "rejected") importStates[detailNames[index]] = "error"; });
       if (failedRows) setWorkspaceError(`${failedRows} แท็บโหลดรายละเอียดไม่สำเร็จ — กดลองใหม่ที่แถวนั้น`);
-      const googleCases = [...detailedCases.values()];
-      const baseline = data.baseline as CanonicalProjectSnapshot | undefined;
-      const conflicts = baseline && Object.keys(baseline.cases).length
-        ? detectThreeWayCaseConflicts(cases, googleCases, baseline)
-        : detectBootstrapCaseConflicts(cases, googleCases);
-      if (conflicts.length && !conflictChoices) {
-        for (const name of completedResultTabs) {
-          importStates[name] = "queued";
-          updateProgress(name, { phase: "conflict" });
-        }
-        setSheetRowLoads({ ...importStates });
-        publishProgress(googleCases, metadataSource, importStates);
-        setSyncConflictState({ operation: "pull", conflicts, googleCases });
-        return;
-      }
       const workbookBuffer = await workbookPending;
       const imported = importTestCases(workbookBuffer, `${selectedProject.name}.xlsx`);
+      const alignedWorkbookCases = alignRegisterCaseIdentities(importWorkspaceCases, imported.cases);
+      const workbookCaseIds = new Map(imported.cases.map((item, index) => [item.id, alignedWorkbookCases[index].id]));
+      imported.cases = alignedWorkbookCases;
+      imported.source.sheets = imported.source.sheets.map(sheet => ({ ...sheet, testCaseIds: sheet.testCaseIds.map(id => workbookCaseIds.get(id) ?? id), definitionCaseIds: sheet.definitionCaseIds?.map(id => workbookCaseIds.get(id) ?? id) }));
+      const googleCases = withWorkbookDefinitions(alignRegisterCaseIdentities(importWorkspaceCases, [...detailedCases.values()]), imported.cases);
+      sourceDefinitionsReady = true;
       imported.source.documentType = data.documentType;
       imported.source.coverSnapshot = data.coverSnapshot ?? imported.source.coverSnapshot;
       const importedImages = readWorkbookResultImages(imported.source, imported.cases);
       const freeformResults = readWorkbookFreeformResults(imported.source, imported.cases);
-      let importedCases: TestCase[] = mergeWorkspaceAndGoogleCases(workspaceCases, googleCases, currentUser?.name ?? "").cases.map(testCase => ({ ...testCase, results: testCase.results?.map(result => ({ ...result, evidence: [...result.evidence] })) }));
+      let importedCases: TestCase[] = refreshRegisterCases(importWorkspaceCases, googleCases).cases.map(testCase => ({ ...testCase, results: testCase.results?.map(result => ({ ...result, evidence: [...result.evidence] })) }));
       const importedSheetAssignments = new Map(resolveSheetAssociations(
         (data.sheets as WorkbookSheet[]).filter((sheet) => sheet.name.trim().toLowerCase() !== "testcase"),
         importedCases,
         sheetMappings,
       ).associations.filter(association => association.source === "manual").map((association) => [association.sheet.name.trim().toLocaleLowerCase(), association.testCase.id]));
-      for (const snapshot of importedCases) {
-        if (!snapshot.sourceSheetName) continue;
-        const sheetKey = snapshot.sourceSheetName.trim().toLocaleLowerCase();
-        if (!importedSheetAssignments.has(sheetKey)) importedSheetAssignments.set(sheetKey, snapshot.id);
+      for (const [sheetKey, caseId] of unreferencedSnapshotAssignments(importedCases)) {
+        if (!importedSheetAssignments.has(sheetKey)) importedSheetAssignments.set(sheetKey, caseId);
       }
-      // Conflict choices govern case metadata, not whether fresh imported
-      // results/Step definitions are discarded by the default "keep local".
-      importedCases = mergeWorkspaceAndGoogleCases(mergeCaseChoices(workspaceCases, importedCases, conflictChoices ?? {}), importedCases, currentUser?.name ?? "").cases;
+      const evidenceTargets = await Promise.all(importedImages.map(async image => ({
+        testCaseId: importedSheetAssignments.get(image.sheetName.trim().toLocaleLowerCase()) ?? image.testCaseId,
+        sheetName: image.sheetName, key: await importedEvidenceKey(image),
+      })));
+      const evidenceManifest = [...new Map(evidenceTargets.map(target => [JSON.stringify(target), target])).values()];
+      const imageKeys = new Map(importedImages.map((image, index) => [image, evidenceTargets[index].key]));
+      importedCases = refreshWorkbookStepEvidence(importedCases, freeformResults, importedImages);
       const changedCaseIds = new Set<string>();
       let attachedImageCount = 0;
       let skippedImageCount = 0;
@@ -1787,15 +1872,7 @@ export function QaWorkspace({
           result.id === importedResult.resultId
           && (!result.sourceSheetName || result.sourceSheetName === importedResult.sheetName));
         if (existing) {
-          existing.sourceSheetName = existing.sourceSheetName || importedResult.sheetName;
-          // The live Sheets reader already excludes mapped cells and preserves
-          // formatting. The workbook fallback must not overwrite that snapshot.
-          if (!existing.sheetSections) {
-            existing.actualResult = importedResult.actualResult || existing.actualResult;
-            existing.apiResponse = importedResult.apiResponse || existing.apiResponse;
-            existing.log = importedResult.log || existing.log;
-            existing.sheetSections = importedResult.sheetSections;
-          }
+          Object.assign(existing, workbookResultFallback(existing, importedResult));
         } else {
           testCase.results = [...(testCase.results ?? []), {
             id: importedResult.resultId,
@@ -1818,7 +1895,7 @@ export function QaWorkspace({
 
       // Persist freeform text first. A failed evidence upload must not make the whole Result disappear.
       if (changedCaseIds.size) {
-        const textOnlySavedCases = new Map((await Promise.all(importedCases
+        const textOnlySavedCases = new Map((await completeProjectDetailWrites(importedCases
           .filter((testCase) => changedCaseIds.has(testCase.id))
           .map((testCase) => persistTestCaseResult(selectedProject.id, testCase))))
           .map((testCase) => [testCase.id, testCase]));
@@ -1828,30 +1905,35 @@ export function QaWorkspace({
       }
       setCases([...importedCases]);
       const mergedSheets = mergeGoogleSheetsWithSource(imported.source.sheets, data.sheets);
-      setSource({ ...imported.source, sheets: mergedSheets });
-      setHasDetailedGoogleData(true);
-      setHasGoogleWorkbook(true);
+      // Keep the last saved source/checkpoint visible until the replacement
+      // source metadata has been registered successfully.
+
       completedResultTabs.forEach(name => updateProgress(name, { phase: "saving" }));
-      if (resume && previousImport && source?.id && !previousImport.refreshRequired) {
+      if (resume && previousImport && savedSource?.id && !previousImport.refreshRequired) {
         // Continue the existing snapshot without uploading a duplicate workbook.
-        await Promise.all(importedCases.map(item => persistTestCaseResult(selectedProject.id, item)));
-        importSource = { ...imported.source, sheets: mergedSheets, id: source.id, sheetImport: previousImport };
+        await completeProjectDetailWrites(importedCases.map(item => persistTestCaseResult(selectedProject.id, item)));
+        importSource = { ...imported.source, sheets: mergedSheets, id: savedSource.id, sourceOrigin: savedSource.sourceOrigin, workbookStorage: savedSource.workbookStorage, sheetImport: previousImport };
       } else {
         const savedWorkbook = await persistImportedWorkbook(selectedProject.id, importedCases, {
           ...imported.source, sheets: mergedSheets,
-          sheetImport: checkpointSheetImport(previousImport, selectedProject.googleSheetId, importStates, new Date().toISOString(), false),
-        }, true);
-        importSource = { ...imported.source, sheets: mergedSheets, id: savedWorkbook.source!.id, sheetImport: savedWorkbook.source!.sheetImport };
+          sheetImport: { ...checkpointSheetImport(undefined, selectedProject.googleSheetId, importStates, new Date().toISOString(), false), sourceRevision, registerBaseline: previousImport?.registerBaseline, evidenceManifest },
+        }, true,"google-sheets");
+        importSource = { ...imported.source, sheets: mergedSheets, id: savedWorkbook.source!.id, workbookStorage: savedWorkbook.source!.workbookStorage, sourceOrigin: savedWorkbook.source!.sourceOrigin, sheetImport: savedWorkbook.source!.sheetImport };
       }
       setSource(importSource);
+      setHasDetailedGoogleData(true);
+      setHasGoogleWorkbook(true);
       clearProjectWorkbook(selectedProject.id);
       importStates.Testcase = "loaded";
-      importSource.sheetImport = await persistSheetImportState(selectedProject.id, importSource.id!, selectedProject.googleSheetId, importStates, false);
+      importSource.sheetImport = await persistSheetImportState(selectedProject.id, importSource.id!, selectedProject.googleSheetId, importStates, false, false, evidenceManifest);
       setSheetRowLoads(importSource.sheetImport.states);
       publishProgress(importedCases, importSource, importSource.sheetImport.states);
 
       let authorizationPending = false;
-      await runSheetEvidenceImports([...completedResultTabs], importedImages, image => image.sheetName, async image => {
+      let evidenceUploadError = "";
+      const uploadEvidence = evidenceUploadBatch();
+      const sharedFiles = sharedEvidenceFiles<TestEvidence>();
+      await runSheetEvidenceImports(detailSheets.filter(sheet => importStates[sheet.name] === "loaded" || completedResultTabs.has(sheet.name)).map(sheet => sheet.name), importedImages, image => image.sheetName, async image => {
         if (authorizationPending) return false;
         const assignedCaseId = importedSheetAssignments.get(image.sheetName.trim().toLocaleLowerCase()) ?? image.testCaseId;
         const testCase = importedCases.find((item) => testCaseIdentity(item.id) === testCaseIdentity(assignedCaseId));
@@ -1860,7 +1942,7 @@ export function QaWorkspace({
           incompleteEvidenceTabs.add(image.sheetName);
           return false;
         }
-        const importKey = `sheet-${image.sheetName}-${image.row}-${image.column}`.replace(/[^a-zA-Z0-9._-]+/g, "_");
+        const importKey = imageKeys.get(image)!;
         let result = testCase.results?.find((item) =>
           item.id.trim() === image.resultId.trim()
           && (!item.sourceSheetName || item.sourceSheetName === image.sheetName));
@@ -1892,36 +1974,54 @@ export function QaWorkspace({
           result.sourceSheetName = image.sheetName;
           changedCaseIds.add(testCase.id);
         }
-        if (result.evidence.some((evidence) => evidence.name.includes(importKey))) return true;
-        const originalFile = new File([new Uint8Array(image.bytes)], `${importKey}-${image.name}`, { type: image.mimeType });
-        try {
-          const prepared = await compressEvidenceImage(originalFile);
-          const form = new FormData();
-          form.set("file", prepared.file);
-          form.set("testCaseId", testCase.id);
-          form.set("sourceRow", String(testCase.sourceRow));
-          const uploadResponse = await fetch(`/api/projects/${selectedProject.id}/evidence`, { method: "POST", body: form });
-          const uploadData = await uploadResponse.json();
-          if (uploadResponse.status === 401 && uploadData.authUrl) {
+        const targetResult = result;
+        return uploadEvidence(JSON.stringify([testCase.id, targetResult.id, importKey]), async () => {
+          if (targetResult.evidence.some((evidence) => evidence.name.includes(importKey))) return true;
+          const evidence = await sharedFiles(JSON.stringify([image.sheetName, importKey]), async () => {
+          const saved = importedCases.flatMap(item => (item.results ?? []).filter(result => result.source === 'sheets' && !result.editedLocally && result.sourceSheetName === image.sheetName).flatMap(result => result.evidence)).find(evidence => evidence.name.includes(importKey));
+          if (saved) return saved;
+          const originalFile = new File([new Uint8Array(image.bytes)], `${importKey}-${image.name}`, { type: image.mimeType });
+          try {
+            const prepared = await compressEvidenceImage(originalFile);
+            const form = new FormData();
+            form.set("file", prepared.file);
+            form.set("testCaseId", testCase.id);
+            form.set("sourceRow", String(testCase.sourceRow));
+            const uploadResponse = await fetch(`/api/projects/${selectedProject.id}/evidence`, { method: "POST", body: form });
+            const uploadData = await uploadResponse.json();
+            if (uploadResponse.status === 401 && uploadData.authUrl) {
+              incompleteEvidenceTabs.add(image.sheetName);
+              authorizationPending = true;
+              continueGoogleAuthorization(uploadData.authUrl);
+              return null;
+            }
+            if (uploadData.code === "PROJECT_OWNER_GOOGLE_CONNECTION_REQUIRED" || uploadData.code === "PROJECT_OWNER_REQUIRED") {
+              authorizationPending = true;
+              incompleteEvidenceTabs.add(image.sheetName);
+              evidenceUploadError = uploadData.error ?? "ผู้สร้างโปรเจคต้องเชื่อม Google Drive ก่อนอัปโหลดรูป";
+              setWorkspaceError(evidenceUploadError);
+              return null;
+            }
+            if (!uploadResponse.ok) throw new Error(uploadData.error ?? `นำเข้ารูปของ ${testCase.id} ไม่สำเร็จ`);
+            return uploadData.evidence as TestEvidence;
+          } catch (reason) {
+            evidenceUploadError ||= `${image.sheetName}: ${reason instanceof Error ? reason.message : "อัปโหลดรูปไม่สำเร็จ"}`;
+            setWorkspaceError(evidenceUploadError);
+            failedImageCount += 1;
             incompleteEvidenceTabs.add(image.sheetName);
-            authorizationPending = true;
-            continueGoogleAuthorization(uploadData.authUrl);
-            return false;
+            return null;
           }
-          if (!uploadResponse.ok) throw new Error(uploadData.error ?? `นำเข้ารูปของ ${testCase.id} ไม่สำเร็จ`);
-          result.evidence.push(uploadData.evidence);
+          });
+          if (!evidence) { incompleteEvidenceTabs.add(image.sheetName); return false; }
+          targetResult.evidence.push({ ...evidence });
           changedCaseIds.add(testCase.id);
           attachedImageCount += 1;
           return true;
-        } catch {
-          failedImageCount += 1;
-          incompleteEvidenceTabs.add(image.sheetName);
-          return false;
-        }
+        });
       }, async (name, complete) => {
         if (!complete) incompleteEvidenceTabs.add(name);
         const tabCases = importedCases.filter(item => changedCaseIds.has(item.id) && item.results?.some(result => result.sourceSheetName === name));
-        await Promise.all(tabCases.map(item => persistTestCaseResult(selectedProject.id, item)));
+        await completeProjectDetailWrites(tabCases.map(item => persistTestCaseResult(selectedProject.id, item)));
         importStates[name] = complete ? "loaded" : "error";
         importSource!.sheetImport = await persistSheetImportState(selectedProject.id, importSource!.id!, selectedProject.googleSheetId, { [name]: importStates[name] }, false);
         setSource({ ...importSource! });
@@ -1933,7 +2033,7 @@ export function QaWorkspace({
         setSheetRowLoads(current => ({ ...current, [name]: state }));
         publishProgress(importedCases, importSource, importStates);
       });
-      const savedCases = new Map((await Promise.all(importedCases
+      const savedCases = new Map((await completeProjectDetailWrites(importedCases
         .filter((testCase) => changedCaseIds.has(testCase.id))
         .map((testCase) => persistTestCaseResult(selectedProject.id, testCase))))
         .map((testCase) => [testCase.id, testCase]));
@@ -1943,17 +2043,28 @@ export function QaWorkspace({
       for (const item of nextCases) {
         if (!selectDetailSheets(mergedSheets, { testcaseId: item.id }).length) importStates[`testcase:${item.id}`] = "loaded";
       }
-      const allComplete = detailSheets.every(sheet => importStates[sheet.name] === "loaded");
-      importSource.sheetImport = await persistSheetImportState(selectedProject.id, importSource.id!, selectedProject.googleSheetId, importStates, allComplete);
+      const latestRevision = await readSourceRevision(selectedProject.id);
+      const dataComplete = detailSheets.every(sheet => importStates[sheet.name] === "loaded")
+        && approvalEvidenceReadiness({ ...importSource.sheetImport!, complete: true, refreshRequired: false, states: importStates, evidenceManifest }, nextCases, detailSheets.map(sheet => sheet.name)).ready;
+      const revisionStatus = sheetImportRevisionStatus(sourceRevision, latestRevision, dataComplete);
+      importSource.sheetImport = await persistSheetImportState(selectedProject.id, importSource.id!, selectedProject.googleSheetId, importStates, revisionStatus.complete, revisionStatus.refreshRequired, evidenceManifest, sourceRevision, registerBaseline(googleCases));
       setSource({ ...importSource });
       setSheetRowLoads(importSource.sheetImport.states);
       workspaceNavigationCache.set(selectedProject.id, { cases: nextCases, source: { ...importSource }, sheetMappings, hasLoadedSheetMappings: true, hasUnsyncedChanges: false, hasDetailedGoogleData: true, hasGoogleWorkbook: true, sheetRowLoads: importSource.sheetImport.states });
-      setAutoImportPending(false);
+
       locallyCreatedCaseIds.current.clear();
       setHasUnsyncedChanges(false);
       const imageCount = imported.source.sheets.reduce((total, sheet) => total + sheet.imageCount, 0);
       const skippedMessage = skippedImageCount ? ` · ข้าม ${skippedImageCount} รูปที่จับคู่ Result ไม่ได้` : "";
       const failedMessage = failedImageCount ? ` · รูปไม่สำเร็จ ${failedImageCount}` : "";
+      if (revisionStatus.refreshRequired) {
+        setWorkspaceError("Sheets เปลี่ยนระหว่างนำเข้า กรุณากดอัปเดตอีกครั้งเพื่อรับข้อมูลล่าสุด");
+        return;
+      }
+      if (evidenceUploadError) {
+        setWorkspaceError(evidenceUploadError);
+        return;
+      }
       flash(`โหลด ${nextCases.length} Testcases · Freeform ${freeformResults.length} Result · แนบรูปใหม่ ${attachedImageCount}/${imageCount} รูป${skippedMessage}${failedMessage}`);
     } catch (reason) {
       for (const [name, state] of Object.entries(importStates)) {
@@ -1972,26 +2083,53 @@ export function QaWorkspace({
     }
   }
 
-  const startAutomaticImport = useEffectEvent(() => { void pullFromGoogle(undefined, !source?.sheetImport?.refreshRequired); });
+  const startAutomaticImport = useEffectEvent(async (controller: AbortController) => {
+    if (!selectedProject?.googleSheetId || !canEditProject) return;
+    const projectId = selectedProject.id;
+    setCheckingSheetsProject(projectId);
+    setSheetCheckErrorProject(null);
+    try {
+      const revision = await readSourceRevision(projectId, controller.signal);
+      if (controller.signal.aborted) return;
+      const mode = automaticSheetImportMode(source?.sheetImport, revision);
+      if (mode) {
+        setCheckingSheetsProject(null);
+        await pullFromGoogle(mode === "resume", revision);
+      }
+    } catch (reason) {
+      if (!controller.signal.aborted) {
+        setSheetCheckErrorProject(projectId);
+        setWorkspaceError(reason instanceof Error ? reason.message : "ตรวจข้อมูลล่าสุดจาก Sheets ไม่สำเร็จ");
+      }
+    } finally {
+      setCheckingSheetsProject(current => current === projectId ? null : current);
+    }
+  });
   useEffect(() => {
-    if (!selectedProjectId || loadingWorkspace || loadingSheetPreview || !hasLoadedSheetMappings || !autoImportPending
+    if (!selectedProjectId || loadingWorkspace || loadingSheetPreview || !hasLoadedSheetMappings
       || activeProjectImports.has(selectedProjectId) || autoImportAttempted.current.has(selectedProjectId)) return;
-    autoImportAttempted.current.add(selectedProjectId);
-    startAutomaticImport();
-  }, [selectedProjectId, loadingWorkspace, loadingSheetPreview, hasLoadedSheetMappings, autoImportPending]);
+    const attempted = autoImportAttempted.current;
+    attempted.add(selectedProjectId);
+    const controller = new AbortController();
+    void startAutomaticImport(controller);
+    return () => {
+      controller.abort();
+      attempted.delete(selectedProjectId);
+    };
+  }, [selectedProjectId, loadingWorkspace, loadingSheetPreview, hasLoadedSheetMappings]);
 
   const receiveCompletedImport = useEffectEvent(() => {
     if (!selectedProjectId) return;
     const completed = workspaceNavigationCache.get(selectedProjectId);
     setPullingGoogle(activeProjectImports.has(selectedProjectId));
     if (!completed) return;
-    setCases(current => mergeWorkspaceAndGoogleCases(current, completed.cases, currentUser?.name ?? "").cases);
+    setCases(current => hasUnsyncedChanges ? mergeWorkspaceAndGoogleCases(current, completed.cases, currentUser?.name ?? "").cases : completed.cases);
     setSource(completed.source);
     setSheetRowLoads(completed.sheetRowLoads);
     setSheetLoadProgress(completed.sheetLoadProgress ?? {});
     setHasDetailedGoogleData(completed.hasDetailedGoogleData);
     setHasGoogleWorkbook(completed.hasGoogleWorkbook);
-    if (!activeProjectImports.has(selectedProjectId)) setAutoImportPending(false);
+
   });
   useEffect(() => {
     const listener = (event: Event) => { if ((event as CustomEvent<string>).detail === selectedProjectId) receiveCompletedImport(); };
@@ -2009,11 +2147,6 @@ export function QaWorkspace({
     };
   }, [selectedProjectId]);
 
-  async function retryCaseRow(item: TestCase, sheetAlias: string) {
-    const names = sheetAlias ? [sheetAlias] : (associatedSheetsByCase.get(testCaseIdentity(item.id)) ?? []).map(sheet => sheet.name);
-    await Promise.all(names.map(retrySheetRow));
-  }
-
   async function retrySheetRow(name: string) {
     if (!selectedProject) return;
     if (activeProjectImports.has(selectedProject.id)) return flash("แท็บนี้กำลังถูกนำเข้าอยู่ กรุณารอให้เสร็จก่อนลองใหม่");
@@ -2021,14 +2154,16 @@ export function QaWorkspace({
     setSheetRowLoads(current => ({ ...current, [name]: "loading" }));
     setSheetLoadProgress(current => ({ ...current, [name]: { phase: "details" } }));
     try {
+      const sourceRevision = await readSourceRevision(selectedProject.id);
       const response = await fetch(`/api/projects/${selectedProject.id}/google-sheet${name === "Testcase" ? "?summary=1" : `?sheet=${encodeURIComponent(name)}`}`, { cache: "no-store" });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "โหลดแท็บไม่สำเร็จ");
       setCases(current => mergeWorkspaceAndGoogleCases(current, data.cases, currentUser?.name ?? "").cases);
       if (name !== "Testcase") {
         setSheetLoadProgress(current => ({ ...current, [name]: { phase: "workbook" } }));
-        const workbookSource = source?.bufferLoaded ? source
-          : importTestCases(await getGoogleWorkbook(), `${selectedProject.name}.xlsx`).source;
+        const workbookSource = await revisionBoundSource(sourceRevision, source,
+          revision => getGoogleWorkbook(false, revision), bytes => importTestCases(bytes, `${selectedProject.name}.xlsx`).source,
+          () => readSourceRevision(selectedProject.id));
         let loadedSource = { ...workbookSource, sheets: mergeGoogleSheetsWithSource(workbookSource.sheets, data.sheets ?? []) };
         const sheet = loadedSource.sheets.find(sheet => sheet.name === name);
         if (!sheet) throw new Error(`ไม่พบรูปแบบรายละเอียดของ ${name}`);
@@ -2040,9 +2175,9 @@ export function QaWorkspace({
           const previous = readSheetImportState(source?.sheetImport, selectedProject.googleSheetId);
           if (!loadedSource.id) {
             const saved = await persistImportedWorkbook(selectedProject.id, nextCases, {
-              ...loadedSource, sheetImport: checkpointSheetImport(previous, selectedProject.googleSheetId, { [name]: "loaded" }, new Date().toISOString(), previous?.complete ?? false),
-            }, false);
-            loadedSource = { ...loadedSource, id: saved.source!.id, sheetImport: saved.source!.sheetImport };
+              ...loadedSource, documentType: data.documentType, sheetImport: revisionBoundCheckpoint(previous, selectedProject.googleSheetId, { [name]: "loaded" }, new Date().toISOString(), sourceRevision),
+            }, false,"google-sheets");
+            loadedSource = { ...loadedSource, id: saved.source!.id, workbookStorage: saved.source!.workbookStorage, sourceOrigin: saved.source!.sourceOrigin, sheetImport: saved.source!.sheetImport };
             clearProjectWorkbook(selectedProject.id);
           } else {
             loadedSource = { ...loadedSource, sheetImport: await persistSheetImportState(selectedProject.id, loadedSource.id, selectedProject.googleSheetId, { [name]: "loaded" }, previous?.complete ?? false) };
@@ -2075,7 +2210,7 @@ export function QaWorkspace({
         const sheetImport = await persistSheetImportState(selectedProject.id, source.id, selectedProject.googleSheetId, {}, false, true);
         setSource(current => current ? { ...current, sheetImport, bufferLoaded: false } : current);
       }
-      clearProjectWorkbook(`${selectedProject.id}:google:${selectedProject.googleSheetId}`);
+      clearProjectWorkbook(selectedProject.id);
       setSheetRowLoads({});
       setSource(current => current ? { ...current, bufferLoaded: false } : current);
       setHasGoogleWorkbook(false);
@@ -2117,11 +2252,6 @@ export function QaWorkspace({
 
   async function confirmSyncConflicts(choices: Record<string, CaseChoice>) {
     if (!syncConflictState) return;
-    if (syncConflictState.operation === "pull") {
-      setSyncConflictState(null);
-      await pullFromGoogle(choices);
-      return;
-    }
     setSyncingGoogle(true);
     try {
       await applyGoogleSync(mergeCaseChoices(cases, syncConflictState.googleCases, choices));
@@ -2161,8 +2291,8 @@ export function QaWorkspace({
       anchor.click();
       URL.revokeObjectURL(url);
       flash("สร้างไฟล์ผลการทดสอบแล้ว");
-    } catch {
-      flash("สร้างไฟล์ไม่สำเร็จ กรุณาลองอีกครั้ง");
+    } catch (reason) {
+      flash(reason instanceof Error ? reason.message : "สร้างไฟล์ไม่สำเร็จ กรุณาลองอีกครั้ง");
     } finally {
       setExporting(false);
     }
@@ -2211,26 +2341,44 @@ export function QaWorkspace({
         <div className="page-content" id="dashboard">
           {!selectedProject ? sprintProjectData ? <><SprintProjectList data={sprintProjectData} groupId={groupId} year={planningSprint?.year ?? 0}/>{canCreateProject && <button className="primary-button" onClick={()=>setShowProjectDialog(true)}>เพิ่ม Project</button>}</> : <ProjectsHome projects={projects} error={projectsError} canCreate={canCreateProject} onUpdated={(project) => { setProjects((current) => current.map((p) => p.id === project.id ? project : p).filter((p) => !planningSprint || p.sprintId === planningSprint.id)); router.refresh(); }} onAdd={() => setShowProjectDialog(true)} projectHref={(project) => `/groups/${groupId}/projects/${project.id}/overview`} /> : <>
           <section className="page-heading"><div><div className="title-line"><h1>{sheetName ? decodeURIComponent(sheetName) : activePage === "overview" ? selectedProject.name : ({ "test-cases": "Test cases", defects: "Defects", files: "เอกสาร/ไฟล์", settings: "ตั้งค่า Project" } as Record<string, string>)[activePage]}</h1>{selectedProject.sprintNo && <span className="sprint-pill">{selectedProject.sprintNo}</span>}{!canEditProject && <span className="read-only-badge">ดูอย่างเดียว</span>}{hasUnsyncedChanges && <span className="unsynced-pill">ยังไม่ Sync</span>}</div><p>{sheetName ? `รายละเอียด tab จาก Google Sheets · ${selectedProject.name}` : activePage === "overview" ? (selectedProject.description || "ภาพรวมการทดสอบของ Project") : selectedProject.name}</p></div><div className="heading-actions google-actions">
-            {!testCaseId && !sheetName && activePage === "test-cases" && (selectedProject.googleSheetId ? canEditProject : canManageProject) && <button className="secondary-button" onClick={() => void pullFromGoogle()} disabled={pullingGoogle}>{pullingGoogle ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}{selectedProject.googleSheetId ? "โหลดจาก Sheets" : "เชื่อม Google Sheet"}</button>}
+            {!testCaseId && !sheetName && activePage === "test-cases" && !loadingWorkspace && !showProjectImportProgress && (selectedProject.googleSheetId ? canEditProject : canManageProject) && <button className="secondary-button" onClick={() => void pullFromGoogle(importAction.resume)} disabled={pullingGoogle || checkingSheets}>{pullingGoogle ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}{selectedProject.googleSheetId ? importAction.label : "เชื่อม Google Sheet"}</button>}
           </div></section>
           {source?.documentType === "xlsx" && <div className="source-banner" role="note"><FileSpreadsheet size={18} /><div><strong>Excel บน Google Drive</strong><span>บันทึกผลในเว็บและดาวน์โหลดได้ · ซิงค์กลับได้เฉพาะ Google Sheets · ระบบไม่แก้ไขไฟล์ Excel ต้นฉบับ</span></div></div>}
 
           {loadingWorkspace && <div className="source-banner"><LoaderCircle className="spin" size={18} /><div><strong>กำลังโหลดข้อมูลจาก Supabase</strong><span>กำลังโหลด Testcase และไฟล์ต้นฉบับของ Project</span></div></div>}
           {loadingWorkspace && (testCaseId || sheetName) && <CaseDrawerSkeleton />}
           {!canEditProject && <section className="read-only-notice"><ShieldCheck size={18} /><div><strong>โหมดดูอย่างเดียว</strong><span>คุณดู Test cases, Results, Defects, รูป และ Google Sheet details ได้ แต่ยังแก้ไขหรือซิงค์ข้อมูลไม่ได้</span></div></section>}
-          {workspaceError && <section className="project-error"><CircleAlert size={20} /><div><strong>โหลดข้อมูล Project ไม่สำเร็จ</strong><span>{workspaceError}</span>{/สิทธิ์ Google|googleAuth/i.test(workspaceError) && <button type="button" className="secondary-button" onClick={() => continueGoogleAuthorization("/api/google/auth/start", true)}>ขอสิทธิ์ Google ใหม่</button>}</div></section>}
-          {!loadingWorkspace && !pullingGoogle && !testCaseId && !sheetName && canEditProject && source?.sheetImport && showSheetImportNotice(sheetImportTotals, source.sheetImport) && (activePage === "test-cases" || activePage === "files") && <div className="sheet-refresh-progress" role="status"><CircleAlert size={18} /><span>{source.sheetImport.refreshRequired ? "มีข้อมูลที่รออัปเดตจาก Sheets" : `นำเข้ายังไม่ครบ · โหลดแล้ว ${sheetImportTotals.loaded}/${sheetImportTotals.total} แท็บ`} · ใช้และแก้ไขข้อมูลที่บันทึกไว้ได้ โดยระบบจะไม่เริ่มนำเข้าใหม่เอง</span><button type="button" className="secondary-button" onClick={() => void pullFromGoogle(undefined, !source.sheetImport?.refreshRequired)}>{source.sheetImport.refreshRequired ? "อัปเดตจาก Sheets" : "โหลดส่วนที่เหลือ"}</button></div>}
-          {!loadingWorkspace && source && (activePage === "test-cases" || activePage === "files") && <div className="source-banner"><FileArchive size={18} /><div><strong>{source.fileName}</strong><span>อ่านแล้ว {source.sheets.length || 1} sheets · {cases.length} cases · {workbookStats.results} result sheets · {workbookStats.images} รูป</span></div><CheckCircle2 size={18} /></div>}
+          {workspaceError && <section className="project-error"><CircleAlert size={20} /><div><strong>{sheetCheckFailed ? "ตรวจข้อมูลล่าสุดจาก Sheets ไม่สำเร็จ" : "โหลดข้อมูล Project ไม่สำเร็จ"}</strong><span>{workspaceError}</span>{/สิทธิ์ Google|googleAuth/i.test(workspaceError) && <button type="button" className="secondary-button" onClick={() => continueGoogleAuthorization("/api/google/auth/start", true)}>ขอสิทธิ์ Google ใหม่</button>}</div></section>}
+          {checkingSheets && <section className="project-evidence-progress" aria-label="ตรวจข้อมูลล่าสุดจาก Sheets"><div className="evidence-progress-body"><p role="status"><LoaderCircle className="spin" size={18} /> กำลังตรวจข้อมูลล่าสุดจาก Sheets…</p><div className="evidence-progress-track evidence-progress-indeterminate" role="progressbar" aria-label="กำลังตรวจข้อมูลล่าสุด"><div style={{ width: "0%" }} /></div></div></section>}
+          {!checkingSheets && showProjectImportProgress && <ProjectEvidenceProgress
+            key={`evidence-import:${selectedProject.id}`}
+            projectName={selectedProject.name}
+            names={source?.sheets.map(sheet => sheet.name) ?? Object.keys(activeSheetRowLoads)}
+            states={pullingGoogle ? activeSheetRowLoads : source?.sheetImport?.states ?? activeSheetRowLoads}
+            progress={rowLoadProjectId === selectedProjectId ? sheetLoadProgress : {}}
+            active={pullingGoogle}
+            ready={evidenceReadiness.ready && !sheetCheckFailed && !workspaceError}
+            expectedImages={source?.sheetImport?.evidenceManifest ? evidenceReadiness.expected : undefined}
+            persistedImages={evidenceReadiness.persisted}
+            missingEvidence={evidenceReadiness.missing}
+            refreshRequired={source?.sheetImport?.refreshRequired}
+            errorMessage={workspaceError}
+            actionLabel={importAction.label}
+            actionDescription={importAction.description}
+            canRetry={canEditProject && !testCaseId && !sheetName}
+            onRetry={() => void pullFromGoogle(importAction.resume)}
+          />}
 
-          {!loadingWorkspace && testCaseId && activeSelectedCase && (previewMode ? <TestCasePreview sprintId={selectedProject?.sprintId} testCase={activeSelectedCase} projectId={selectedProject.id} backHref={`/groups/${groupId}/projects/${selectedProject.id}/test-cases`} editHref={canEditProject && !pullingGoogle ? (previewSheetName && sheetResolution.associations.filter(association => association.sheet.name === previewSheetName).length === 1 ? `/groups/${groupId}/projects/${selectedProject.id}/sheets/${encodeURIComponent(previewSheetName)}` : `/groups/${groupId}/projects/${selectedProject.id}/test-cases/${encodeURIComponent(activeSelectedCase.id)}`) : undefined} sourceSheetName={previewSheetName} associatedSheets={associatedSheetsByCase.get(testCaseIdentity(activeSelectedCase.id))} loading={loadingSheetPreview} onBack={returnToTestCases} /> : <CaseDrawer
+          {!loadingWorkspace && testCaseId && activeSelectedCase && (<CaseDrawer
             key={`${activeSelectedCase.id}:${(activeSelectedCase.results ?? []).map((result) => `${result.id}-${result.evidence.length}`).join(",")}:${source?.sheets.length ?? 0}`}
             value={activeSelectedCase}
+            caseDisplayNames={Object.fromEntries(workspaceCases.map(item=>[item.id,displayTestCaseId(item)]))}
             projectId={selectedProject.id}
             source={source}
             associatedSheets={associatedSheetsByCase.get(testCaseIdentity(activeSelectedCase.id))}
             loadingSheetDetails={loadingSheetPreview}
             currentUserName={currentUser?.name ?? ""}
-            readOnly={!canEditProject || pullingGoogle}
+            readOnly={!canEditProject || pullingGoogle || checkingSheets || loadingSheetPreview}
             pageMode
             onClose={returnToTestCases}
             onSave={saveCase}
@@ -2246,11 +2394,12 @@ export function QaWorkspace({
           {!loadingWorkspace && !testCaseId && sheetName && displayedSheetCase && <CaseDrawer
             key={`sheet-${activeSheet?.name}-${displayedSheetCase.id}:${(displayedSheetCase.results ?? []).map((result) => `${result.id}-${result.evidence.length}`).join(",")}`}
             value={displayedSheetCase}
+            caseDisplayNames={Object.fromEntries(workspaceCases.map(item=>[item.id,displayTestCaseId(item)]))}
             projectId={selectedProject.id}
             source={source}
             associatedSheets={activeSheet ? [activeSheet] : []}
             currentUserName={currentUser?.name ?? ""}
-            readOnly={!canEditProject || pullingGoogle || !activeSheetAssociation}
+            readOnly={!canEditProject || pullingGoogle || checkingSheets || loadingSheetPreview || !activeSheetAssociation}
             pageMode
             loadingSheetDetails={loadingSheetPreview}
             focusedSheetName={activeSheet?.name ?? ""}
@@ -2273,9 +2422,9 @@ export function QaWorkspace({
             <article className="panel progress-panel"><div className="panel-heading"><div><h2>ความคืบหน้า</h2><p>สถานะรวมของ Testcase</p></div><button className="icon-button"><MoreHorizontal size={19} /></button></div><div className="progress-content"><div className="progress-ring" style={{ "--progress": `${progress * 3.6}deg` } as React.CSSProperties}><div><strong>{progress}%</strong><span>ดำเนินการแล้ว</span></div></div><div className="progress-legend">{TEST_STATUSES.filter((status) => status !== "In Progress").map((status) => <button key={status} onClick={() => setStatusFilter(status)}><span className={`legend-dot ${statusMeta[status].className}`} /><span>{statusMeta[status].label}</span><strong>{counts[status]}</strong></button>)}</div></div></article>
             <article className="panel activity-panel"><div className="panel-heading"><div><h2>กิจกรรมล่าสุด</h2><p>การเปลี่ยนแปลงจากข้อมูลจริง</p></div></div><div className="empty-state compact-empty"><Clock3 size={24} /><strong>ยังไม่มีกิจกรรม</strong><span>กิจกรรมจะแสดงเมื่อเชื่อมการบันทึกผลกับ Supabase</span></div></article>
           </section></>}
-          {!testCaseId && activePage === "overview" && <ProjectApprovalPanel key={selectedProject.id} project={selectedProject} cases={cases} counts={counts} testingFinished={testingFinished} loading={loadingWorkspace} currentEnvironment={currentEnvironment} currentUser={currentUser} canSubmit={canEditProject} onConnectSheet={() => setShowGoogleSheetDialog(true)} flash={flash} />}
+          {!testCaseId && activePage === "overview" && <ProjectApprovalPanel evidenceProgressVisible={showProjectImportProgress} key={selectedProject.id} project={selectedProject} cases={cases} counts={counts} testingFinished={testingFinished} loading={loadingWorkspace} currentEnvironment={currentEnvironment} currentUser={currentUser} canSubmit={canEditProject} onConnectSheet={() => setShowGoogleSheetDialog(true)} flash={flash} evidenceReady={evidenceReadiness.ready && !checkingSheets && !sheetCheckFailed && !workspaceError} evidenceNotice={evidenceReadiness.reason} preparingEvidence={pullingGoogle || checkingSheets} onPrepareEvidence={() => pullFromGoogle(importAction.resume)} />}
 
-          <ProjectFileActions page={activePage} detail={Boolean(testCaseId || sheetName)} projectId={selectedProject.id} googleSheetId={selectedProject.googleSheetId || ""} hasSource={Boolean(source)} canEdit={canEditProject} canManage={canManageProject} pulling={pullingGoogle} syncing={syncingGoogle} exporting={exporting} onUpload={() => setShowUpload(true)} onPull={async () => { await pullFromGoogle(); }} onSync={async () => { await syncToGoogle(); }} onDownload={async () => { await downloadResult(); }} />
+          <ProjectFileActions importProgressVisible={showProjectImportProgress} page={activePage} detail={Boolean(testCaseId || sheetName)} projectId={selectedProject.id} googleSheetId={selectedProject.googleSheetId || ""} hasSource={Boolean(source)} canEdit={canEditProject} canManage={canManageProject} pulling={pullingGoogle} syncing={syncingGoogle} exporting={exporting} onUpload={() => setShowUpload(true)} onPull={async () => { await pullFromGoogle(); }} onSync={async () => { await syncToGoogle(); }} onDownload={async () => { await downloadResult(); }} />
           {!testCaseId && activePage === "files" && source && <section className="panel workbook-panel">
             <div className="panel-heading"><div><h2>Sheets ในไฟล์ต้นฉบับ</h2><p>ระบบอ่านทุกแท็บและผูก RC / Defect ตาม Test Case ID</p></div><span className="sheet-total">{source.sheets.length || 1} sheets</span></div>
             {source.sheets.length ? <div className="sheet-grid">{source.sheets.map((sheet) => <div className={`sheet-card sheet-${sheet.kind}`} key={sheet.path}><FileSpreadsheet size={15} /><span><strong>{sheet.name}</strong><small>{sheet.kind === "result" ? `${sheet.testCaseIds.join(", ") || "Result"}${sheet.imageCount ? ` · ${sheet.imageCount} รูป` : ""}` : sheet.kind}</small></span></div>)}</div> : <div className="legacy-sheet-note">ไฟล์นี้ถูกอัปโหลดก่อนรองรับหลายชีต กรุณาอัปโหลดไฟล์ต้นฉบับอีกครั้ง</div>}
@@ -2287,7 +2436,7 @@ export function QaWorkspace({
             {canEditProject && <div style={{padding:"12px 20px"}}><button type="button" className="secondary-button" onClick={()=>dispatchAssignmentMode(editingAssignments ? {type:"close"} : {type:"open",projectId:selectedProjectId ?? ""})}>{editingAssignments ? <Check size={16}/> : <Users size={16}/>} {editingAssignments ? "เสร็จสิ้น" : "แก้ไขผู้รับผิดชอบ"}</button></div>}
             {editingAssignments && <div className="case-assignment-selection"><label className="case-assignment-checkbox"><input type="checkbox" aria-label="เลือกทุกแถวที่แสดงเพื่อมอบหมาย" checked={!!filteredCaseRows.length && filteredCaseRows.every(r=>selectedAssignmentKeys.includes(assignmentRowKey(r.item.id,r.sheetAlias)))} onChange={e=>setAssignmentSelection({projectId:selectedProjectId ?? '',keys:e.target.checked ? [...new Set([...selectedAssignmentKeys,...filteredCaseRows.map(r=>assignmentRowKey(r.item.id,r.sheetAlias))])] : selectedAssignmentKeys.filter(k=>!filteredCaseRows.some(r=>assignmentRowKey(r.item.id,r.sheetAlias)===k))})}/>เลือกทุกแถวที่แสดง</label><span>เลือก {assignmentTargets.length} แถว</span><button type="button" className="secondary-button" disabled={!assignmentTargets.length || assignmentProjectId!==selectedProjectId || !assignmentData || !!assignmentData.error} onClick={()=>setShowCaseAssignment(true)}><Users size={16}/>มอบหมาย QA</button>{selectedAssignmentKeys.length>0 && <button type="button" className="secondary-button" onClick={()=>setAssignmentSelection({projectId:selectedProjectId ?? '',keys:[]})}>ล้างการเลือก</button>}</div>}
             {assignmentProjectId===selectedProjectId && assignmentData?.error && <p className="form-error" role="alert" style={{padding:'0 20px'}}>โหลดผู้รับผิดชอบไม่ได้: {assignmentData.error} · หากยังไม่ได้ติดตั้ง ให้รัน migration personal_test_performance ก่อน</p>}
-            <CaseRegisterTable loading={loadingWorkspace} rows={filteredCaseRows} columns={selectedCaseTableColumns} getRowState={registerRowState} getRowLoadLabel={registerRowLoadLabel} assigneeNames={assigneeNames} associatedSheetNames={item=>(associatedSheetsByCase.get(testCaseIdentity(item.id)) ?? []).map(sheet=>sheet.name)} onOpen={openRegisterRow} onPreview={previewRegisterRow} onRetry={({item,sheetAlias})=>{void retryCaseRow(item,sheetAlias);}} editingAssignments={editingAssignments} isSelected={({item,sheetAlias})=>selectedAssignmentKeys.includes(assignmentRowKey(item.id,sheetAlias))} onToggle={({item,sheetAlias},selected)=>toggleAssignment(item.id,sheetAlias,selected)} renderStatus={status=><StatusBadge status={status}/>} hasCases={tableCases.length>0} onUpload={()=>setShowUpload(true)}/>
+            <CaseRegisterTable loading={loadingWorkspace} rows={filteredCaseRows} columns={selectedCaseTableColumns} assigneeNames={assigneeNames} associatedSheetNames={item=>(associatedSheetsByCase.get(testCaseIdentity(item.id)) ?? []).map(sheet=>sheet.name)} onOpen={openRegisterRow} editingAssignments={editingAssignments} isSelected={({item,sheetAlias})=>selectedAssignmentKeys.includes(assignmentRowKey(item.id,sheetAlias))} onToggle={({item,sheetAlias},selected)=>toggleAssignment(item.id,sheetAlias,selected)} renderStatus={status=><StatusBadge status={status}/>} hasCases={tableCases.length>0} onUpload={()=>setShowUpload(true)}/>
           </section>}
           {!testCaseId && !sheetName && activePage === "test-cases" && source && <section className="panel workbook-panel non-testcase-sheets-panel">
             <div className="panel-heading"><div><h2>แท็บอื่นใน Google Sheets</h2><p>แสดงเฉพาะแท็บที่ระบบยังผูกกับ Test Case ไม่ได้</p></div><span className="sheet-total">{otherSheets.length} tabs</span></div>
@@ -2299,7 +2448,7 @@ export function QaWorkspace({
 
           {!testCaseId && activePage === "files" && !source && <section className="panel route-empty-state"><FileArchive size={34} /><h2>ยังไม่มีเอกสารหรือไฟล์ต้นฉบับ</h2><p>{canEditProject ? "อัปโหลด Excel หรือเชื่อม Google Sheets เพื่อเริ่มต้น" : "ยังไม่มีไฟล์ใน Project นี้"}</p>{canEditProject && <button className="primary-button" onClick={() => setShowUpload(true)}><Upload size={16} />อัปโหลดไฟล์</button>}</section>}
 
-          {!testCaseId && activePage === "settings" && <><section className="settings-grid"><article className="panel settings-card"><h2>ข้อมูล Project</h2><dl><div><dt>ชื่อ Project</dt><dd>{selectedProject.name}</dd></div><div><dt>Environment</dt><dd>{selectedProject.environment}</dd></div><div><dt>Google Sheets</dt><dd>{selectedProject.googleSheetUrl || "ยังไม่ได้เชื่อม"}</dd></div></dl>{canManageProject && <button className="secondary-button" onClick={() => setShowGoogleSheetDialog(true)}><Link2 size={16} />ตั้งค่า Google Sheet</button>}</article>{selectedProject.canDelete && <article className="panel settings-card danger-zone"><h2>ลบ Project</h2><p>Test cases, ผลทดสอบ, หลักฐานใน R2 และ Approval จะถูกลบ แต่ Google Sheets จะยังคงอยู่</p><button className="danger-button" onClick={() => void removeSelectedProject()}><Trash2 size={16} />ลบ Project</button></article>}</section><div className="panel project-settings-management"><ProjectManagement project={selectedProject} onSaved={(project) => { setProjects((current) => current.map((p) => p.id === project.id ? project : p)); router.refresh(); }} /></div></>}
+          {!testCaseId && activePage === "settings" && <><section className="settings-grid"><article className="panel settings-card"><h2>ข้อมูล Project</h2><dl><div><dt>ชื่อ Project</dt><dd>{selectedProject.name}</dd></div><div><dt>Environment</dt><dd>{selectedProject.environment}</dd></div><div><dt>Google Sheets</dt><dd>{selectedProject.googleSheetUrl || "ยังไม่ได้เชื่อม"}</dd></div></dl>{canManageProject && <button className="secondary-button" onClick={() => setShowGoogleSheetDialog(true)}><Link2 size={16} />ตั้งค่า Google Sheet</button>}</article>{selectedProject.canDelete && <article className="panel settings-card danger-zone"><h2>ลบ Project</h2><p>Test cases, ผลทดสอบ, หลักฐานใน R2 และ Approval จะถูกลบ แต่ Google Sheets จะยังคงอยู่</p><button className="danger-button" onClick={() => void removeSelectedProject()}><Trash2 size={16} />ลบ Project</button></article>}</section><div className="panel project-settings-management"><ProjectManagement key={selectedProject.id} project={selectedProject} onSaved={(project) => { setProjects((current) => current.map((p) => p.id === project.id ? project : p)); router.refresh(); }} /></div></>}
           </>}
         </div>
       </main>
@@ -2315,7 +2464,7 @@ export function QaWorkspace({
       {canEditProject && showCreateCase && selectedProject && <CreateTestCaseDialog existingIds={cases.map((item) => item.id)} nextSourceRow={Math.max(1, ...cases.map((item) => item.sourceRow)) + 1} defaultEnvironment={selectedProject.environment} currentUserName={currentUser?.name ?? ""} onClose={() => setShowCreateCase(false)} onCreated={createTestCase} />}
       {canCreateProject && showProjectDialog && <ProjectDialog groupId={groupId} sprint={planningSprint} draft={projectDraft} draftKey={projectDraftKey} onClose={() => { sessionStorage.removeItem(projectDraftKey); setProjectDraft(null); setShowProjectDialog(false); }} onCreated={(project) => { setProjects((current) => [project, ...current]); setShowProjectDialog(false); router.push(`/groups/${groupId}/projects/${project.id}/overview`); }} />}
       {canManageProject && showGoogleSheetDialog && selectedProject && <GoogleSheetDialog project={selectedProject} onClose={() => setShowGoogleSheetDialog(false)} onConnected={(project) => { setProjects((current) => current.map((item) => item.id === project.id ? project : item)); setShowGoogleSheetDialog(false); flash("เชื่อม Google Sheet แล้ว"); }} />}
-      {syncConflictState && <SyncConflictDialog operation={syncConflictState.operation} conflicts={syncConflictState.conflicts} onCancel={() => setSyncConflictState(null)} onConfirm={confirmSyncConflicts} />}
+      {syncConflictState?.operation === "push" && <SyncConflictDialog operation={syncConflictState.operation} conflicts={syncConflictState.conflicts} onCancel={() => setSyncConflictState(null)} onConfirm={confirmSyncConflicts} />}
       <GoogleCleanupWarning />
       {canEditProject && showCaseAssignment && selectedProject && assignmentProjectId===selectedProject.id && assignmentData && <TestCaseAssignmentDialog projectId={selectedProject.id} targets={assignmentTargets} data={assignmentData} onClose={()=>setShowCaseAssignment(false)} onSaved={()=>{setShowCaseAssignment(false);setAssignmentSelection({projectId:selectedProject.id,keys:[]});setAssignmentVersion(v=>v+1);flash('บันทึกผู้รับผิดชอบราย Test case แล้ว');router.refresh();}}/>}
       {toast && <div className="toast"><CheckCircle2 size={18} />{toast}</div>}

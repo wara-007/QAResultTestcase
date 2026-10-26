@@ -1,7 +1,8 @@
+import { displayTestCaseId } from "./register-case-identity";
 import type { TestCase, TestResult } from "./types";
 import { stepHeaderKey, stepHeaderColumns, parseStepTestCases } from "./step-testcases";
 import { freeformTextFromCells } from "./sheet-detail";
-import { readStepResultSnapshots, STEP_SNAPSHOT_START } from "./step-sheet-sync";
+import { readStepResultSnapshots, snapshotOwnership, STEP_SNAPSHOT_START } from "./step-sheet-sync";
 import { parseApiLogSheetResults } from "./api-log-sheet-results";
 import { parseCompactSheetResults } from "./compact-sheet-results";
 
@@ -15,8 +16,8 @@ const stepNumber = (name: string) => {
   return digits?.replace(/^0+(?=\d)/, "");
 };
 const resultColumnHeaders = (row: unknown[]) => row.some(cell => stepHeaderKey(cell) === "step") && !row.some(cell => /^step\s*\d+\b/i.test(String(cell ?? "").trim()));
-export function parseStepSheetResults(rows: unknown[][], testCase: TestCase, sheetName: string, cases?: TestCase[]): { results: TestResult[]; issues: string[]; representedCells: Set<string> } | null {
-  const ownedResults = readStepResultSnapshots(rows, testCase.id);
+export function parseStepSheetResults(rows: unknown[][], testCase: TestCase, sheetName: string, cases?: TestCase[], options: { allowLegacySnapshots?: boolean } = {}): { results: TestResult[]; issues: string[]; representedCells: Set<string> } | null {
+  const ownedResults = readStepResultSnapshots(rows, testCase.id, testCase.registerIdentity, options.allowLegacySnapshots !== false, !(cases ?? [testCase]).some(item => item.id !== testCase.id && displayTestCaseId(item) === displayTestCaseId(testCase)), snapshotOwnership(testCase, cases ?? [testCase], sheetName));
   const ownedStart = rows.findIndex(row => row[0] === STEP_SNAPSHOT_START);
   if (ownedStart >= 0) rows = rows.slice(0, ownedStart);
   const matrix = parseApiLogSheetResults(rows, testCase, sheetName, cases);
@@ -33,6 +34,21 @@ export function parseStepSheetResults(rows: unknown[][], testCase: TestCase, she
   const definitionEnd = start < 0 ? rows.length : start + 1;
   rows.slice(0, definitionEnd).forEach((row, index) => row.forEach((_, column) => representedCells.add(`${sheetColumn(column)}${index + 1}`)));
   if (start < 0) return { results: [...(detailExtras.length ? [extraResult(detailExtras)] : []), ...ownedResults], issues: ["ไม่พบส่วน Result Testing ในแท็บรายละเอียด"], representedCells };
+  // An inline result column can contain several case blocks with identical
+  // Step names. Only the explicit case-ID column establishes row ownership.
+  // Definition tables above a separate Result Testing section do not scope it.
+  const inlineColumns = stepHeaderColumns(rows[start]);
+  const rowOwners: (string | undefined)[] = [];
+  if (inlineColumns) {
+    const knownIds = new Set((cases ?? [testCase]).map(item => displayTestCaseId(item).trim()));
+    let owner: string | undefined;
+    for (let index = start + 1; index < rows.length; index++) {
+      const id = String(rows[index][inlineColumns.id] ?? "").trim();
+      if (id) owner = knownIds.has(id) ? id : undefined;
+      rowOwners[index] = owner;
+    }
+  }
+  const scoped = rowOwners.some(Boolean);
   const markers = rows.flatMap((row, index) => {
     if (index <= start) return [];
     const column = row.findIndex(cell => /^step\s*\d+\b/i.test(String(cell ?? "").trim()));
@@ -44,13 +60,17 @@ export function parseStepSheetResults(rows: unknown[][], testCase: TestCase, she
   if (rows.slice(start + 1, (markers[0]?.row ?? rows.length + 1) - 1).some(row => !resultColumnHeaders(row) && row.some(value => String(value ?? "").trim()))) {
     sections.unshift({ row: start + 2, column: -1, name: "ผลที่ยังไม่ผูก Step", description: "", expected: "" });
   }
-  const results = sections.map((marker, index): TestResult => {
+  const results = sections.flatMap((marker, index): TestResult[] => {
+    if (scoped && rowOwners[marker.row - 1] !== displayTestCaseId(testCase).trim()) return [];
     const activeHeaders = rows.slice(start + 1, marker.row - 1).reverse().find(resultColumnHeaders) ?? headers;
-    const endRow = (sections[index + 1]?.row ?? rows.length + 1) - 1;
+    const nextOwnerRow = scoped ? rowOwners.findIndex((owner, row) => row >= marker.row && owner !== displayTestCaseId(testCase).trim()) : -1;
+    const endRow = Math.min((sections[index + 1]?.row ?? rows.length + 1) - 1, nextOwnerRow < 0 ? rows.length : nextOwnerRow);
     const namedSteps = testCase.stepDefinitions!.filter(step => stepHeaderKey(step.name) === stepHeaderKey(marker.name));
     const candidates = namedSteps.filter(step => (!marker.description || stepHeaderKey(step.description) === stepHeaderKey(marker.description))
       && (!marker.expected || stepHeaderKey(step.expected) === stepHeaderKey(marker.expected)));
-    let step = candidates.length === 1 && (marker.description || marker.expected) ? candidates[0] : undefined;
+    // A unique Step heading names the owner of the following result block;
+    // it does not need to repeat the definition's description and expected text.
+    let step = candidates.length === 1 ? candidates[0] : undefined;
     // Number fallback is scoped to this case and only applies when no exact
     // name exists. Never resolve a conflicting exact name or duplicate number.
     if (!step && !namedSteps.length) {
@@ -78,8 +98,8 @@ export function parseStepSheetResults(rows: unknown[][], testCase: TestCase, she
       return { ...cell, label: headingField || String(activeHeaders[column] ?? "").trim() || `คอลัมน์ ${cell.ref.replace(/\d+$/, "")}` };
     });
     if (fields.length || additionalFields.length) text.sheetSections = [{ id: `${sheetName}:step:${marker.row}`, title: marker.name, kind: "fields", rows: [...additionalFields.map(field => ({ row: Number(field.ref.match(/\d+$/)?.[0]), fields: [field] })), ...[...new Set(fields.map(field => Number(field.ref.match(/\d+$/)?.[0])))].map(row => ({ row, fields: fields.filter(field => Number(field.ref.match(/\d+$/)?.[0]) === row) }))] }];
-    return { id: `SHEET-IMPORT-${sheetName}-STEP-${marker.row}`, source: "sheets", sourceSheetName: sheetName, stepId: step?.id, sourceRange: { startRow: marker.row, endRow }, status: step?.status === "Pass" || step?.status === "Failed" || step?.status === "Skip" ? step.status : testCase.status,
-      ...text, actualResult: text.actualResult || `ผลจาก ${marker.name}`, evidence: [], createdAt: "" };
+    return [{ id: `SHEET-IMPORT-${sheetName}-STEP-${marker.row}`, stepSheetMappingVersion: scoped ? 2 : 1, source: "sheets", sourceSheetName: sheetName, stepId: step?.id, sourceRange: { startRow: marker.row, endRow }, status: step?.status === "Pass" || step?.status === "Failed" || step?.status === "Skip" ? step.status : testCase.status,
+      ...text, actualResult: text.actualResult, evidence: [], createdAt: "" }];
   });
   const displayed = new Set(results.flatMap(result => result.sheetSections?.flatMap(section => section.rows.flatMap(row => row.fields.map(field => field.ref))) ?? []));
   const remaining = detailExtras.filter(field => !displayed.has(field.ref));

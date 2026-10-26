@@ -49,7 +49,7 @@ export function buildSprintDashboard(input: SprintDashboardInput) {
   const selected=selectSprintProjectEpisodes(input.sprintId,input.episodes ?? []);
   const entries:SprintProjectEntry[]=projects.map(p=>{
     const episode=selected.find(e=>e.projectId===p.id);
-    return {projectId:p.id,sprintId:input.sprintId,name:p.name,kind:'current',participationId:episode?.id ?? '',destination:null,historical:null,qaIds:p.qa.map(q=>q.userId),previousSprintName:episode?.previousId ? input.previousNames?.[episode.previousId] : undefined};
+    return {projectId:p.id,sprintId:input.sprintId,name:p.name,description:p.description,kind:'current',participationId:episode?.id ?? '',destination:null,historical:null,qaIds:p.qa.map(q=>q.userId),previousSprintName:episode?.previousId ? input.previousNames?.[episode.previousId] : undefined};
   });
   for(const episode of selected) {
     if(currentIds.has(episode.projectId)) continue;
@@ -61,7 +61,7 @@ export function buildSprintDashboard(input: SprintDashboardInput) {
   for(const project of projects) {
     for(const key of ['totalCases','pass','failed','skip','inProgress','notStart','openDefects','totalDefects','closedDefects'] as const) summary[key]+=project.counts[key];
     if(project.approval.state==='approved') summary.approvedProjects++;
-    if(project.approval.state==='pending') summary.pendingApprovalProjects++;
+    if(project.approval.pending) summary.pendingApprovalProjects++;
   }
   for(const entry of entries.filter(e=>e.kind==='continued')) {
     const header=entry.historical!;

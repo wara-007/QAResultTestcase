@@ -1,11 +1,15 @@
+import { displayTestCaseId } from "./register-case-identity";
+import { registerResultSnapshotTargets } from "./register-result-write-plan";
+import { canonicalCaseId } from "./sync/canonical";
+import { withResultReferenceIssues, resolveRegisterReferenceTargets } from "./register-result-references";
 import { strFromU8, strToU8, unzipSync, zipSync, type Unzipped } from "fflate";
 import type { TestCase, TestStatus, WorkbookFreeformResult, WorkbookResultImage, WorkbookSheet, WorkbookSheetContent, WorkbookSheetKind, WorkbookSource } from "./types";
 import { freeformTextFromCells } from "./sheet-detail";
 import { parseStepTestCases, stepColumnName } from "./step-testcases";
-import { isProjectSummarySheet, testCaseIdsMatchingSheetName } from "./sheet-mapping-model";
+import { isProjectSummarySheet, automaticSheetCaseIds, referencedSheetCaseIds, caseResultReferences, referenceKey, registeredTestCases } from "./sheet-mapping-model";
 import { parseStepSheetResults } from "./step-sheet-results";
 import { parseCoverSnapshot } from "./workbook-validation";
-import { buildStepSheetWritePlan, stepResultSnapshotRows } from "./step-sheet-sync";
+import { buildStepSheetWritePlan, readStepResultSnapshots, readStepCaseSnapshot, snapshotOwnership, STEP_SNAPSHOT_START } from "./step-sheet-sync";
 import type { StyledSheetText } from "./result-preview";
 import { isRegisterCaseIdentifier } from "./testcase-rows";
 
@@ -25,15 +29,15 @@ const fieldAliases: Record<string, string[]> = {
   platform: ["platform"],
   condition: ["condition"],
   scenario: ["test scenario", "scenario"],
-  name: ["test case name", "testcase name", "case name"],
+  name: ["test case name", "testcase name", "case name", "testcase"],
   steps: ["test step description", "test step", "steps"],
   expected: ["expected result", "expected"],
-  status: ["test result", "status", "result"],
+  status: ["test result", "status", "result testing", "result"],
   device: ["device"],
   testData: ["data test", "test data"],
   appVersion: ["app version", "version"],
   environment: ["env", "environment"],
-  resultReference: ["ref result testing", "result testing", "result reference"],
+  resultReference: ["ref result testing", "result reference"],
   executedBy: ["executed by", "tester"],
   executedDate: ["executed date", "test date"],
   executedTime: ["executed time", "test time"],
@@ -225,11 +229,12 @@ export function importTestCases(buffer: ArrayBuffer, fileName: string) {
   }
   const stepCases = parseStepTestCases(Array.from({ length: stepRows.length }, (_, index) => stepRows[index] ?? []), sheet.name);
   if (stepCases) {
-    sheets.forEach(item => { if (item.kind !== "summary" && item.kind !== "defect") item.testCaseIds = testCaseIdsMatchingSheetName(item.name, stepCases); });
     const source: WorkbookSource = { fileName, buffer, bufferLoaded: true, sheetName: sheet.name, sheetPath: sheet.path, columns: {}, sheets };
     const cover = sheets.find(item => item.kind === "summary");
     if (cover) source.coverSnapshot = parseCoverSnapshot(contentRows(readWorkbookSheet(source, cover)), cover.name);
-    return { cases: stepCases, source };
+    const cases = workbookReferenceTargets(source, stepCases);
+    sheets.forEach(item => { if (item.kind !== "summary" && item.kind !== "defect") item.testCaseIds = automaticSheetCaseIds(item.name, cases); });
+    return { cases: withResultReferenceIssues(cases, sheets), source };
   }
 
   const headerRows = Array.from(document.getElementsByTagName("row")).slice(0, 10);
@@ -243,7 +248,7 @@ export function importTestCases(buffer: ArrayBuffer, fileName: string) {
       const ref = cell.getAttribute("r") ?? "";
       const header = normalize(cellValue(cell, sharedStrings));
       for (const [field, aliases] of Object.entries(fieldAliases)) {
-        const score = aliases.reduce((best, alias) => header === alias ? 2 : header.includes(alias) ? Math.max(best, 1) : best, 0);
+        const score = aliases.reduce((best, alias) => header === alias ? 2 : alias !== "testcase" && header.includes(alias) ? Math.max(best, 1) : best, 0);
         if (score > (detectedScores[field] ?? 0)) {
           detectedColumns[field] = columnFromRef(ref);
           detectedScores[field] = score;
@@ -298,7 +303,26 @@ export function importTestCases(buffer: ArrayBuffer, fileName: string) {
 
   if (!cases.length) throw new Error("ไม่พบ Testcase ID ในชีต Testcase");
   const source: WorkbookSource = { fileName, buffer, bufferLoaded: true, sheetName: sheet.name, sheetPath: sheet.path, columns, sheets };
-  return { cases, source };
+  const resolved = workbookReferenceTargets(source, cases);
+  sheets.forEach(item => { if (item.kind !== "summary" && item.kind !== "defect") item.testCaseIds = automaticSheetCaseIds(item.name, resolved); });
+  // Safe sync snapshots carry web-only case metadata as well as results.
+  for (const detail of sheets.filter(item => item.kind !== "testcase" && item.kind !== "summary" && item.kind !== "defect")) {
+    const rows = contentRows(readWorkbookSheet(source, detail));
+    for (const owner of resolved.filter(item => detail.testCaseIds.includes(item.id))) {
+      const unique = !resolved.some(other => other.id !== owner.id && displayTestCaseId(other) === displayTestCaseId(owner));
+      const snapshot = readStepCaseSnapshot(rows, owner.id, owner.registerIdentity, unique, unique, snapshotOwnership(owner, resolved, detail.name));
+      if (snapshot.defects) owner.defects = [...new Map([...(owner.defects ?? []), ...snapshot.defects].map(item => [item.id, item])).values()];
+      if (snapshot.customFields) owner.customFields = [...new Map([...(owner.customFields ?? []), ...snapshot.customFields].map(item => [item.key, item])).values()];
+      if (snapshot.resultFieldDefinitions) owner.resultFieldDefinitions = snapshot.resultFieldDefinitions;
+    }
+  }
+  return { cases: withResultReferenceIssues(resolved, sheets), source };
+}
+
+function workbookReferenceTargets(source: WorkbookSource, cases: TestCase[]) {
+  const register = source.sheets.find(sheet => sheet.path === source.sheetPath)!;
+  const links = new Map(readWorkbookStyledText(source, register).flatMap(cell => cell.link && cell.ref ? [[cell.ref, cell.link] as const] : []));
+  return resolveRegisterReferenceTargets(cases, source.sheets, links);
 }
 
 const mimeTypes: Record<string, string> = {
@@ -402,8 +426,13 @@ export function readWorkbookResultImages(source: WorkbookSource, cases: TestCase
   const { files, strings: sharedStrings } = readOnlyWorkbook(source.buffer);
   const imported: WorkbookResultImage[] = [];
   for (const sheet of source.sheets.filter((item) => item.kind !== "testcase" && item.kind !== "summary" && item.kind !== "defect")) {
-    const ownerCase = cases.find(item => sheet.testCaseIds.includes(item.id) || item.id === sheet.name);
-    const sheetOwners = cases.filter(item => sheet.testCaseIds.includes(item.id) || item.id === sheet.name);
+    const referenced = referencedSheetCaseIds(sheet.name, cases);
+    const ownerIds = referenced.length ? referenced : sheet.testCaseIds.length ? sheet.testCaseIds : automaticSheetCaseIds(sheet.name, cases);
+    const sheetOwners = cases.filter(item => ownerIds.includes(item.id) && (!caseResultReferences(item).length || referenced.includes(item.id)));
+    const ownerCase = sheetOwners[0];
+    // Do not emit an unmapped tab name as a real case ID: the register Ref
+    // explicitly owns another tab. Raw workbook preview still retains it.
+    if (!ownerCase && registeredTestCases(cases).some(item => (referenceKey(item.id) === referenceKey(sheet.name) || canonicalCaseId(item.id) === canonicalCaseId(sheet.name)))) continue;
     const content = ownerCase ? readWorkbookSheet(source, sheet) : undefined;
     const structured = content ? sheetOwners.flatMap(owner => {
       const parsed = parseStepSheetResults(contentRows(content), owner, sheet.name, sheetOwners);
@@ -437,7 +466,7 @@ export function readWorkbookResultImages(source: WorkbookSource, cases: TestCase
     if (headerRow < 0 || !resultIdColumn) {
       const fallbackResultId = `SHEET-IMPORT-${sheet.name}`;
       drawingImages(files, sheet.path).forEach((image) => {
-        imported.push({ ...image, sheetName: sheet.name, testCaseId, resultId: fallbackResultId });
+        for (const owner of sheetOwners.length ? sheetOwners : [{id:testCaseId}]) imported.push({ ...image, sheetName: sheet.name, testCaseId: owner.id, resultId: fallbackResultId });
       });
       continue;
     }
@@ -452,7 +481,7 @@ export function readWorkbookResultImages(source: WorkbookSource, cases: TestCase
     for (const image of drawingImages(files, sheet.path)) {
       const owner = resultRows.filter((result) => result.row <= image.row).at(-1);
       if (!owner || image.row >= defectHeaderRow) continue;
-      imported.push({ ...image, sheetName: sheet.name, testCaseId, resultId: owner.resultId });
+      for (const testCase of sheetOwners.length ? sheetOwners : [{id:testCaseId}]) imported.push({ ...image, sheetName: sheet.name, testCaseId: testCase.id, resultId: owner.resultId });
     }
   }
   return imported;
@@ -465,7 +494,10 @@ function contentRows(content: WorkbookSheetContent) {
     const column = [...columnFromRef(cell.ref)].reduce((total, char) => total * 26 + char.charCodeAt(0) - 64, 0) - 1;
     (rows[row] ??= [])[column] = cell.value;
   }
-  return Array.from({ length: rows.length }, (_, index) => rows[index] ?? []);
+  // Floating images do not create populated cells. Keep their anchor rows in
+  // the result extent so screenshots after the last label stay with that Step.
+  const lastRow = content.images.reduce((last, image) => Math.max(last, image.row), rows.length);
+  return Array.from({ length: lastRow }, (_, index) => rows[index] ?? []);
 }
 
 export function readWorkbookFreeformResults(source: WorkbookSource, cases: TestCase[] = []): WorkbookFreeformResult[] {
@@ -473,8 +505,13 @@ export function readWorkbookFreeformResults(source: WorkbookSource, cases: TestC
   const results: WorkbookFreeformResult[] = [];
 
   for (const sheet of source.sheets.filter((item) => item.kind !== "testcase" && item.kind !== "summary" && item.kind !== "defect")) {
-    const ownerCase = cases.find(item => sheet.testCaseIds.includes(item.id) || item.id === sheet.name);
-    const sheetOwners = cases.filter(item => sheet.testCaseIds.includes(item.id) || item.id === sheet.name);
+    const referenced = referencedSheetCaseIds(sheet.name, cases);
+    const ownerIds = referenced.length ? referenced : sheet.testCaseIds.length ? sheet.testCaseIds : automaticSheetCaseIds(sheet.name, cases);
+    const sheetOwners = cases.filter(item => ownerIds.includes(item.id) && (!caseResultReferences(item).length || referenced.includes(item.id)));
+    const ownerCase = sheetOwners[0];
+    // Do not emit an unmapped tab name as a real case ID: the register Ref
+    // explicitly owns another tab. Raw workbook preview still retains it.
+    if (!ownerCase && registeredTestCases(cases).some(item => (referenceKey(item.id) === referenceKey(sheet.name) || canonicalCaseId(item.id) === canonicalCaseId(sheet.name)))) continue;
     const structured = ownerCase ? sheetOwners.flatMap(owner => {
       const parsed = parseStepSheetResults(contentRows(readWorkbookSheet(source, sheet)), owner, sheet.name, sheetOwners);
       return parsed ? [{ owner, parsed }] : [];
@@ -483,22 +520,25 @@ export function readWorkbookFreeformResults(source: WorkbookSource, cases: TestC
       results.push(...structured.flatMap(({ owner, parsed }) => parsed.results.map(result => ({ ...result, sheetName: sheet.name, testCaseId: owner.id, resultId: result.id }))));
       continue;
     }
+    const fullRows = contentRows(readWorkbookSheet(source, sheet));
+    const snapshotStart = fullRows.findIndex(row => row[0] === STEP_SNAPSHOT_START);
+    for (const owner of sheetOwners) results.push(...readStepResultSnapshots(fullRows, owner.id, owner.registerIdentity, true, !cases.some(item => item.id !== owner.id && displayTestCaseId(item) === displayTestCaseId(owner)), snapshotOwnership(owner, cases, sheet.name)).map(result => ({ ...result, sheetName: sheet.name, testCaseId: owner.id, resultId: result.id })));
     const document = parseXml(files[sheet.path]);
     const allCells = Array.from(document.getElementsByTagName("c")).map((cell) => ({
       ref: cell.getAttribute("r") ?? "",
       row: rowFromRef(cell.getAttribute("r") ?? "0"),
       column: columnFromRef(cell.getAttribute("r") ?? ""),
       value: cellValue(cell, sharedStrings).trim(),
-    })).filter((cell) => cell.value);
+    })).filter((cell) => cell.value && (snapshotStart < 0 || cell.row <= snapshotStart));
     if (allCells.some((cell) => normalize(cell.value) === "result id")) continue;
 
-    const testCaseId = sheet.testCaseIds.find((id) => id.startsWith("TC-")) ?? sheet.name;
+    const testCaseId = ownerCase?.id ?? (!cases.length ? sheet.testCaseIds.find((id) => id.startsWith("TC-")) : undefined) ?? sheet.name;
     const text = freeformTextFromCells(allCells);
     const images = drawingImages(files, sheet.path);
     if (!text.actualResult && !text.apiResponse && !text.log && !images.length) continue;
-    results.push({
+    for (const owner of sheetOwners.length ? sheetOwners : [{id:testCaseId}]) results.push({
       sheetName: sheet.name,
-      testCaseId,
+      testCaseId: owner.id,
       resultId: `SHEET-IMPORT-${sheet.name}`,
       ...text,
       actualResult: text.actualResult || `นำเข้าจาก Google Sheets · ${sheet.name}`,
@@ -534,6 +574,21 @@ function setInlineString(document: Document, ref: string, value: string) {
   cell.appendChild(inline);
 }
 
+function appendRegisterSnapshots(files: Record<string, Uint8Array>, source: WorkbookSource, cases: TestCase[]) {
+  const targets = registerResultSnapshotTargets(cases, source.sheets.map(sheet => { const content = readWorkbookSheet(source, sheet); return { name: sheet.name, rowCount: Math.max(0, ...content.cells.map(cell => rowFromRef(cell.ref)), ...content.images.map(image => image.row + 100)) + 1 }; }));
+    for (const planned of targets) {
+      const testCase = planned.testCase;
+      const target = source.sheets.find(sheet => sheet.name === planned.name);
+      if (!target) throw new Error(`ไม่พบแท็บรายละเอียด ${testCase.id} สำหรับดาวน์โหลดแบบปลอดภัย`);
+      const detail = parseXml(files[target.path]);
+      const content = readWorkbookSheet(source, target);
+      const lastRow = Math.max(0, ...content.cells.map(cell => rowFromRef(cell.ref)), ...content.images.map(image => image.row + 100));
+      const values = planned.values;
+      values.forEach((row, index) => row.forEach((value, column) => setInlineString(detail, `${String.fromCharCode(65 + column)}${Math.max(lastRow + 2, planned.startRow) + index}`, value)));
+      files[target.path] = strToU8(new XMLSerializer().serializeToString(detail));
+    }
+}
+
 export function exportTestCases(source: WorkbookSource, cases: TestCase[]) {
   const files = unzipSync(new Uint8Array(source.buffer));
   const document = parseXml(files[source.sheetPath]);
@@ -546,16 +601,7 @@ export function exportTestCases(source: WorkbookSource, cases: TestCase[]) {
       if (!formulaRefs.has(ref)) setInlineString(document, ref, String(write.values[0][0] ?? ""));
     }
     files[source.sheetPath] = strToU8(new XMLSerializer().serializeToString(document));
-    for (const testCase of stepCases) {
-      const target = source.sheets.find(sheet => sheet.name === testCase.id);
-      if (!target) throw new Error(`ไม่พบแท็บรายละเอียด ${testCase.id} สำหรับดาวน์โหลดแบบปลอดภัย`);
-      const detail = parseXml(files[target.path]);
-      const content = readWorkbookSheet(source, target);
-      const lastRow = Math.max(0, ...content.cells.map(cell => rowFromRef(cell.ref)), ...content.images.map(image => image.row + 100));
-      const values = stepResultSnapshotRows(testCase);
-      values.forEach((row, index) => row.forEach((value, column) => setInlineString(detail, `${String.fromCharCode(65 + column)}${lastRow + index + 2}`, value)));
-      files[target.path] = strToU8(new XMLSerializer().serializeToString(detail));
-    }
+    appendRegisterSnapshots(files, source, stepCases);
     return zipSync(files, { level: 6 });
   }
   const exportFields: Array<keyof TestCase> = [
@@ -571,13 +617,18 @@ export function exportTestCases(source: WorkbookSource, cases: TestCase[]) {
     "remark",
   ];
 
-  for (const testCase of cases) {
+  const formulaRefs = new Set(Array.from(document.getElementsByTagName("c")).filter(cell => cell.getElementsByTagName("f").length).map(cell => cell.getAttribute("r")));
+  for (const testCase of cases.filter(item => item.sourceRow > 0 && !item.sourceSheetName)) {
     for (const field of exportFields) {
-      setInlineString(document, `${source.columns[field]}${testCase.sourceRow}`, String(testCase[field] ?? ""));
+      const column = source.columns[field];
+      const ref = `${column}${testCase.sourceRow}`;
+      if (column && !formulaRefs.has(ref)) setInlineString(document, ref, String(testCase[field] ?? ""));
     }
   }
 
   files[source.sheetPath] = strToU8(new XMLSerializer().serializeToString(document));
+  const registered = cases.filter(item => item.sourceRow > 0 && !item.sourceSheetName);
+  if (registered.some(item => item.registerIdentity && item.id !== item.registerIdentity.sourceId)) appendRegisterSnapshots(files, source, registered);
   const workbookDocument = parseXml(files["xl/workbook.xml"]);
   const calculation = workbookDocument.getElementsByTagName("calcPr")[0];
   if (calculation) {

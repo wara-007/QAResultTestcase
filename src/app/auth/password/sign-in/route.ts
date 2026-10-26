@@ -1,6 +1,7 @@
+import { isTemporaryAuthFailure, SIGN_IN_UNAVAILABLE } from "@/lib/auth-check";
 import { NextResponse } from "next/server";
 import { resolveAppRole } from "@/lib/app-session";
-import { destinationForRole, pendingAccessDestination } from "@/lib/access-flow";
+import { destinationForRole, pendingAccessDestination, accessRetryDestination } from "@/lib/access-flow";
 import { appOrigin, safeReturnTo } from "@/lib/google-user-oauth";
 import { createClient } from "@/lib/supabase/server";
 
@@ -21,7 +22,7 @@ export async function POST(request: Request) {
   const supabase = await createClient();
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
   if (error || !data.user) {
-    loginUrl.searchParams.set("error", "อีเมลหรือรหัสผ่านไม่ถูกต้อง");
+    loginUrl.searchParams.set("error", isTemporaryAuthFailure(error) ? SIGN_IN_UNAVAILABLE : "อีเมลหรือรหัสผ่านไม่ถูกต้อง");
     return NextResponse.redirect(loginUrl, 303);
   }
 
@@ -29,7 +30,8 @@ export async function POST(request: Request) {
     await supabase.auth.updateUser({ data: { password_configured: true } });
   }
 
-  const role = await resolveAppRole(supabase, email);
+  const role = await resolveAppRole(supabase, email).catch(() => undefined);
+  if (role === undefined) return NextResponse.redirect(new URL(accessRetryDestination(next),origin),303);
   if (!role) {
     return NextResponse.redirect(new URL(pendingAccessDestination(email, next), origin), 303);
   }

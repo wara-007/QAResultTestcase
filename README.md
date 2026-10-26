@@ -147,11 +147,13 @@ rollback;
 - Dashboard ใช้ข้อมูลที่บันทึกในฐานข้อมูล ไม่ดาวน์โหลด workbook/รูป Google Sheets แสดง Test cases ตาม attempt ล่าสุด, สถานะ, Defects ที่ยังเปิด, Projects approved และรออนุมัติ หาก Project มี PO หลายคนและมีคำขอ pending จะยังนับรออนุมัติ
 - `npx tsx --test src/lib/planning-migration.test.ts` ทดสอบ migration, backfill, RLS และประวัติด้วย PostgreSQL ในเครื่อง ไม่ใช้ฐานข้อมูลจริง
 
-## ส่งอีเมล Approval ผ่านโปรแกรมอีเมลบนเครื่อง
+## ส่งอีเมล Approval จากบัญชี QA
 
-ระบบจะสร้างร่างอีเมลแล้วเปิดโปรแกรมอีเมลเริ่มต้นของเครื่องด้วย `mailto:` โดยใส่ผู้รับ, CC, หัวข้อ, เนื้อหา, ลิงก์หน้า Review และ Google Sheets ให้พร้อม จึงไม่ต้องเปิด Gmail API, Resend หรือขอสิทธิ์ส่งเมลเพิ่ม
+QA กดส่งจริงจากเว็บ โดย `@gmail.com` ใช้ Gmail API และ `@truecorp.co.th` ใช้ Microsoft Graph จากบัญชี QA ที่ล็อกอินและอนุญาตส่งเมลไว้ ผู้รับและ CC ใช้โดเมนใดก็ได้ ไม่ใช้บัญชีกลางหรือ `mailto:` เป็นช่องทางส่ง
 
-บัญชีผู้ส่งจริงจะเป็นบัญชีที่ผู้ใช้เลือกไว้ใน Gmail/Outlook/Mail บนเครื่อง เพราะมาตรฐาน `mailto:` ไม่สามารถบังคับช่อง From จากเว็บไซต์ได้ ช่อง “ผู้ส่ง” ในหน้าเว็บใช้เป็นข้อมูลอ้างอิงเท่านั้น ระบบจะไม่สร้าง Approval ซ้ำสำหรับ Project และ PO คนเดิม
+From และ Reply-To เป็น QA ผู้ส่ง เมื่อ PO กด Reply ในเมล คำตอบกลับเข้า mailbox ของ QA ตามปกติ ไม่ต้องตอบผ่านเว็บ การ Reply ไม่เปลี่ยนสถานะ Approval; การอนุมัติยังใช้หน้า Review เดิม
+
+ตั้งค่า migration, OAuth และทดสอบส่ง/Reply จริงตาม [คู่มือส่งเมล QA](docs/qa-mail-setup.md) การ accepted จาก provider ไม่ใช่หลักฐานว่าเข้า Inbox หรือ PO อ่านแล้ว
 
 ## ข้อจำกัด MVP
 

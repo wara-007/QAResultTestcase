@@ -8,6 +8,26 @@ import { mergeCaseChoices } from "./sync/client-conflicts";
 import { workbookSheetFromGoogleProperties } from "./sheet-mapping-model";
 
 const makeCase = () => casesFromRows([["Test Case (TC ID)", "Step#", "Description Step", "Expected Result", "Status"], ["ENQ_01_TC_01", "step 01", "Landing", "Correct", "NotStart"]])[0];
+test("reopening a saved automatic Step result refreshes the old mapping once", () => {
+  const stored = makeCase();
+  stored.results = [{ id: "SHEET-IMPORT-TC_01-STEP-6", source: "sheets", sourceSheetName: "TC_01", status: "Pass", actualResult: "Step1", apiResponse: "", log: "", evidence: [], createdAt: "" }];
+  assert.equal(needsStepTemplateRefresh([stored], null), true);
+  stored.results[0].stepSheetMappingVersion = 1;
+  assert.equal(needsStepTemplateRefresh([stored], null), false);
+  const reopened = parseStoredResults(serializeStoredResults(stored));
+  assert.equal(reopened.results[0].stepSheetMappingVersion, 1);
+  delete stored.results[0].stepSheetMappingVersion;
+  stored.results[0].editedLocally = true;
+  assert.equal(needsStepTemplateRefresh([stored], null), false);
+});
+test("a corroborated Step mapping clears its old unassigned warning on refresh", () => {
+  const stored = makeCase();
+  stored.importIssues = ["step 01: ยังผูกผลกับ Step ไม่ได้ กรุณาตรวจชื่อ/รายละเอียดจากตารางหลัก", "Other warning"];
+  const incoming = makeCase();
+  incoming.results = [{ id: "SHEET-IMPORT-TC_01-STEP-6", source: "sheets", sourceSheetName: "TC_01", stepId: "Testcase:2", status: "Pass", actualResult: "ผลจาก Step1", apiResponse: "", log: "", evidence: [], createdAt: "" }];
+  const refreshed = mergeWorkspaceAndGoogleCases([stored], [incoming], "QA").cases[0];
+  assert.deepEqual(refreshed.importIssues, ["Other warning"]);
+});
 test("cached compact results filtered to one proof must be refreshed for every shared owner", () => {
   const sheet = workbookSheetFromGoogleProperties({ title: "TC05, TC06", sheetId: 1 });
   const source = { fileName: "compact.xlsx", buffer: new ArrayBuffer(0), bufferLoaded: false, sheetName: "Testcase", sheetPath: "", columns: {}, sheets: [sheet] };

@@ -167,9 +167,29 @@ export function sectionFieldsForDisplay(section: SheetSection): SheetField[] {
     return [{ label: "Log", ref: fields.map(field => field.ref).join(", "), value: combined.text, highlights: combined.highlights }];
   }
   if (section.kind === "fields") {
+    // Step results often paste one JSON line per spreadsheet row. Rendering
+    // each line as a separate CodeMirror editor can freeze the entire page.
+    const runs: SheetField[][] = [];
+    for (const row of section.rows) {
+      const field = row.fields.length === 1 ? row.fields[0] : undefined;
+      const fragment = field && !field.link && /^(?:"[^"\n]+"\s*:[^\n]*|[{}\[\],\s]+|"(?:[^"\\]|\\.)*"\s*,?|(?:-?\d+(?:\.\d+)?|true|false|null)\s*,?)$/.test(field.value.trim());
+      const previous = runs.at(-1);
+      if (!fragment) { runs.push([]); continue; }
+      const last = previous?.at(-1);
+      if (last && columnOf(last.ref) === columnOf(field.ref) && row.row === Number(last.ref.match(/\d+$/)?.[0]) + 1) previous!.push(field);
+      else runs.push([field]);
+    }
+    const replacements = new Map<string, SheetField>();
+    const combinedRefs = new Set<string>();
+    for (const parts of runs) {
+      if (parts.length < 2 || !/^[\[{]/.test(parts[0].value.trim())) continue;
+      const combined = combineSheetFields(parts);
+      replacements.set(parts[0].ref, { ...parts[0], ref: parts.map(field => field.ref).join(", "), value: combined.text, highlights: combined.highlights });
+      parts.forEach(field => combinedRefs.add(field.ref));
+    }
     return section.rows.flatMap(row => row.fields.length === 2
       ? [{ ...row.fields[1], label: row.fields[0].value, ref: `${row.fields[0].ref} / ${row.fields[1].ref}` }]
-      : row.fields);
+      : row.fields.flatMap(field => replacements.has(field.ref) ? [replacements.get(field.ref)!] : combinedRefs.has(field.ref) ? [] : [field]));
   }
   if (section.kind === "table" || section.kind === "text") {
     const used = new Set<string>();

@@ -38,3 +38,10 @@ test('attention includes open defects but never closed defects or moved-out proj
  const data=buildSprintDashboard({sprintId:'s1',projects:[project('Current','s1'),project('Moved','s2')],team:[],assignments:[],stats:[],approvals:[],origins:[],moves:[],summaries:[{projectId:'Current',counts:{totalCases:0,pass:0,failed:0,skip:0,inProgress:0,notStart:0,openDefects:4,totalDefects:6,closedDefects:2}},{projectId:'Moved',counts:{totalCases:0,pass:0,failed:0,skip:0,inProgress:0,notStart:0,openDefects:9}}]});
  assert.deepEqual(data.attention.filter(item=>item.kind==='defects').map(item=>[item.projectId,item.count]),[['Current',4]]);
 });
+
+test('pending approval project count includes projects that also have a change request', () => {
+  const data = buildSprintDashboard({ sprintId: 's1', projects: [project('Current', 's1')], team: [], assignments: [], stats: [], origins: [], moves: [],
+    approvals: [{ projectId: 'Current', total: 2, approved: 0, pending: 1, changesRequested: 1 }] });
+  assert.equal(data.projects[0].approval.state, 'changes_requested');
+  assert.equal(data.summary.pendingApprovalProjects, 1);
+});

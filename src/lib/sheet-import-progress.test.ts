@@ -1,6 +1,85 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runSheetEvidenceImports, runSheetTextImports, sheetImportSummary, sheetImportProgressLabel, showSheetImportNotice } from './sheet-import-progress';
+import { runSheetEvidenceImports, runSheetTextImports, sheetImportSummary, sheetImportProgressLabel, showSheetImportNotice, projectImportProgress, sheetImportAction } from './sheet-import-progress';
+
+test('only a resumable snapshot offers continuing the remaining import', () => {
+  assert.equal(sheetImportAction({complete:false,evidenceManifest:[]}).resume,true);
+  assert.equal(sheetImportAction({complete:false}).resume,false);
+  assert.equal(sheetImportAction({complete:false,evidenceManifest:[],refreshRequired:true}).resume,false);
+  assert.equal(sheetImportAction({complete:true,evidenceManifest:[]}).resume,false);
+  assert.equal(sheetImportAction({complete:true}).label,'ตรวจและนำเข้าหลักฐาน');
+});
+
+test('project progress remains indeterminate until image inventory is known', () => {
+  const view = projectImportProgress(['a'], {a:'loading'}, {a:{phase:'details'}}, true, false);
+  assert.equal(view.imageTotal, undefined);
+  assert.equal(view.stage, 'details');
+});
+
+test('uploaded images do not imply durable project completion', () => {
+  const view = projectImportProgress(['a','b'], {a:'loaded',b:'loading'}, {
+    a:{phase:'saving',total:2,succeeded:2}, b:{phase:'saving',total:1,succeeded:1},
+  }, true, false);
+  assert.equal(view.stage, 'saving');
+  assert.equal(view.uploaded, 3);
+  assert.equal(view.loaded, 1);
+  assert.equal(view.ready, false);
+});
+
+test('failed images cannot inflate project upload success or readiness', () => {
+  const view = projectImportProgress(['a'], {a:'error'}, {a:{phase:'saving',total:3,completed:3,succeeded:2,failed:1}}, false, false);
+  assert.equal(view.uploaded, 2);
+  assert.equal(view.failedImages, 1);
+  assert.equal(view.stage, 'error');
+  assert.equal(view.ready, false);
+});
+
+test('whole project denominator includes manifest images whose text tab failed before uploads', () => {
+  const view = projectImportProgress(['a','b'], {a:'loaded',b:'error'}, {a:{phase:'saving',total:2,succeeded:2}}, true, false, 3);
+  assert.equal(view.imageTotal, 3);
+  assert.equal(view.uploaded, 2);
+  assert.equal(view.stage, 'images');
+});
+
+test('a stopped import awaiting conflict choices stays in the conflict stage', () => {
+  const view = projectImportProgress(['a'], {a:'queued'}, {a:{phase:'conflict'}}, false, false);
+  assert.equal(view.stage, 'conflict');
+});
+
+test('evidence progress counts successful transfers separately from failed attempts and retains totals while saving', async () => {
+  const events: Array<{ phase: string; succeeded?: number; failed?: number; total?: number }> = [];
+  await runSheetEvidenceImports(['tab'], [true, false, true], () => 'tab', async value => value,
+    async () => {}, (_name, value) => events.push(value), () => {});
+  assert.deepEqual(events.at(-1), { phase: 'saving', completed: 3, succeeded: 2, failed: 1, total: 3 });
+});
+
+test('all image totals are available before the first transfer, including queued tabs', async () => {
+  const totals: Record<string, number | undefined> = {};
+  let firstTotals: Record<string, number | undefined> | undefined;
+  await runSheetEvidenceImports(['a','b'], [{sheet:'a'},{sheet:'b'},{sheet:'b'}], image => image.sheet,
+    async () => { firstTotals ??= { ...totals }; return true; },
+    async () => {}, (name, value) => { if(value.total !== undefined) totals[name] = value.total; }, () => {}, 1);
+  assert.deepEqual(firstTotals, { a: 1, b: 2 });
+});
+
+test('one large tab uploads four images concurrently within the global budget', async () => {
+  let active = 0, maximum = 0;
+  let saved = false;
+  await runSheetEvidenceImports(['large'], Array.from({ length: 12 }, () => ({ sheet: 'large' })), image => image.sheet,
+    async () => { active++; maximum = Math.max(maximum, active); await new Promise(resolve => setTimeout(resolve, 2)); active--; return true; },
+    async () => { assert.equal(active, 0); saved = true; }, () => {}, () => {});
+  assert.equal(maximum, 4);
+  assert.equal(saved, true);
+});
+
+test('same-tab parallelism never multiplies the transfer budget across tabs', async () => {
+  let active = 0, maximum = 0;
+  const tabs = ['a', 'b', 'c'];
+  await runSheetEvidenceImports(tabs, tabs.flatMap(sheet => Array.from({ length: 6 }, () => ({ sheet }))), image => image.sheet,
+    async () => { active++; maximum = Math.max(maximum, active); await new Promise(resolve => setTimeout(resolve, 2)); active--; return true; },
+    async () => {}, () => {}, () => {}, 3);
+  assert.equal(maximum, 3);
+});
 
 test('all saved tabs hide the incomplete notice even if the legacy complete flag is false', () => {
   assert.equal(showSheetImportNotice({ total: 26, loaded: 26 }, { complete: false }), false);

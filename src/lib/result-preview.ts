@@ -1,4 +1,10 @@
 export type TextHighlight = { start: number; end: number; color?: string; background?: string; bold?: boolean };
+
+export function unrepresentedResultSheets<T extends { name: string }>(sheets: T[], results: { source?: string; sourceSheetName?: string }[]): T[] {
+  const normalize = (name: string) => name.trim().toLocaleLowerCase();
+  const represented = new Set(results.filter(result => result.source !== 'web' && result.sourceSheetName?.trim()).map(result => normalize(result.sourceSheetName!)));
+  return sheets.filter(sheet => !represented.has(normalize(sheet.name)));
+}
 export type StyledSheetText = { ref?: string; value: string; link?: string; color?: string; background?: string; bold?: boolean; runs?: Array<{ start: number; color?: string; bold?: boolean }> };
 
 export function sheetTextHighlights(text: string, cells: StyledSheetText[]): TextHighlight[] {

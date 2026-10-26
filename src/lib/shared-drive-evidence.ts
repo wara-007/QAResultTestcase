@@ -1,4 +1,16 @@
+import { readAllRows } from "./paged-rows";
+
 type EvidenceContainer = { evidence?: { fileId?: string; provider?: string }[]; defects?: EvidenceContainer[] };
+type EvidenceCandidate = { project_id: string; result_reference: string | null };
+
+/** Candidate text matches may precede the actual reference, so never truncate them. */
+export async function storedDriveEvidenceProjectIds(
+  fileId: string,
+  page: (start: number, end: number) => PromiseLike<{ data: EvidenceCandidate[] | null; error: { message: string } | null }>,
+): Promise<string[]> {
+  const rows = await readAllRows(page);
+  return [...new Set(rows.filter(row => storedDriveEvidenceMatches(row.result_reference, fileId)).map(row => row.project_id))];
+}
 
 /** A string match alone is not authorization: the ID must be an actual evidence reference. */
 export function storedDriveEvidenceMatches(reference: string | null, fileId: string): boolean {

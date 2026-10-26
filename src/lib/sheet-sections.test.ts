@@ -18,6 +18,37 @@ test("an embedded URL inside a multiline request does not turn the whole log int
 import { sheetSectionsFromCells, sectionLogGroups, combineSheetFields, sectionsForDisplay, sectionFieldsForDisplay, isCodeSheetField, groupSheetResultSections, evidenceSectionIndex } from "./sheet-sections";
 import { sheetFieldDisplayLabel, isSheetPayloadLabel } from "./sheet-sections";
 
+test("Step result JSON spread over thousands of single-cell rows uses one code field", () => {
+  const lines = ["{", ...Array.from({ length: 1900 }, (_, index) => `"item${index}": ${index}${index === 1899 ? "" : ","}`), "}"];
+  const section = { id: "TC_01:step:33", title: "Step2", kind: "fields" as const,
+    rows: [{ row: 34, fields: [{ ref: "A34", label: "Test Scenario*", value: "Response" }] },
+      ...lines.map((value, index) => ({ row: 35 + index, fields: [{ ref: `A${35 + index}`, label: "Test Scenario*", value, highlights: [{ start: 0, end: value.length, color: "#000000" }] }] }))] };
+  const fields = sectionFieldsForDisplay(section);
+  assert.equal(fields.length, 2);
+  assert.equal(fields[0].value, "Response");
+  assert.equal(fields[1].value, lines.join("\n"));
+  assert.equal(isCodeSheetField(fields[1]), true);
+  assert.equal(fields[1].highlights!.length, lines.length);
+  assert.equal(fields[1].highlights!.at(-1)!.start, lines.slice(0, -1).join("\n").length + 1);
+});
+
+test("Step JSON grouping preserves links, row gaps, columns and label/value rows", () => {
+  const cell = (ref: string, value: string, link?: string) => ({ ref, value, label: "Source", link });
+  const fields = sectionFieldsForDisplay({ id: "boundaries", title: "Step", kind: "fields", rows: [
+    { row: 1, fields: [cell("A1", "{")] },
+    { row: 2, fields: [cell("A2", '"ok": true')] },
+    { row: 3, fields: [cell("A3", "}")] },
+    { row: 4, fields: [cell("A4", "{}", "https://example.test/proof")] },
+    { row: 5, fields: [cell("A5", "Device"), cell("B5", "Android")] },
+    { row: 6, fields: [cell("A6", "{")] },
+    { row: 8, fields: [cell("A8", "}")] },
+    { row: 9, fields: [cell("B9", "{")] },
+  ] });
+  assert.deepEqual(fields.map(field => field.value), ['{\n"ok": true\n}', "{}", "Android", "{", "}", "{"]);
+  assert.equal(fields[1].link, "https://example.test/proof");
+  assert.equal(fields[2].label, "Device");
+});
+
 test("parallel payload lines must not become label/value form fields", () => {
   assert.equal(isSheetPayloadLabel('"groupType": "OTHER",'), true);
   assert.equal(isSheetPayloadLabel("}"), true);

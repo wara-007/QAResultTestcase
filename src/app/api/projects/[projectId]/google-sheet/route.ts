@@ -1,4 +1,4 @@
-import { readGoogleSheet, writeGoogleSheetResults } from "@/lib/google-sheets";
+import { readGoogleSheetRevision, readGoogleSheet, writeGoogleSheetResults } from "@/lib/google-sheets";
 import type { TestCase, WorkbookSheet } from "@/lib/types";
 import { withCachedProjectDefects } from "@/lib/project-defect-cache";
 import { getGoogleUserAuth } from "@/lib/google-user-oauth";
@@ -47,6 +47,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ proj
   try {
     const { projectId } = await params;
     const query = new URL(request.url).searchParams;
+    if (query.get("revision") === "1") {
+      const revision = await readGoogleSheetRevision(await spreadsheetIdForProject(projectId), await getGoogleUserAuth());
+      return Response.json({ revision }, { headers: { "Cache-Control": "no-store" } });
+    }
     const summary = query.get("summary") === "1";
     const requestedSheets = query.getAll("sheet");
     if (requestedSheets.length > 10) throw new Error("โหลดได้ไม่เกิน 10 แท็บต่อคำขอ");

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { ProjectFileActions } from "../src/components/project-file-actions";
 
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 const workspace = read("src/components/qa-workspace.tsx");
@@ -25,12 +28,30 @@ assert.match(workspace, /read-only-badge/, "read-only viewers must see a mode ba
 assert.match(workspace, /read-only-notice/, "read-only viewers must see an explanation");
 for (const capabilityGuard of [
   /selectedProject\.googleSheetId\s*\?\s*canEditProject\s*:\s*canManageProject/,
-  /canEditProject\s*&&\s*selectedProject\.googleSheetId\s*&&\s*<button[\s\S]{0,500}ซิงค์กลับ Google Sheets/,
+  /<ProjectFileActions\b[^>]+canEdit=\{canEditProject\}[^>]+canManage=\{canManageProject\}/,
   /canEditProject\s*&&\s*<button[\s\S]{0,300}เพิ่ม Test Case/,
   /<ProjectApprovalPanel[^>]+canSubmit=\{canEditProject\}/,
   // Importing may add a temporary read-only condition, never remove the viewer guard.
-  /<CaseDrawer[\s\S]+?readOnly=\{!canEditProject(?: \|\| pullingGoogle)?\}/,
+  /<CaseDrawer[\s\S]+?readOnly=\{!canEditProject \|\| pullingGoogle \|\| checkingSheets \|\| loadingSheetPreview\}/,
 ]) assert.match(workspace, capabilityGuard, `missing read-only UI guard: ${capabilityGuard}`);
+
+for (const operation of ["saveCase", "saveResult"]) {
+  const body = workspace.slice(workspace.indexOf(`async function ${operation}(`));
+  const guard = body.indexOf("projectDetailRefreshPending(selectedProject.id)");
+  assert.ok(guard >= 0 && guard < body.indexOf("await persistTestCaseResult"), `${operation} must reject writes before a lazy detail refresh can overwrite them`);
+}
+
+// File actions were extracted from the workspace. Verify rendered capabilities,
+// as well as the forwarding above, so moving JSX cannot hide a permission bypass.
+for (const googleSheetId of ["", "connected-sheet"]) {
+  const html = renderToStaticMarkup(createElement(ProjectFileActions, {
+    page: "files", projectId: "project", googleSheetId, hasSource: true,
+    canEdit: false, canManage: false, pulling: false, syncing: false, exporting: false,
+    onUpload: () => {}, onPull: () => {}, onSync: () => {}, onDownload: () => {},
+  }));
+  assert.match(html, /ดาวน์โหลด Result/, "viewers must retain result downloads");
+  assert.doesNotMatch(html, /<button\b[^>]*>[\s\S]*?(?:อัปโหลด Excel|เลือกไฟล์จาก Google Drive|โหลดจาก Sheets|เชื่อม Google Sheet|ซิงค์กลับ Google Sheets)/, "viewers must not receive file write controls");
+}
 
 assert.match(migration, /private\.has_app_access\(\).*private\.can_view_project/s, "allowlisted non-members must receive global Project view access");
 assert.match(migration, /project_sheet_mappings_insert_editor[\s\S]*private\.can_edit_project/, "PO/viewer mapping writes must remain denied by RLS");

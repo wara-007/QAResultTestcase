@@ -1,4 +1,5 @@
 import React from "react";
+import { displayTestCaseId } from "../lib/register-case-identity";
 import type { TestCase } from "../lib/types";
 export function TestCaseSourceDetails({ testCase }: { testCase: TestCase }) {
   const fallback = testCase.stepDefinitions?.length
@@ -13,7 +14,7 @@ export function TestCaseSourceDetails({ testCase }: { testCase: TestCase }) {
       const property = "field" in source ? source.field : undefined;
       const edited = property ? testCase[property] : undefined;
       const custom = (testCase.customFields ?? []).find(field => field.source === "testcase" && field.column === source.column);
-      const value = typeof edited === "string" ? edited : custom?.value ?? source.value;
+      const value = property === "id" ? displayTestCaseId(testCase) : typeof edited === "string" ? edited : custom?.value ?? source.value;
       return <div key={source.column}><dt>{source.label}</dt><dd className="multiline">{value.trim() || "—"}</dd></div>;
     })}
     {extras.map(field => <div key={field.key}><dt>{field.label}</dt><dd className="multiline">{field.value.trim() || "—"}</dd></div>)}

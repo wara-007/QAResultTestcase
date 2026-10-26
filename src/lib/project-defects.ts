@@ -34,7 +34,10 @@ export function collectProjectDefects(caseDefects: TestDefect[], sheetDefects: T
     records.set(key, previous ? { ...previous, ...defect, testCaseReference: defect.testCaseReference || previous.testCaseReference, evidence: defect.evidence.length ? defect.evidence : previous.evidence } : defect);
   }
   const byJira = new Map<string, TestDefect>();
-  for (const defect of records.values()) {
+  const registerIds = new Set(sheetDefects.map(defect => defect.id.trim().toUpperCase()));
+  // Register rows must win Jira collisions even when the imported IDs differ.
+  const ordered = [...records.values()].sort((left,right) => Number(registerIds.has(left.id.trim().toUpperCase())) - Number(registerIds.has(right.id.trim().toUpperCase())));
+  for (const defect of ordered) {
     const key = defect.jiraUrl.trim().toLowerCase() || `id:${defect.id.trim().toUpperCase()}`;
     const previous = byJira.get(key);
     byJira.set(key, previous ? { ...previous, ...defect, testCaseReference: defect.testCaseReference || previous.testCaseReference, evidence: defect.evidence.length ? defect.evidence : previous.evidence } : defect);

@@ -47,3 +47,15 @@ test("compact keys without a TC prefix or number are valid but a title-only sect
   const cases = casesFromRows([header, ["Regression"], ["checkout_happy_path", "", "", "Checkout", "Submit", "Success"]]);
   assert.deepEqual(cases.map(c => c.id), ["checkout_happy_path"]);
 });
+
+test("Result Testing is the status column and Ref (Result Testing) owns the result tab", () => {
+  const cases = casesFromRows([["Testcase ID", "Test Case Name", "Expected Result", "Result Testing", "Ref\n(Result Testing)"],
+    ["CAN_01_TC01", "Cancel", "Cancellation shown", "PASSED", "CAN_01_TC01"]]);
+  assert.equal(cases[0].status, "Pass");
+  assert.equal(cases[0].resultReference, "CAN_01_TC01");
+});
+test("a Result Testing status column alone is not an explicit result-tab reference", () => {
+  const cases = casesFromRows([["Testcase ID", "Test Case Name", "Result Testing"], ["CAN_01_TC01", "Cancel", "PASSED"]]);
+  assert.equal(cases[0].status, "Pass");
+  assert.equal(cases[0].resultReference, "");
+});

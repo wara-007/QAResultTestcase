@@ -1,5 +1,5 @@
 import type { ProjectSheetMapping, TestCase, WorkbookSheet } from "./types";
-import { automaticSheetCaseIds, registeredTestCases, isProjectSummarySheet } from "./sheet-mapping-model";
+import { automaticSheetCaseIds, referencedSheetCaseIds, caseResultReferences, registeredTestCases, isProjectSummarySheet } from "./sheet-mapping-model";
 
 const identity = (value: string) => value.trim().toLocaleUpperCase().replace(/[\s_-]+/g, "");
 const stableSheetKey = (sheet: WorkbookSheet) => sheet.sheetId == null ? `path:${sheet.path}` : `google:${sheet.sheetId}`;
@@ -35,18 +35,25 @@ export function resolveSheetAssociations(
     if (seen.has(sheetKey)) continue;
     seen.add(sheetKey);
 
+    const referenced = referencedSheetCaseIds(sheet.name, cases, sheets.map(item => item.name));
+    if (referenced.length) {
+      associations.push(...referenced.map(id => ({ sheet, testCase: casesByIdentity.get(identity(id))!, source: "automatic" as const })));
+      continue;
+    }
+
     const mapping = sheet.sheetId == null ? undefined : mappingsBySheetId.get(sheet.sheetId);
     if (mapping) {
       const mappedCase = casesByIdentity.get(identity(mapping.testcaseKey));
-      if (mappedCase) associations.push({ sheet, testCase: mappedCase, source: "manual", mapping });
+      if (mappedCase && caseResultReferences(mappedCase).length) unmapped.push(sheet);
+      else if (mappedCase) associations.push({ sheet, testCase: mappedCase, source: "manual", mapping });
       else invalidMappings.push({ sheet, mapping, reason: "missing-testcase" });
       continue;
     }
 
     // References inside a sheet can mention many unrelated Test Cases (for
-    // example the Defected summary). Only the tab name is safe to infer from;
+    // example the Defected summary). The register Ref takes priority; without it use validated tab/definition IDs;
     // content-only references stay unmapped until QA chooses the target.
-    const inferredCases = automaticSheetCaseIds(sheet.name, cases, sheet.definitionCaseIds)
+    const inferredCases = automaticSheetCaseIds(sheet.name, cases, sheet.definitionCaseIds, sheets.map(item => item.name))
       .map((testCaseId) => casesByIdentity.get(identity(testCaseId)))
       .filter((testCase): testCase is TestCase => Boolean(testCase));
     if (inferredCases.length) associations.push(...inferredCases.map(testCase => ({ sheet, testCase, source: "automatic" as const })));

@@ -1,3 +1,5 @@
+import { referencedSheetCaseIds } from "./sheet-mapping-model";
+import { displayTestCaseId, type RegisterCaseIdentity } from "./register-case-identity";
 import type { TestCase, TestResult } from "./types";
 import { stepColumnName, stepHeaderKey } from "./step-testcases";
 
@@ -14,17 +16,18 @@ function compactDefinition(rows: unknown[][]) {
   return { start, headers, definitions, idColumn };
 }
 
-export function compactResultCaseIds(rows: unknown[][], cases: readonly { id: string }[]) {
+export function compactResultCaseIds(rows: unknown[][], cases: readonly { id: string; registerIdentity?: RegisterCaseIdentity }[]) {
   const definition = compactDefinition(rows);
   if (!definition) return [];
-  return cases.filter(item => definition.definitions.some(row => stepHeaderKey(row[definition.idColumn]) === stepHeaderKey(item.id))).map(item => item.id);
+  return cases.filter(item => definition.definitions.some(row => stepHeaderKey(row[definition.idColumn]) === stepHeaderKey(displayTestCaseId(item)))).map(item => item.id);
 }
 
 export function parseCompactSheetResults(rows: unknown[][], testCase: TestCase, sheetName: string, cases: TestCase[]) {
   const definition = compactDefinition(rows);
   if (!definition) return null;
   const { start, headers, definitions } = definition;
-  const owners = compactResultCaseIds(rows, cases);
+  const referenced = referencedSheetCaseIds(sheetName, cases);
+  const owners = referenced.length ? referenced : compactResultCaseIds(rows, cases);
   const width = Math.max(headers.length, ...definitions.map(row => row.length));
   const table = { headers: Array.from({ length: width }, (_, column) => String(headers[column] ?? "")), rows: definitions.map(row => Array.from({ length: width }, (_, column) => String(row[column] ?? ""))) };
   const populatedRows = rows.flatMap((row, index) => index > start && row.some(value => String(value ?? "").trim()) ? [index] : []);

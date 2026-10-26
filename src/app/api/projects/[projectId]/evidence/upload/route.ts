@@ -25,6 +25,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
     if (!getR2Config()) throw new Error("กรุณาตั้งค่า Cloudflare R2 เพื่ออัปโหลดวิดีโอ");
     const input = await request.json();
     const size = Number(input.size), type = String(input.type ?? ""), name = String(input.name ?? "").slice(0, 160);
+    if (!type.startsWith("video/")) throw new Error("รูปภาพต้องอัปโหลดเข้า Google Drive ของผู้สร้างโปรเจค");
     const invalid = validateEvidenceFile({ type, size });
     if (!Number.isSafeInteger(size) || invalid) throw new Error(invalid || "ขนาดไฟล์ไม่ถูกต้อง");
     const testCaseId = String(input.testCaseId ?? "").trim();
@@ -45,6 +46,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ pr
     const { ticket: value } = await request.json();
     const ticket = decodeTicket(String(value));
     if (ticket.projectId !== projectId || ticket.userId !== access.userId) throw new ProjectAccessError("Upload ticket ไม่ใช่ของผู้ใช้นี้", 403);
+    if (!ticket.type.startsWith("video/")) throw new Error("รูปภาพต้องอัปโหลดเข้า Google Drive ของผู้สร้างโปรเจค");
     const actual = await inspectR2Object(ticket.key);
     if (actual.ContentLength !== ticket.size || actual.ContentType !== ticket.type) throw new Error("ไฟล์ที่อัปโหลดไม่ตรงกับไฟล์ที่เลือก");
     return Response.json({ evidence: { fileId: ticket.key.split("/").pop()!, objectKey: ticket.key, provider: "cloudflare-r2", url: `${config.publicBaseUrl}/${ticket.key.split("/").map(encodeURIComponent).join("/")}`, name: ticket.name, mimeType: ticket.type } });

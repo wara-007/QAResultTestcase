@@ -1,3 +1,4 @@
+import { displayTestCaseId } from "./register-case-identity";
 import { TEST_STATUSES, type TestCase, type TestStatus } from './types';
 import { stepHeaderKey } from './step-testcases';
 
@@ -38,11 +39,11 @@ export function collectCaseColumns(cases:TestCase[]):CaseColumn[] {
   for(const [field,label] of fallbackFields) {
     if(![...columns.values()].some(c=>c.field===field) && (field==='status' || field==='name' || cases.some(item=>typeof item[field]==='string' && item[field].trim()))) columns.set(field,{key:field,label,field});
   }
-  columns.set('sheetLoad',{key:'sheetLoad',label:'ข้อมูลจาก Sheets'});
   return [...columns.values()];
 }
 
 export function caseColumnValue(item:TestCase,column:CaseColumn):string {
+  if(column.field==='id') return displayTestCaseId(item);
   if(column.field==='status') return item.status;
   if(column.column!==undefined) {
     const source=item.sourceFields?.find(field=>field.column===column.column && normalize(field.label)===normalize(column.sourceLabel ?? column.label));
@@ -66,7 +67,7 @@ export function caseColumnValue(item:TestCase,column:CaseColumn):string {
 }
 
 export function visibleCaseColumns(columns:CaseColumn[],selection:string[]|null):CaseColumn[] {
-  const defaults=['id',...['status','scenario','device','executedBy'].flatMap(field=>columns.find(c=>c.field===field)?.key ?? []),'sheetLoad'];
+  const defaults=['id',...['status','scenario','device','executedBy'].flatMap(field=>columns.find(c=>c.field===field)?.key ?? [])];
   const byKey=new Map(columns.map(c=>[c.key,c]));
   return [...new Set(['id',...(selection ?? defaults)])].filter(key=>byKey.has(key)).slice(0,6).map(key=>byKey.get(key)!);
 }

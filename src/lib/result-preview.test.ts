@@ -95,3 +95,11 @@ test("row loading reports each failure without abandoning remaining rows", async
   assert.ok(statuses.includes("a:loaded"));
   assert.ok(statuses.includes("c:loaded"));
 });
+import { unrepresentedResultSheets } from './result-preview';
+
+test('captured sheet results are omitted from raw fallback while uncaptured sheets remain available', () => {
+  const sheets = [{name:'TC_01'},{name:'Extra result'}];
+  assert.deepEqual(unrepresentedResultSheets(sheets,[{source:'sheets',sourceSheetName:' tc_01 '}]), [{name:'Extra result'}]);
+  assert.deepEqual(unrepresentedResultSheets(sheets,[{source:'web',sourceSheetName:'TC_01'}]), sheets);
+  assert.deepEqual(unrepresentedResultSheets(sheets,[]), sheets);
+});

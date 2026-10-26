@@ -13,9 +13,12 @@ import { deleteR2ObjectsByPrefix } from "@/lib/r2";
 import { canDeleteGroup, collectGoogleEvidence, cleanupGoogleWithWarning } from '@/lib/evidence-cleanup';
 import { trashProjectGoogleEvidence } from '@/lib/google-evidence-cleanup';
 import { readAllRows } from '@/lib/paged-rows';
-import { headers } from "next/headers";
 import { approvalNotificationPatch } from "@/lib/approval-notification";
+import { approvalSendBlocked, buildApprovalEmail, deliverApprovalEmail } from "@/lib/approval-email";
+import { getQaMailConnection, getQaMailSender, qaMailPreparationFailure } from "@/lib/qa-mail-server";
+import { mailProvider, mailConnectUrl, type MailConnection } from "@/lib/mail-provider";
 import { requireProjectCapability, type ProjectCapability } from "@/lib/project-access-server";
+import { requireApprovalEvidenceReady } from "@/lib/approval-evidence-server";
 
 export type ProjectApprovalSummary = {
   id: string;
@@ -27,14 +30,16 @@ export type ProjectApprovalSummary = {
   reviewerName: string;
   reviewerComment: string;
   emailSentAt: string;
+  emailId: string;
+  emailError: string;
 };
 
-async function getSignedInProject(projectId: string, capability: ProjectCapability = "view"): Promise<{ userId: string; name: string } | { error: string }> {
+async function getSignedInProject(projectId: string, capability: ProjectCapability = "view"): Promise<{ userId: string; name: string; email: string; googleSheetId: string } | { error: string }> {
   try {
     const access = await requireProjectCapability(projectId, capability);
     const metadata = access.claims.user_metadata as Record<string, unknown> | undefined;
     const name = [metadata?.full_name, metadata?.name, access.claims.email].find((value) => typeof value === "string" && value.trim()) as string | undefined;
-    return { userId: access.userId, name: name ?? "QA Team" };
+    return { userId: access.userId, name: name ?? "QA Team", email: typeof access.claims.email === "string" ? access.claims.email : "", googleSheetId: access.project.google_sheet_id ?? "" };
   } catch (reason) {
     return { error: reason instanceof Error ? reason.message : "ตรวจสอบสิทธิ์ Project ไม่สำเร็จ" };
   }
@@ -45,7 +50,7 @@ export async function getLatestProjectApproval(projectId: string): Promise<{ app
     const access = await getSignedInProject(projectId);
     if ("error" in access) return access;
     const result = await createAdminClient().from("project_approval_requests")
-      .select("id, recipient_email, status, requested_at, expires_at, reviewed_at, reviewer_name, reviewer_comment, email_sent_at")
+      .select("id, recipient_email, status, requested_at, expires_at, reviewed_at, reviewer_name, reviewer_comment, email_sent_at, email_id, email_error")
       .eq("project_id", projectId).order("requested_at", { ascending: false }).limit(1).maybeSingle();
     if (result.error) return { error: result.error.message };
     if (!result.data) return { approval: null };
@@ -54,6 +59,7 @@ export async function getLatestProjectApproval(projectId: string): Promise<{ app
       requestedAt: result.data.requested_at, expiresAt: result.data.expires_at,
       reviewedAt: result.data.reviewed_at ?? "", reviewerName: result.data.reviewer_name,
       reviewerComment: result.data.reviewer_comment, emailSentAt: result.data.email_sent_at ?? "",
+      emailId: result.data.email_id ?? "", emailError: result.data.email_error ?? "",
     } };
   } catch (reason) {
     return { error: reason instanceof Error ? reason.message : "โหลดสถานะ Approval ไม่สำเร็จ" };
@@ -62,7 +68,6 @@ export async function getLatestProjectApproval(projectId: string): Promise<{ app
 
 type CreateApprovalInput = {
   projectId: string;
-  senderEmail: string;
   recipientEmail: string;
   cc: string;
   subject: string;
@@ -72,14 +77,34 @@ type CreateApprovalInput = {
   counts: { total: number; pass: number; failed: number; skip: number; notStart: number; inProgress: number };
 };
 
-type CreateApprovalResult = { request: ProjectApprovalSummary; mailtoUrl: string } | { error: string };
+type CreateApprovalResult = { request: ProjectApprovalSummary; warning?: string } | { error: string; authUrl?: string };
+
+export async function getApprovalMailConnection(projectId: string): Promise<MailConnection | {error: string}> {
+  const access = await getSignedInProject(projectId, "edit");
+  if ("error" in access) return access;
+  try { return await getQaMailConnection(access.email); }
+  catch (reason) { return {error: qaMailPreparationFailure(reason, access.email).message}; }
+}
+
+// Compatibility for callers from an already-open page during deployment.
+export async function getApprovalGmailConnection(projectId: string) {
+  return getApprovalMailConnection(projectId);
+}
 
 export async function createProjectApprovalRequest(input: CreateApprovalInput): Promise<CreateApprovalResult> {
-  const email = input.recipientEmail.trim().toLowerCase();
-  if (!/^\S+@\S+\.\S+$/.test(email)) return { error: "กรุณาใส่อีเมล PO ให้ถูกต้อง" };
   try {
     const access = await getSignedInProject(input.projectId, "edit");
     if ("error" in access) return access;
+    await requireApprovalEvidenceReady(input.projectId, access.googleSheetId);
+    // Verify the signed-in QA's real mailbox grant before reserving a request.
+    const provider = mailProvider(access.email);
+    let sender: Awaited<ReturnType<typeof getQaMailSender>>;
+    try { sender = await getQaMailSender(access.email); }
+    catch (reason) {
+      const failure = qaMailPreparationFailure(reason, access.email);
+      return {error: failure.message, ...(failure.reauthorize && provider ? {authUrl: mailConnectUrl(provider, "/groups")} : {})};
+    }
+    const email = input.recipientEmail.trim().toLowerCase();
     const admin = createAdminClient();
     const projectResult = await admin.from("projects").select("id, name, environment, google_sheet_url, owner_id").eq("id", input.projectId).maybeSingle();
     if (projectResult.error) return { error: projectResult.error.message };
@@ -87,22 +112,22 @@ export async function createProjectApprovalRequest(input: CreateApprovalInput): 
     if (!projectResult.data.google_sheet_url) return { error: "กรุณาเชื่อม Google Sheet ก่อนส่งขอ Approve" };
 
     const existingResult = await admin.from("project_approval_requests")
-      .select("id, status, email_sent_at")
+      .select("id, status, requested_at, email_id, email_sent_at")
       .eq("project_id", input.projectId).eq("recipient_email", email)
       .maybeSingle();
     if (existingResult.error) return { error: existingResult.error.message };
     if (existingResult.data?.status === "revoked") return { error: "คำขอนี้ถูกยกเลิกสิทธิ์แล้ว กรุณาจัดการสิทธิ์ก่อนส่งอีกครั้ง" };
-
-    const headerStore = await headers();
-    const requestOrigin = headerStore.get("origin")?.replace(/\/$/, "") ?? "";
-    const configuredOrigin = process.env.NEXT_PUBLIC_SITE_URL?.trim().replace(/\/$/, "") ?? "";
-    const baseUrl = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(requestOrigin) ? requestOrigin : configuredOrigin;
-    if (!baseUrl) return { error: "ยังไม่ได้ตั้งค่า NEXT_PUBLIC_SITE_URL สำหรับสร้างลิงก์ Approval" };
+    if (existingResult.data && approvalSendBlocked(existingResult.data)) return { error: "กำลังส่งหรือเพิ่งส่งอีเมลนี้แล้ว กรุณารอสักครู่และตรวจ Sent ก่อนส่งซ้ำ" };
 
     const token = randomBytes(32).toString("base64url");
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
     const requestId = existingResult.data?.id ?? randomUUID();
-    const notification = approvalNotificationPatch(new Date().toISOString(), access.userId, access.name, Boolean(existingResult.data));
+    // Real emails always link to the configured public site, never localhost or an untrusted Origin header.
+    const message = buildApprovalEmail({ ...input, senderEmail: access.email, senderName: access.name, replyTo: access.email, projectName: projectResult.data.name,
+      sheetUrl: projectResult.data.google_sheet_url, siteUrl: process.env.NEXT_PUBLIC_SITE_URL ?? "",
+      requestId, repeat: Boolean(existingResult.data) });
+    const notification = approvalNotificationPatch(new Date().toISOString(), access.userId, access.name, Boolean(existingResult.data), sender.provider);
+    notification.email_id += `:${randomUUID()}`;
     const requestData = {
       id: requestId,
       project_id: input.projectId,
@@ -115,17 +140,22 @@ export async function createProjectApprovalRequest(input: CreateApprovalInput): 
       reviewer_comment: "",
       ...notification,
     };
-    const columns = "id, recipient_email, status, requested_at, expires_at, reviewed_at, reviewer_name, reviewer_comment, email_sent_at";
+    const columns = "id, recipient_email, status, requested_at, expires_at, reviewed_at, reviewer_name, reviewer_comment, email_sent_at, email_id, email_error";
     const result = existingResult.data
-      ? await admin.from("project_approval_requests").update(notification).eq("id", requestId).neq("status", "revoked").select(columns).single()
+      ? await admin.from("project_approval_requests").update(notification).eq("id", requestId).eq("requested_at", existingResult.data.requested_at).eq("email_id", existingResult.data.email_id).neq("status", "revoked").select(columns).single()
       : await admin.from("project_approval_requests").insert(requestData).select(columns).single();
-    if (result.error) return { error: result.error.message };
+    if (result.error) return { error: result.error.code === "23505" || result.error.code === "PGRST116" ? "คำขอนี้กำลังถูกส่งหรือมีการเปลี่ยนแปลง กรุณาโหลดสถานะใหม่ก่อนส่งซ้ำ" : result.error.message };
 
-    const subject = `${existingResult.data ? "[อัปเดต] " : ""}${input.subject.trim() || `[QA Approval] ${projectResult.data.name}`}`;
-    const body = [existingResult.data ? "มีการอัปเดตผลการทดสอบ Project กรุณาตรวจสอบข้อมูลล่าสุด สถานะอนุมัติเดิมยังคงเดิม" : "", input.body.trim(), "", `เปิดหน้า Review และ Approve: ${baseUrl}/approvals/${requestId}`, `Google Sheets: ${projectResult.data.google_sheet_url}`].filter(Boolean).join("\n");
-    const mailtoUrl = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(subject)}${input.cc.trim() ? `&cc=${encodeURIComponent(input.cc.trim())}` : ""}&body=${encodeURIComponent(body)}`;
+    let saved = result.data;
+    const delivery = await deliverApprovalEmail(message, Boolean(existingResult.data), sender.send, async patch => {
+      const updated = await admin.from("project_approval_requests").update(patch).eq("id", requestId)
+        .eq("email_id", notification.email_id).select(columns).single();
+      if (updated.error) throw new Error("Could not persist email receipt");
+      saved = updated.data;
+    }, sender.provider);
     revalidatePath("/approvals");
-    return { request: { id: result.data.id, recipientEmail: email, status: result.data.status as ApprovalStatus, requestedAt: result.data.requested_at, expiresAt: result.data.expires_at, emailSentAt: result.data.email_sent_at ?? "", reviewedAt: result.data.reviewed_at ?? "", reviewerName: result.data.reviewer_name, reviewerComment: result.data.reviewer_comment }, mailtoUrl };
+    if (!delivery.ok) return {error: delivery.error, authUrl: delivery.reauthorize ? mailConnectUrl(sender.provider, "/groups") : undefined};
+    return { request: { id: saved.id, recipientEmail: email, status: saved.status as ApprovalStatus, requestedAt: saved.requested_at, expiresAt: saved.expires_at, emailSentAt: saved.email_sent_at ?? "", emailId: saved.email_id, emailError: saved.email_error, reviewedAt: saved.reviewed_at ?? "", reviewerName: saved.reviewer_name, reviewerComment: saved.reviewer_comment }, warning: delivery.warning };
   } catch (reason) {
     return { error: reason instanceof Error ? reason.message : "สร้างลิงก์รีวิวไม่สำเร็จ" };
   }
@@ -396,7 +426,7 @@ async function deleteProjectRecords(projectId: string) {
     if (!deleted.data) return { error: "ลบ Project ไม่สำเร็จ" };
 
     const retainedSources=archivedHeaders.flatMap(r=>r.header?.source?.storageKey ? [{storage_key:r.header.source.storageKey,column_mapping:{chunkCount:r.header.source.chunkCount ?? 0}}] : []);
-    const storagePaths = [...new Set([...(sources.data ?? []),...retainedSources].flatMap((source) => {
+    const storagePaths = [...new Set([...(sources.data ?? []),...retainedSources].filter(source=>!!source.storage_key).flatMap((source) => {
       const chunkCount = typeof source.column_mapping?.chunkCount === "number" ? source.column_mapping.chunkCount : 0;
       return chunkCount > 0
         ? Array.from({ length: chunkCount }, (_, index) => `${source.storage_key}/part-${String(index).padStart(3, "0")}`)

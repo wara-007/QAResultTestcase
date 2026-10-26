@@ -22,3 +22,9 @@ export function pendingAccessDestination(email: string, requestedPath: string) {
   params.set("next", safeRequestedPath(requestedPath));
   return `/auth/access-denied?${params.toString()}`;
 }
+
+/** Retry a failed permission lookup without claiming the account lacks access. */
+export function accessRetryDestination(requestedPath: string) {
+  const params=new URLSearchParams({next:safeRequestedPath(requestedPath),error:'ตรวจสอบสิทธิ์ไม่สำเร็จ กรุณาลองอีกครั้ง'});
+  return `/auth/login?${params.toString()}`;
+}

@@ -1,6 +1,7 @@
+import { isTemporaryAuthFailure } from "@/lib/auth-check";
 import { NextResponse } from "next/server";
 import { resolveAppRole } from "@/lib/app-session";
-import { authorizedDestination, pendingAccessDestination } from "@/lib/access-flow";
+import { authorizedDestination, pendingAccessDestination, accessRetryDestination } from "@/lib/access-flow";
 import { appOrigin, AUTH_RETURN_TO_COOKIE, safeReturnTo } from "@/lib/google-user-oauth";
 import { createClient } from "@/lib/supabase/server";
 
@@ -10,10 +11,12 @@ export async function GET(request: Request) {
   const next = safeReturnTo(requestUrl.searchParams.get("next"));
   const supabase = await createClient();
 
-  const { data: existingSession } = await supabase.auth.getClaims();
+  const { data: existingSession, error: sessionError } = await supabase.auth.getClaims();
+  if (isTemporaryAuthFailure(sessionError)) return NextResponse.redirect(new URL(accessRetryDestination(next),origin));
   const existingEmail = typeof existingSession?.claims?.email === "string" ? existingSession.claims.email.toLowerCase() : "";
   if (existingEmail) {
-    const role = await resolveAppRole(supabase, existingEmail);
+    const role = await resolveAppRole(supabase, existingEmail).catch(() => undefined);
+    if (role === undefined) return NextResponse.redirect(new URL(accessRetryDestination(next),origin));
     const metadata = existingSession?.claims?.user_metadata;
     const passwordConfigured = Boolean(metadata && typeof metadata === "object" && "password_configured" in metadata && metadata.password_configured === true);
     if (role) return NextResponse.redirect(new URL(authorizedDestination(role, next, passwordConfigured), origin));

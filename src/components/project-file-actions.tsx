@@ -14,6 +14,7 @@ type ProjectFileActionsProps = {
   pulling: boolean;
   syncing: boolean;
   exporting: boolean;
+  importProgressVisible?: boolean;
   onUpload: () => void;
   onPull: () => void | Promise<void>;
   onSync: () => void | Promise<void>;
@@ -29,7 +30,7 @@ export function ProjectFileActions(props: ProjectFileActionsProps) {
       <div className="project-file-action-buttons">
         {props.canEdit && <button type="button" className="secondary-button" onClick={props.onUpload}><Upload size={17} />อัปโหลด Excel</button>}
         {props.canEdit && props.googleSheetId && <GoogleDrivePickerButton projectId={props.projectId} expectedFileId={props.googleSheetId} disabled={props.pulling || props.syncing} onPicked={async () => { await props.onPull(); }} />}
-        {(props.googleSheetId ? props.canEdit : props.canManage) && <button type="button" className="secondary-button" onClick={() => void props.onPull()} disabled={props.pulling}>{props.pulling ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}{props.googleSheetId ? "โหลดจาก Sheets" : "เชื่อม Google Sheet"}</button>}
+        {!props.importProgressVisible && (props.googleSheetId ? props.canEdit : props.canManage) && <button type="button" className="secondary-button" onClick={() => void props.onPull()} disabled={props.pulling}>{props.pulling ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}{props.googleSheetId ? "นำเข้าข้อมูลจาก Sheets" : "เชื่อม Google Sheet"}</button>}
       </div>
     </section>
     <section className="panel project-file-action-card" aria-label="ส่งออกผลทดสอบ">

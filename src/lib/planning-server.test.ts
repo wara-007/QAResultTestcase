@@ -23,9 +23,9 @@ function planningServer(failure?: { table: string; message: string; thrown?: boo
     let start=0,end=499;
     const response: {data:unknown;error:{message:string;code?:string}|null} = { data: name === 'can_manage_sprint' ? false : name === 'groups' ? { name: 'Group' } : rows[name] ?? [], error: failure?.table === name && !failure.thrown ? { message: failure.message } : null };
     const builder = {
-      select() { return builder; }, eq() { return builder; }, order() { return builder; },
+      select() { return builder; }, in() { return builder; }, eq() { return builder; }, order() { return builder; },
       range(a:number,b:number) { start=a;end=b;reads.push({table:name,start,end});return builder; }, limit(count:number,options?:{referencedTable?:string}) {limits.push({table:name,count,relation:options?.referencedTable});return builder;}, or() { return builder; }, maybeSingle() { return builder; },
-      then(resolve: (value: typeof response) => unknown, reject?: (reason: unknown) => unknown) { return (failure?.table === name && failure.thrown ? Promise.reject(new Error(failure.message)) : Promise.resolve(failure?.timeoutOver && failure.table===name ? end-start+1>failure.timeoutOver ? {...response,data:null,error:{message:failure.message,code:'57014'}} : {...response,data:(rows[name] ?? []).slice(start,end+1),error:null} : response)).then(resolve, reject); },
+      then(resolve: (value: typeof response) => unknown, reject?: (reason: unknown) => unknown) { return (failure?.table === name && failure.thrown ? Promise.reject(new Error(failure.message)) : Promise.resolve(failure?.timeoutOver && failure.table===name ? end-start+1>failure.timeoutOver ? {...response,data:null,error:{message:failure.message,code:'57014'}} : {...response,data:(rows[name] ?? []).slice(start,end+1),error:null} : {...response,data:Array.isArray(response.data) ? response.data.slice(start,end+1) : response.data})).then(resolve, reject); },
     };
     return builder;
   }

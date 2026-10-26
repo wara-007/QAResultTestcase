@@ -3,13 +3,14 @@ import { collectProjectDefects, summarizeProjectDefects, isProjectDefectSheet } 
 import "server-only";
 import { loadSprintParticipationHeaders, loadSprintSnapshotPerformance } from "./project-sprint-history-server";
 import { mergeSprintPersonalCases } from './sprint-result-scope';
-import { readAllRows as allRows } from './paged-rows';
+import { readAllRows as allRows, readAllRowsConcurrent } from './paged-rows';
 import { createClient } from "@/lib/supabase/server";
 import type { PlanningTeamMember, Project, Sprint, WorkspaceYear, WorkbookSheet } from "@/lib/types";
 import { summarizeSprint, type SprintProjectStatsInput } from "./sprint-summary";
 import { buildSprintDashboard, type MoveHistory, type ResultOriginRow } from './sprint-dashboard';
-import { personalCasesFromMetadata, type PersonalMetadataRow } from './personal-performance-metadata';
-import { personalRegisterCases } from './personal-register-cases';
+import { personalCasesFromMetadata } from './personal-performance-metadata';
+import { personalRegisterCases, type RegisterPerformanceRow } from './personal-register-cases';
+import { sprintPersonalMetadata } from './sprint-personal-metadata';
 
 export async function loadWorkspaceYears() {
   const db=await createClient();
@@ -52,24 +53,35 @@ export async function loadPlanningTeam(groupId: string): Promise<PlanningTeamMem
 export async function loadSprintDashboard(groupId: string,sprintId: string,projects: Project[]) {
   const db=await createClient();
   try {
-    const [approvals,team,assignments,origins,history,canManage,sprintHistory,personalMetadata,caseRows,defectSources]=await Promise.all([
+    const [approvals,team,assignments,origins,history,canManage,sprintHistory,caseRows,defectSources,caseAssignments]=await Promise.all([
       allRows<{project_id:string;total:number;approved:number;pending:number;changes_requested:number}>((a,b)=>db.rpc('sprint_approval_totals',{requested_sprint_id:sprintId}).order('project_id').range(a,b)).then(data=>({data})).catch(reason => { throw new Error("สถานะ Approval: " + (reason instanceof Error ? reason.message : String(reason))); }),
       loadPlanningTeam(groupId).catch(reason => { throw new Error("ทีม QA: " + (reason instanceof Error ? reason.message : String(reason))); }),
       allRows((a,b)=>db.from('project_qa_assignments').select('project_id,user_id,projects!inner(group_id)').eq('projects.group_id',groupId).order('project_id').order('user_id').range(a,b)).catch(reason => { throw new Error("ผู้รับผิดชอบ: " + (reason instanceof Error ? reason.message : String(reason))); }),
-      allRows((a,b)=>db.from('result_origins').select('project_id,test_case_id,result_id,source_sheet,sprint_id,author_id,author_name,inferred,recorded_at,active,status').eq('sprint_id',sprintId).eq('active',true).order('project_id').order('test_case_id').order('result_id').order('source_sheet').range(a,b)).catch(reason => { throw new Error("ที่มาผลทดสอบ: " + (reason instanceof Error ? reason.message : String(reason))); }),
+      allRows((a,b)=>db.from('result_origins').select('project_id,test_case_id,result_id,source_sheet,sprint_id,author_id,author_name,inferred,recorded_at,active,status').in('project_id',projects.map(project=>project.id)).eq('active',true).order('project_id').order('test_case_id').order('result_id').order('source_sheet').range(a,b)).catch(reason => { throw new Error("ที่มาผลทดสอบ: " + (reason instanceof Error ? reason.message : String(reason))); }),
       allRows((a,b)=>db.from('project_history').select('id,project_id,actor_email,before_data,after_data,created_at,projects!inner(group_id)').eq('projects.group_id',groupId).or(`before_data->>sprintId.eq.${sprintId},after_data->>sprintId.eq.${sprintId}`).order('created_at',{ascending:false}).order('id').range(a,b)).catch(reason => { throw new Error("ประวัติย้าย Project: " + (reason instanceof Error ? reason.message : String(reason))); }),
       Promise.resolve(db.rpc('can_manage_sprint',{requested_sprint_id:sprintId})).catch(reason => { throw new Error("สิทธิ์จัดการ Sprint: " + (reason instanceof Error ? reason.message : String(reason))); }),
       allRows((a,b)=>db.from('sprint_history').select('id,actor_email,before_data,after_data,created_at').eq('sprint_id',sprintId).order('created_at',{ascending:false}).order('id').range(a,b)).catch(reason => { throw new Error("ประวัติ Sprint: " + (reason instanceof Error ? reason.message : String(reason))); }),
-      allRows<PersonalMetadataRow>((a,b)=>db.rpc('personal_sprint_cases',{requested_sprint_id:sprintId}).eq('group_id',groupId).order('record_id').range(a,b)).catch(reason => { throw new Error("ผลทดสอบรายบุคคล: " + (reason instanceof Error ? reason.message : String(reason))); }),
-      allRows((a,b)=>db.from('test_cases').select('id,project_id,testcase_key,case_name,source_row,steps,expected_result,test_executions!test_executions_test_case_id_fkey(attempt_no,status,executed_by_name,result_reference,executed_date,executed_time),projects!test_cases_project_id_fkey!inner(sprint_id)').eq('projects.sprint_id',sprintId).order('id').order('attempt_no',{referencedTable:'test_executions',ascending:false}).limit(1,{referencedTable:'test_executions'}).range(a,b),10,{shrinkOnTimeout:true}).catch(reason => { throw new Error("รายการ Testcase: " + (reason instanceof Error ? reason.message : String(reason))); }),
+      readAllRowsConcurrent((a,b)=>db.from('test_cases').select('id,project_id,testcase_key,case_name,source_row,steps,expected_result,test_executions!test_executions_test_case_id_fkey(attempt_no,status,executed_by_name,result_reference,executed_date,executed_time),projects!test_cases_project_id_fkey!inner(sprint_id)').eq('projects.sprint_id',sprintId).order('id').order('attempt_no',{referencedTable:'test_executions',ascending:false}).limit(1,{referencedTable:'test_executions'}).range(a,b),10,4).catch(reason => { throw new Error("รายการ Testcase: " + (reason instanceof Error ? reason.message : String(reason))); }),
       Promise.all(projects.filter(project => project.sprintId===sprintId).map(async project => {
         const source=await db.from('source_files').select('column_mapping').eq('project_id',project.id).order('version_no',{ascending:false}).order('id',{ascending:false}).limit(1);
         if(source.error) throw new Error(source.error.message);
         const mapping=source.data?.[0]?.column_mapping as {sheets?: WorkbookSheet[]}|undefined;
         return {projectId:project.id,defects:(mapping?.sheets ?? []).filter(sheet=>isProjectDefectSheet(sheet.name)).flatMap(sheet=>sheet.defects ?? [])};
       })).catch(reason=>{throw new Error('ทะเบียน Defect: '+(reason instanceof Error ? reason.message : String(reason)));}),
+      allRows((a,b)=>db.from('test_case_qa_assignments').select('test_case_id,source_sheet,user_id,test_cases!inner(project_id)').in('test_cases.project_id',projects.map(project=>project.id)).order('test_case_id').order('source_sheet').order('user_id').range(a,b)).catch(reason=>{throw new Error('ผู้รับผิดชอบ Testcase: '+(reason instanceof Error ? reason.message : String(reason)));}),
     ]);
     if(canManage.error) throw new Error(canManage.error.message);
+    // Keep live contributions in their origin Sprint after a project moves.
+    // Read only the additional case IDs that have active origins in this Sprint.
+    const loadedIds=new Set(caseRows.map(row=>row.id));
+    const externalIds=[...new Set(origins.filter(row=>row.sprint_id===sprintId && !loadedIds.has(row.test_case_id)).map(row=>row.test_case_id))];
+    const performanceRows:RegisterPerformanceRow[]=[...caseRows];
+    for(let offset=0;offset<externalIds.length;offset+=100) {
+      const extra=await readAllRowsConcurrent((a,b)=>db.from('test_cases').select('id,project_id,testcase_key,case_name,source_row,steps,expected_result,test_executions!test_executions_test_case_id_fkey(attempt_no,status,executed_by_name,result_reference,executed_date,executed_time)').in('id',externalIds.slice(offset,offset+100)).order('id').order('attempt_no',{referencedTable:'test_executions',ascending:false}).limit(1,{referencedTable:'test_executions'}).range(a,b),10,4);
+      performanceRows.push(...extra);
+    }
+    const personalMetadata=sprintPersonalMetadata(performanceRows,projects,groupId,origins,caseAssignments);
+
     const participation=await loadSprintParticipationHeaders(sprintId);
     const moves:MoveHistory[]=history.map(h=>({id:h.id,projectId:h.project_id,actorEmail:h.actor_email,createdAt:h.created_at,before:h.before_data,after:h.after_data}));
     const originRows:ResultOriginRow[]=origins.map(r=>({projectId:r.project_id,testCaseId:r.test_case_id,resultId:r.result_id,sourceSheet:r.source_sheet,sprintId:r.sprint_id,authorId:r.author_id,authorName:r.author_name,inferred:r.inferred,recordedAt:r.recorded_at,active:r.active,status:r.status}));

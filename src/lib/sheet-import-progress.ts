@@ -141,3 +141,9 @@ export async function runSheetEvidenceImports<T>(
     if (value === 'error') state(name, 'error');
   }, limit);
 }
+
+
+/** Saved import history alone is not an in-progress operation. */
+export function shouldShowProjectImportProgress({loading,hasSheet,active,saved,ready}:{loading:boolean;hasSheet:boolean;active:boolean;saved?:{complete:boolean;refreshRequired?:boolean};ready:boolean}):boolean {
+  return !loading && hasSheet && (active || !!saved && (!saved.complete || saved.refreshRequired===true || !ready));
+}

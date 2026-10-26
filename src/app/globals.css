@@ -1418,3 +1418,5 @@ a[href^="http"][target="_blank"]:not(:has(.lucide-external-link))::after { conte
 .sd-projects td>details summary { cursor:pointer; color:var(--muted); }
 .sd-projects td>details dt { font-weight:600; margin-top:8px; }
 .sd-projects td>details dd { margin:2px 0 8px; white-space:pre-wrap; }
+
+.sheet-revision-check { display:flex; align-items:center; gap:8px; margin:12px 0; color:var(--muted); font-size:13px; }

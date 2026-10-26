@@ -61,7 +61,7 @@ import { SheetResultSections } from "@/components/sheet-result-sections";
 import { isSheetPayloadLabel } from "@/lib/sheet-sections";
 import { ResultActualText } from "./result-actual-text";
 import { batchRowLoader, sheetRowState, caseDetailLoadKeys, canReuseSheetDetails, completeResultTabLoad, isImportedEvidenceDisplayed, unrepresentedResultSheets, type RowLoadState } from "@/lib/result-preview";
-import { runSheetEvidenceImports, runSheetTextImports, sheetImportProgressLabel, sheetImportAction, type SheetImportProgress } from "@/lib/sheet-import-progress";
+import { runSheetEvidenceImports, runSheetTextImports, sheetImportProgressLabel, sheetImportAction, shouldShowProjectImportProgress, type SheetImportProgress } from "@/lib/sheet-import-progress";
 import { withImportTimeout } from "@/lib/import-timeout";
 import { workspaceReadyFirst, shouldFetchGoogleWorkspace } from "@/lib/workspace-loading";
 import { selectDetailSheets } from "@/lib/sheet-detail";
@@ -1304,7 +1304,7 @@ export function QaWorkspace({
   const currentEnvironment = workspaceEnvironment(cases, selectedProject?.environment);
   const evidenceReadiness = approvalEvidenceReadiness(readSheetImportState(source?.sheetImport, selectedProject?.googleSheetId), workspaceCases, source?.sheets.map(sheet => sheet.name));
   const importAction = sheetImportAction(source?.sheetImport);
-  const showProjectImportProgress = !loadingWorkspace && !!selectedProject?.googleSheetId && (pullingGoogle || !!source?.sheetImport);
+  const showProjectImportProgress = shouldShowProjectImportProgress({ loading: loadingWorkspace, hasSheet: !!selectedProject?.googleSheetId, active: pullingGoogle, saved: source?.sheetImport, ready: evidenceReadiness.ready });
 
   useEffect(() => {
     if (!testCaseScrollKey || activePage !== "test-cases" || testCaseId || sheetName || loadingWorkspace) return;
@@ -2388,7 +2388,7 @@ export function QaWorkspace({
           {loadingWorkspace && (testCaseId || sheetName) && <CaseDrawerSkeleton />}
           {!canEditProject && <section className="read-only-notice"><ShieldCheck size={18} /><div><strong>โหมดดูอย่างเดียว</strong><span>คุณดู Test cases, Results, Defects, รูป และ Google Sheet details ได้ แต่ยังแก้ไขหรือซิงค์ข้อมูลไม่ได้</span></div></section>}
           {workspaceError && <section className="project-error"><CircleAlert size={20} /><div><strong>{sheetCheckFailed ? "ตรวจข้อมูลล่าสุดจาก Sheets ไม่สำเร็จ" : "โหลดข้อมูล Project ไม่สำเร็จ"}</strong><span>{workspaceError}</span>{/สิทธิ์ Google|googleAuth/i.test(workspaceError) && <button type="button" className="secondary-button" onClick={() => continueGoogleAuthorization("/api/google/auth/start", true)}>ขอสิทธิ์ Google ใหม่</button>}</div></section>}
-          {checkingSheets && <section className="project-evidence-progress" aria-label="ตรวจข้อมูลล่าสุดจาก Sheets"><div className="evidence-progress-body"><p role="status"><LoaderCircle className="spin" size={18} /> กำลังตรวจข้อมูลล่าสุดจาก Sheets…</p><div className="evidence-progress-track evidence-progress-indeterminate" role="progressbar" aria-label="กำลังตรวจข้อมูลล่าสุด"><div style={{ width: "0%" }} /></div></div></section>}
+          {checkingSheets && <p className="sheet-revision-check" role="status"><LoaderCircle className="spin" size={16} aria-hidden="true" /> กำลังตรวจข้อมูลล่าสุดจาก Sheets…</p>}
           {!checkingSheets && showProjectImportProgress && <ProjectEvidenceProgress
             key={`evidence-import:${selectedProject.id}`}
             projectName={selectedProject.name}

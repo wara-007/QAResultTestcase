@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runSheetEvidenceImports, runSheetTextImports, sheetImportSummary, sheetImportProgressLabel, showSheetImportNotice, projectImportProgress, sheetImportAction } from './sheet-import-progress';
+import { runSheetEvidenceImports, runSheetTextImports, sheetImportSummary, sheetImportProgressLabel, showSheetImportNotice, projectImportProgress, sheetImportAction, shouldShowProjectImportProgress } from './sheet-import-progress';
 
 test('only a resumable snapshot offers continuing the remaining import', () => {
   assert.equal(sheetImportAction({complete:false,evidenceManifest:[]}).resume,true);
@@ -203,4 +203,18 @@ test('summary advances saved text separately from fully loaded evidence', () => 
   assert.deepEqual(sheetImportSummary(['Testcase', 'TC01', 'TC02'], { Testcase: 'loaded', TC01: 'loading', TC02: 'loading' }, {
     TC01: { phase: 'workbook', detailsSaved: true }, TC02: { phase: 'details' },
   }), { total: 3, detailsSaved: 2, loaded: 1, failed: 0 });
+});
+
+
+test('reopening a completed project hides import progress without hiding incomplete evidence', () => {
+  const done={loading:false,hasSheet:true,active:false,saved:{complete:true},ready:true};
+  assert.equal(shouldShowProjectImportProgress(done),false);
+  assert.equal(shouldShowProjectImportProgress({...done,saved:{complete:false}}),true);
+  assert.equal(shouldShowProjectImportProgress({...done,ready:false}),true);
+  assert.equal(shouldShowProjectImportProgress({...done,saved:{complete:true,refreshRequired:true}}),true);
+  assert.equal(shouldShowProjectImportProgress({...done,active:true}),true);
+  assert.equal(shouldShowProjectImportProgress({...done,saved:undefined}),false);
+  assert.equal(shouldShowProjectImportProgress({...done,active:true,saved:undefined}),true);
+  assert.equal(shouldShowProjectImportProgress({...done,active:true,loading:true}),false);
+  assert.equal(shouldShowProjectImportProgress({...done,active:true,hasSheet:false}),false);
 });

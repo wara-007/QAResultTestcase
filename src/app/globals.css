@@ -1409,3 +1409,12 @@ a[href^="http"][target="_blank"]:not(:has(.lucide-external-link))::after { conte
 .sprint-snapshot-summary .testcase-preview-page { margin-top: 16px; }
 .sprint-episode-history { margin-top: 8px; font-size: .8rem; }
 .sprint-episode-history a { display: block; padding: 5px 0; }
+
+/* Compact saved data shown before opting into result detail reads. */
+.sprint-saved-summary { padding:18px 20px; }
+.sprint-saved-summary p { margin:0 0 12px; color:var(--muted); font-size:13px; }
+.sd-projects td>small { display:block; color:var(--muted); margin-top:4px; }
+.sd-projects td>details { margin-top:8px; max-width:300px; overflow-wrap:anywhere; }
+.sd-projects td>details summary { cursor:pointer; color:var(--muted); }
+.sd-projects td>details dt { font-weight:600; margin-top:8px; }
+.sd-projects td>details dd { margin:2px 0 8px; white-space:pre-wrap; }

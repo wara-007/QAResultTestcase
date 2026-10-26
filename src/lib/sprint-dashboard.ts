@@ -35,7 +35,7 @@ export function buildSprintDashboard(input: SprintDashboardInput) {
     return {...member,assignedProjects,results:results.length,cases,failedResults:results.filter(r=>r.status==='Failed').length,lastActivity};
   });
   const currentIds=new Set(current.map(p=>p.id));
-  const moves=input.moves.filter(m=>m.after.kind==='sprint_move').sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  const moves=input.moves.filter(m=>m.after?.kind==='sprint_move').sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
   const latestOut=new Map<string,MoveHistory>();
   for(const move of moves) if(move.before?.sprintId===input.sprintId && !currentIds.has(move.projectId) && !latestOut.has(move.projectId)) latestOut.set(move.projectId,move);
   const movedOut=[...latestOut.values()].map(m=>({...m,snapshot:(m.after.moveSnapshot ?? {}) as MoveSnapshot}));
@@ -73,7 +73,7 @@ export function buildSprintDashboard(input: SprintDashboardInput) {
   summary.progress=summary.totalCases ? Math.round((summary.pass+summary.failed+summary.skip)/summary.totalCases*100) : 0;
   return {summary,projects,entries,episodes:input.episodes ?? [],team,attention,movedOut,moves,inferredResults:activeOrigins.filter(r=>r.inferred || !r.authorId).length,personalPerformance:{sprintId:input.sprintId,members:input.team,cases:input.personalCases ?? []}};
 }
-export type SprintDashboardData = ReturnType<typeof buildSprintDashboard>;
+export type SprintDashboardData = ReturnType<typeof buildSprintDashboard> & {summaryPending?:string[];loadedDetails?:boolean};
 export function filterDashboardProjects(projects: SprintDashboardData['projects'], query: string, qaId: string) {
   const text=query.trim().toLocaleLowerCase();
   return projects.filter(p=>(!text || `${p.name} ${p.description}`.toLocaleLowerCase().includes(text)) && (!qaId || p.qa.some(qa=>qa.userId===qaId)));

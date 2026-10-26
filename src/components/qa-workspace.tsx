@@ -81,7 +81,7 @@ import { formatFlexibleDate } from "@/lib/date-format";
 import { compressEvidenceImage } from "@/lib/image-compression";
 import { compressEvidenceVideo } from "@/lib/video-compression";
 import { EVIDENCE_ACCEPT, validateEvidenceFile } from "@/lib/evidence-media";
-import { loadProjectWorkbook, loadProjectWorkspace, persistImportedWorkbook, persistTestCaseResult, persistSheetImportState } from "@/lib/project-data";
+import { loadProjectWorkbook, loadProjectWorkspace, persistImportedWorkbook, persistTestCaseResult, persistSheetImportState, refreshProjectDashboardSummary } from "@/lib/project-data";
 import { automaticSheetImportMode, withWorkbookDefinitions, withSavedCaseIdentity, sheetImportRevisionStatus, sheetRefreshRequired, registerBaseline, refreshRegisterCases } from "@/lib/sheet-refresh";
 import { checkpointSheetImport, readSheetImportState, pendingImportSheets, initialSheetImportStates } from "@/lib/sheet-import-state";
 import { filterProjects } from "@/lib/project-search";
@@ -1619,6 +1619,12 @@ export function QaWorkspace({
                   loadedSource = { ...loadedSource, sheetImport: await persistSheetImportState(selectedProject.id, loadedSource.id, selectedProject.googleSheetId, states, savedImport?.complete ?? false) };
                 }
               }
+              if (selectedProject.canEdit) {
+                try {
+                  const summarySource=await refreshProjectDashboardSummary(selectedProject.id);
+                  if(summarySource && summarySource.id===loadedSource.id)loadedSource={...loadedSource,dashboardSummary:summarySource.dashboardSummary};
+                } catch { /* Details are saved; retry the summary on the next editor visit. */ }
+              }
               if (active) {
                 setSource(loadedSource);
                 setHasGoogleWorkbook(true);
@@ -1646,6 +1652,30 @@ export function QaWorkspace({
   }, [selectedProjectId, workspaceCases, source, sheetMappings, hasLoadedSheetMappings, hasUnsyncedChanges, hasDetailedGoogleData, hasGoogleWorkbook, loadingWorkspace, sheetRowLoads, sheetLoadProgress, rowLoadProjectId]);
 
 
+  const seededSummary=useRef(new Set<string>());
+  useEffect(()=>{
+    if(!canEditProject || !selectedProjectId || !source?.id || loadingWorkspace || loadingSheetPreview || checkingSheets || pullingGoogle || activeProjectImports.has(selectedProjectId))return;
+    const key=`${selectedProjectId}:${source.id}`;
+    if(seededSummary.current.has(key))return;
+    seededSummary.current.add(key);
+    let active=true;
+    void refreshProjectDashboardSummary(selectedProjectId).then(saved=>{
+      if(active && saved)setSource(current=>current && current.id===saved.id?{...current,dashboardSummary:saved.dashboardSummary}:current);
+    }).catch(()=>{seededSummary.current.delete(key);});
+    return ()=>{active=false;};
+  },[canEditProject,selectedProjectId,source,loadingWorkspace,loadingSheetPreview,checkingSheets,pullingGoogle]);
+
+  async function updateSavedSummary() {
+    if(!selectedProject || !canEditProject)return;
+    try {
+      const saved=await refreshProjectDashboardSummary(selectedProject.id);
+      if(saved)setSource(current=>current && current.id===saved.id?{...current,dashboardSummary:saved.dashboardSummary}:current);
+    } catch {
+      if(source?.id)seededSummary.current.delete(`${selectedProject.id}:${source.id}`);
+      flash('บันทึกเคสแล้ว แต่ยอดสรุป Sprint ยังไม่อัปเดต · เปิด Project อีกครั้งเพื่อลองใหม่');
+    }
+  }
+
   async function saveCase(next: TestCase) {
     if (!selectedProject) throw new Error("กรุณาเลือก Project");
     if (!canEditProject) throw new Error("Project นี้เปิดให้คุณดูอย่างเดียว");
@@ -1663,6 +1693,7 @@ export function QaWorkspace({
     } else {
       flash(`บันทึกผล ${saved.id} ลง Supabase แล้ว`);
     }
+    await updateSavedSummary();
     if (testCaseId) returnToTestCases();
   }
 
@@ -1681,6 +1712,7 @@ export function QaWorkspace({
     } else {
       flash(`เพิ่ม ${saved.id} ลง Supabase แล้ว`);
     }
+    await updateSavedSummary();
   }
 
   async function saveResult(next: TestCase) {
@@ -1693,6 +1725,7 @@ export function QaWorkspace({
     setSelectedCase(saved);
     if (selectedProject.googleSheetId) setHasUnsyncedChanges(true);
     flash(`บันทึก Result ของ ${saved.id} ลง Supabase แล้ว`);
+    await updateSavedSummary();
     return saved;
   }
 
@@ -2048,6 +2081,10 @@ export function QaWorkspace({
         && approvalEvidenceReadiness({ ...importSource.sheetImport!, complete: true, refreshRequired: false, states: importStates, evidenceManifest }, nextCases, detailSheets.map(sheet => sheet.name)).ready;
       const revisionStatus = sheetImportRevisionStatus(sourceRevision, latestRevision, dataComplete);
       importSource.sheetImport = await persistSheetImportState(selectedProject.id, importSource.id!, selectedProject.googleSheetId, importStates, revisionStatus.complete, revisionStatus.refreshRequired, evidenceManifest, sourceRevision, registerBaseline(googleCases));
+      try {
+        const summarySource=await refreshProjectDashboardSummary(selectedProject.id);
+        if(summarySource && summarySource.id===importSource.id)importSource.dashboardSummary=summarySource.dashboardSummary;
+      } catch { /* Evidence/case import remains successful; summary retries on next visit. */ }
       setSource({ ...importSource });
       setSheetRowLoads(importSource.sheetImport.states);
       workspaceNavigationCache.set(selectedProject.id, { cases: nextCases, source: { ...importSource }, sheetMappings, hasLoadedSheetMappings: true, hasUnsyncedChanges: false, hasDetailedGoogleData: true, hasGoogleWorkbook: true, sheetRowLoads: importSource.sheetImport.states });
@@ -2186,6 +2223,7 @@ export function QaWorkspace({
         setSource(loadedSource);
         setHasGoogleWorkbook(true);
       }
+      await updateSavedSummary();
       setSheetRowLoads(current => ({ ...current, [name]: "loaded" }));
     } catch (reason) {
       setSheetRowLoads(current => ({ ...current, [name]: "error" }));
@@ -2198,6 +2236,7 @@ export function QaWorkspace({
     const timestampedCases = inputCases.map(withPassedTimestamp);
     const syncCases = await Promise.all(timestampedCases.map((testCase) => persistTestCaseResult(selectedProject.id, testCase)));
     setCases(current => current.map(item => syncCases.find(saved => saved.id === item.id) ?? item));
+    await updateSavedSummary();
     try {
       const response = await fetch(`/api/projects/${selectedProject.id}/google-sheet`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cases: syncCases }) });
       const data = await response.json();

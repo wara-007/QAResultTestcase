@@ -1,3 +1,4 @@
+import {buildProjectDashboardCounts,readProjectDashboardSummary,type ProjectDashboardSummary} from "./project-dashboard-summary";
 import { writeProjectRowBatches } from "./project-row-batches";
 import { storeSourceWorkbook, loadSourceWorkbookBytes } from "./source-workbook-storage";
 import { uploadSourceChunks } from "./source-chunk-upload";
@@ -116,24 +117,29 @@ export async function loadProjectWorkbook(projectId: string, sourceId?: string) 
   return downloadSourceWorkbook(projectId, result.data as SourceRow, true);
 }
 
-export async function loadProjectWorkspace(projectId: string, options: { includeWorkbook?: boolean } = {}): Promise<ProjectWorkspace> {
+export async function loadProjectWorkspace(projectId: string, options: { includeWorkbook?: boolean; summaryConsistent?: boolean } = {}): Promise<ProjectWorkspace> {
   const supabase = createClient();
-  const [sourceResult, casesResult] = await Promise.all([
-    supabase
+  const sourceRequest=Promise.resolve(supabase
       .from("source_files")
       .select("id, original_name, storage_key, sheet_name, column_mapping")
       .eq("project_id", projectId)
       .order("version_no", { ascending: false })
+      .order("id", { ascending: false })
       .limit(1)
-      .maybeSingle(),
-    readAllRows<CaseRow>((start, end) => supabase
+      .maybeSingle());
+  const readCases=()=>readAllRows<CaseRow>((start, end) => supabase
       .from("test_cases")
       .select("id, testcase_key, source_row, sort_order, platform, condition_text, scenario, case_name, steps, expected_result, test_data, test_executions(id, status, device, app_version, environment, remark, result_reference, executed_by_name, executed_date, executed_time, attempt_no)")
       .eq("project_id", projectId)
       .order("sort_order", { ascending: true })
       .order("source_row", { ascending: true })
       .order("id", { ascending: true })
-      .range(start, end), 10, { shrinkOnTimeout: true }),
+      .range(start, end), 10, { shrinkOnTimeout: true });
+  // Snapshot token must precede case reads. A competing writer then causes a
+  // CAS conflict instead of accepting stale rows with its newer token.
+  const [sourceResult,casesResult]=await Promise.all([
+    sourceRequest,
+    options.summaryConsistent ? sourceRequest.then(result=>{if(result.error)throw new Error(result.error.message);return readCases();}) : readCases(),
   ]);
 
   if (sourceResult.error) throw new Error(sourceResult.error.message);
@@ -147,13 +153,14 @@ export async function loadProjectWorkspace(projectId: string, options: { include
     const sheetPath = typeof mapping.sheetPath === "string" ? mapping.sheetPath : "";
     const sheets = Array.isArray(mapping.sheets) ? mapping.sheets as WorkbookSheet[] : [];
     const columns = Object.fromEntries(Object.entries(mapping).filter(([key, value]) =>
-      key !== "sourceOrigin" && key !== "workbookStorage" && key !== "sheetPath" && key !== "chunkCount" && key !== "sheets" && key !== "documentType" && typeof value === "string",
+      key !== "dashboardSummary" && key !== "sourceOrigin" && key !== "workbookStorage" && key !== "sheetPath" && key !== "chunkCount" && key !== "sheets" && key !== "documentType" && typeof value === "string",
     )) as Record<string, string>;
     source = {
       sourceOrigin: mapping.sourceOrigin === "upload" || mapping.sourceOrigin === "google-sheets" ? mapping.sourceOrigin : undefined,
       workbookStorage: mapping.workbookStorage === "google-sheets" ? "google-sheets" : "supabase",
       documentType: mapping.documentType === "xlsx" ? "xlsx" : mapping.documentType === "google-sheets" ? "google-sheets" : undefined,
       coverSnapshot: mapping.coverSnapshot as WorkbookSource["coverSnapshot"],
+      dashboardSummary: readProjectDashboardSummary(mapping.dashboardSummary,sourceRow.id),
       sheetImport: readSheetImportState(mapping.sheetImport),
       id: sourceRow.id,
       fileName: sourceRow.original_name,
@@ -294,12 +301,15 @@ export async function persistImportedWorkbook(projectId: string, cases: TestCase
     if (result.error) throw new Error(`บันทึกผลทดสอบไม่สำเร็จ: ${result.error.message}`);
     return [];
   });
-  const workspace = await loadProjectWorkspace(projectId, { includeWorkbook: false });
+  const workspace = await loadProjectWorkspace(projectId, { includeWorkbook: false, summaryConsistent: true });
   // The caller already holds the uploaded workbook. Reuse those bytes instead
   // of downloading every part again while the import is still in memory.
   if (workspace.source?.id === sourceId) {
     workspace.source = { ...workspace.source, buffer: source.buffer, bufferLoaded: true };
   }
+  try {
+    if(workspace.source)workspace.source=(await persistProjectDashboardSummary(projectId,workspace.cases,workspace.source)).source;
+  } catch { /* Import succeeded; the next editor visit retries the derived summary. */ }
   return workspace;
 }
 
@@ -397,4 +407,35 @@ async function persistTestCaseResultLegacy(projectId: string, testCase: TestCase
     .single();
   if (result.error) throw new Error(result.error.message);
   return { ...testCase, results:parseStoredResults(result.data.result_reference).results, recordId, executionId: result.data.id, persistedLocally: true };
+}
+
+
+/** Persist a compact snapshot; a CAS conflict re-reads canonical stored cases. */
+export async function persistProjectDashboardSummary(projectId:string,cases:TestCase[],source:WorkbookSource,retry=true):Promise<{cases:TestCase[];source:WorkbookSource;summary:ProjectDashboardSummary}> {
+  if(!source.id)throw new Error('ยังไม่มีไฟล์นำเข้าที่บันทึกไว้');
+  const response=await fetch(`/api/projects/${projectId}/dashboard-summary`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sourceId:source.id,expectedToken:source.dashboardSummary?.token ?? null,counts:buildProjectDashboardCounts(cases,source.sheets)})});
+  const data=await response.json();
+  if(response.status===409 && retry) {
+    const current=await loadProjectWorkspace(projectId,{includeWorkbook:false,summaryConsistent:true});
+    if(!current.source)throw new Error('ไม่พบข้อมูลนำเข้าล่าสุด');
+    return persistProjectDashboardSummary(projectId,current.cases,current.source,false);
+  }
+  if(!response.ok)throw new Error(data.error ?? 'บันทึกยอดสรุปไม่สำเร็จ');
+  const summary=readProjectDashboardSummary(data.summary,source.id);
+  if(!summary)throw new Error('ยอดสรุปที่บันทึกไม่ถูกต้อง');
+  return {cases,source:{...source,dashboardSummary:summary},summary};
+}
+
+/** Read canonical persisted rows; never derive Sprint totals from a filtered UI list. */
+const summaryWrites=new Map<string,Promise<WorkbookSource|null>>();
+export function refreshProjectDashboardSummary(projectId:string):Promise<WorkbookSource|null> {
+  const previous=summaryWrites.get(projectId) ?? Promise.resolve(null);
+  const pending=previous.catch(()=>null).then(async()=>{
+    const workspace=await loadProjectWorkspace(projectId,{includeWorkbook:false,summaryConsistent:true});
+    if(!workspace.source)return null;
+    return (await persistProjectDashboardSummary(projectId,workspace.cases,workspace.source)).source;
+  });
+  summaryWrites.set(projectId,pending);
+  void pending.finally(()=>{if(summaryWrites.get(projectId)===pending)summaryWrites.delete(projectId);}).catch(()=>{});
+  return pending;
 }

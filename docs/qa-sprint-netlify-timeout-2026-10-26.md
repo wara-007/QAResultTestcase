@@ -1,5 +1,7 @@
 # Sprint 68 — เปิดหน้า Dashboard บน Netlify ไม่สำเร็จ
 
+**Follow-up:** การลดเวลารอบนี้ยังไม่พอใน production ดูการแก้โดยแยกงานออกจาก SSR ใน [React #412 follow-up](qa-react-412-sprint-2026-10-26.md)
+
 Route: /groups/b5451207-986a-4ca6-88c0-8eda1e8d3972/years/2026/sprints/12fd29e3-6aed-40e4-97e4-c0a5b7a56820
 Base commit: 45f6226
 

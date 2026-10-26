@@ -139,6 +139,7 @@ export type WorkbookSource = {
   workbookStorage?: "google-sheets" | "supabase";
   documentType?: "google-sheets" | "xlsx";
   coverSnapshot?: import("./workbook-validation").CoverSnapshot;
+  dashboardSummary?: import("./project-dashboard-summary").ProjectDashboardSummary;
   sheetImport?: import("./sheet-import-state").SheetImportState;
   id?: string;
   fileName: string;
@@ -202,6 +203,8 @@ export type WorkbookFreeformResult = {
 };
 
 export type Project = {
+  dashboardSummary?: import("./project-dashboard-summary").ProjectDashboardSummary;
+  coverSummary?: {sheetName:string;fields:{label:string;value:string}[]};
   id: string;
   name: string;
   description: string;

@@ -203,6 +203,7 @@ export async function loadProjectWorkspace(projectId: string, options: { include
       environment: execution?.environment ?? "",
       resultReference: stored.resultReference,
       resultReferenceTargets: stored.resultReferenceTargets,
+      resultReferenceLinks: stored.resultReferenceLinks,
       registerIdentity: stored.registerIdentity,
       executedBy: execution?.executed_by_name ?? "",
       executedDate: execution?.executed_date ?? "",

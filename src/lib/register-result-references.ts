@@ -1,3 +1,4 @@
+import {safeReferenceUrl,isExternalReferenceText,isIssueReference,readResultReferenceLinks,type ResultReferenceLink} from "./result-reference-links";
 import { assignRegisterCaseIdentities } from "./register-case-identity";
 import { stepColumnName, stepHeaderKey } from "./step-testcases";
 import type { TestCase } from "./types";
@@ -50,11 +51,21 @@ export function resolveRegisterReferenceTargets(cases: readonly TestCase[], shee
       ...(testCase.sourceFields ?? []).filter(field => field.field === 'resultReference' || ['refresulttesting', 'resultreference'].includes(stepHeaderKey(field.label))).map(field => ({ ref: `${stepColumnName(field.column)}${testCase.sourceRow}`, value: field.value })),
       ...(testCase.stepDefinitions ?? []).flatMap(step => (step.sourceFields ?? []).filter(field => ['refresulttesting','resultreference'].includes(stepHeaderKey(field.label))).map(field => ({ ref: field.ref, value: field.value }))),
     ];
-    const targets = references.length ? references.map(field => {
-      const link = links.get(field.ref);
-      return (link ? targetName(link) : undefined) ?? field.value.trim();
-    }).filter(Boolean) : caseResultReferences(testCase);
-    return { ...testCase, resultReferenceTargets: [...new Set(targets.map(target => matchingResultSheetName(target, sheets.map(sheet => sheet.name)) ?? target))] };
+    const resolvedLinks:ResultReferenceLink[]=[];
+    const inputs=references.length?references:[{ref:'',value:testCase.resultReference}];
+    const targets=inputs.flatMap(field=>{
+      const rawLink=links.get(field.ref);
+      const link=safeReferenceUrl(rawLink) ?? safeReferenceUrl(field.value);
+      const localTarget=rawLink?targetName(rawLink):targetName(field.value);
+      if(localTarget)return [localTarget];
+      if(link)resolvedLinks.push({label:field.value.trim()||link,url:link});
+      // A Jira ticket can accompany a local result tab with the same label.
+      const named=(!link||isIssueReference(link))?matchingResultSheetName(field.value.trim(),sheets.map(sheet=>sheet.name)):undefined;
+      if(named)return [named];
+      if(link || isExternalReferenceText(field.value))return [];
+      return field.value.trim()?[field.value.trim()]:[];
+    });
+    return { ...testCase, resultReferenceTargets: [...new Set(targets)], resultReferenceLinks:readResultReferenceLinks(resolvedLinks) };
   });
 }
 

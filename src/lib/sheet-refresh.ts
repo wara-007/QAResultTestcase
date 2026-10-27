@@ -32,7 +32,7 @@ export function refreshRegisterCases(local: TestCase[], remote: TestCase[], opti
     if (!incoming) return merged;
     const knownFields = options.definitionsReady === false ? fields.filter(field => field !== 'steps' && field !== 'expected') : fields;
     const updates = Object.fromEntries(knownFields.map(field => [field, incoming[field] ?? '']));
-    return { ...merged, ...updates, resultReferenceTargets: incoming.resultReferenceTargets, registerIdentity: incoming.registerIdentity, sourceRow: incoming.sourceRow,
+    return { ...merged, ...updates, resultReferenceTargets: incoming.resultReferenceTargets, resultReferenceLinks: incoming.resultReferenceLinks, registerIdentity: incoming.registerIdentity, sourceRow: incoming.sourceRow,
       ...(options.definitionsReady === false ? {} : { stepDefinitions: incoming.stepDefinitions, importIssues: incoming.importIssues ?? [] }),
     } as TestCase;
   });

@@ -1,3 +1,4 @@
+import {readResultReferenceLinks} from "./result-reference-links";
 import "server-only";
 
 import { createHash } from "node:crypto";
@@ -32,7 +33,7 @@ export type ProjectReview = {
   cases: TestCase[];
 };
 
-type StoredPayload = { stepDefinitions?: TestCase["stepDefinitions"]; importIssues?: string[]; resultReference?: string; results?: TestResult[]; defects?: TestDefect[]; customFields?: TestCaseCustomField[]; resultFieldDefinitions?: TestCase["resultFieldDefinitions"] };
+type StoredPayload = { resultReferenceLinks?: TestCase["resultReferenceLinks"]; resultReferenceTargets?: string[]; stepDefinitions?: TestCase["stepDefinitions"]; importIssues?: string[]; resultReference?: string; results?: TestResult[]; defects?: TestDefect[]; customFields?: TestCaseCustomField[]; resultFieldDefinitions?: TestCase["resultFieldDefinitions"] };
 type ReviewCaseRow = { id: string; testcase_key: string; source_row: number | null; sort_order: number; platform: string; condition_text: string; scenario: string; case_name: string; steps: string; expected_result: string; test_data: string };
 type ReviewExecutionRow = { id: string; test_case_id: string; status: string; device: string; app_version: string; environment: string; remark: string; result_reference: string; executed_by_name: string; executed_date: string; executed_time: string; attempt_no: number };
 type ApprovalRow = { id: string; project_id: string; recipient_email: string; status: string; requested_by_name: string; requested_at: string; expires_at: string; reviewed_at: string | null; reviewer_name: string; reviewer_comment: string };
@@ -58,6 +59,8 @@ function parseStoredResults(value: string | null) {
     const oldDefects = Array.isArray(payload.results) ? payload.results.flatMap((result) => result.defects ?? []) : [];
     return {
       resultReference: typeof payload.resultReference === "string" ? payload.resultReference : "",
+      resultReferenceLinks: payload.resultReferenceLinks===undefined?undefined:readResultReferenceLinks(payload.resultReferenceLinks),
+      resultReferenceTargets: payload.resultReferenceTargets,
       stepDefinitions: Array.isArray(payload.stepDefinitions) ? payload.stepDefinitions : undefined,
       importIssues: Array.isArray(payload.importIssues) ? payload.importIssues : [],
       results,
@@ -156,6 +159,8 @@ async function buildProjectReview(approval: ApprovalRow): Promise<ProjectReview>
       appVersion: execution?.app_version ?? "",
       environment: execution?.environment ?? "",
       resultReference: stored.resultReference,
+      resultReferenceLinks: stored.resultReferenceLinks,
+      resultReferenceTargets: stored.resultReferenceTargets,
       stepDefinitions: stored.stepDefinitions,
       importIssues: stored.importIssues,
       executedBy: execution?.executed_by_name ?? "",
@@ -245,6 +250,7 @@ async function buildProjectReview(approval: ApprovalRow): Promise<ProjectReview>
         executedTime: hasStoredExecution ? stored.executedTime : testCase.executedTime,
         testData: hasStoredExecution ? stored.testData : testCase.testData,
         resultReference: hasStoredExecution ? stored.resultReference : testCase.resultReference,
+        resultReferenceLinks: testCase.resultReferenceLinks ?? stored.resultReferenceLinks,
       };
     });
     const googleIds = new Set(googleCases.map((testCase) => testCase.id.trim().toUpperCase()));

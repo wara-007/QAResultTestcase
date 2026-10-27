@@ -31,3 +31,34 @@ test('an empty project is only shown after the register finishes loading', () =>
   assert.match(html, /ยังไม่มี Testcase/);
   assert.doesNotMatch(html, /case-register-skeleton/);
 });
+
+function renderedRows(rows: React.ComponentProps<typeof CaseRegisterTable>['rows']) {
+  const table = CaseRegisterTable({ ...props, rows }).props.children[0];
+  return table.props.children[2].props.children as React.ReactElement<{ children: React.ReactElement[] }>[];
+}
+
+test('duplicate case IDs keep distinct row keys and their detail targets when reordered', () => {
+  const item = casesFromRows([['Test Case ID', 'Test Case Name'], ['TC_06', 'First']])[0];
+  const rows = [
+    { item, sheetAlias: '' },
+    { item: { ...item, sourceRow: item.sourceRow + 1, name: 'Second' }, sheetAlias: '' },
+    { item, sheetAlias: 'testcase' },
+    { item: { ...item, recordId: 'saved-row' }, sheetAlias: '' },
+    { item: { ...item, sourceSheetName: 'Other' }, sheetAlias: '' },
+  ];
+  const before = renderedRows(rows);
+  assert.equal(new Set(before.map(row => row.key)).size, rows.length);
+  const after = renderedRows([...rows].reverse());
+  assert.deepEqual(after.map(row => row.key), before.map(row => row.key).reverse());
+  const opened: unknown[] = [];
+  const tree = CaseRegisterTable({ ...props, rows, onOpen: row => opened.push(row) });
+  const fragments = tree.props.children[0].props.children[2].props.children;
+  for (const fragment of fragments) fragment.props.children[1].props.onClick();
+  assert.deepEqual(opened, rows);
+});
+
+test('repeated source entries still render with unique keys', () => {
+  const item = casesFromRows([['Test Case ID', 'Test Case Name'], ['TC_06', 'First']])[0];
+  const rows = renderedRows([{ item, sheetAlias: '' }, { item, sheetAlias: '' }]);
+  assert.notEqual(rows[0].key, rows[1].key);
+});

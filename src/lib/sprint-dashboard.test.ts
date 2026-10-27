@@ -45,3 +45,17 @@ test('pending approval project count includes projects that also have a change r
   assert.equal(data.projects[0].approval.state, 'changes_requested');
   assert.equal(data.summary.pendingApprovalProjects, 1);
 });
+
+test('unassigned projects default to their creator in QA labels, filters and team totals',()=>{
+ const data=buildSprintDashboard({sprintId:'s1',projects:[{...project('p1','s1'),ownerId:'qa1',ownerName:'QA One'},{...project('p2','s1'),ownerId:'creator',ownerName:'Project Creator'}],team,assignments:[],stats:[],approvals:[],origins:[],moves:[]});
+ assert.deepEqual(data.projects.map(p=>p.qa.map(q=>q.name)),[['QA One'],['Project Creator']]);
+ assert.deepEqual(data.entries.map(e=>e.qaIds),[['qa1'],['creator']]);
+ assert.equal(data.team.find(member=>member.userId==='qa1')?.assignedProjects,1);
+ assert.equal(data.team.find(member=>member.userId==='creator')?.assignedProjects,1);
+ assert.ok(!data.attention.some(item=>item.kind==='unassigned'));
+});
+test('explicit QA assignments override the creator default',()=>{
+ const data=buildSprintDashboard({sprintId:'s1',projects:[{...project('p1','s1'),ownerId:'qa1',ownerName:'QA One'}],team,assignments:[{projectId:'p1',userId:'qa2'}],stats:[],approvals:[],origins:[],moves:[]});
+ assert.deepEqual(data.projects[0].qa.map(q=>q.userId),['qa2']);
+ assert.equal(data.team.find(member=>member.userId==='qa1')?.assignedProjects,0);
+});

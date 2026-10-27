@@ -1,5 +1,5 @@
 import { stepColumnName } from "./step-testcases";
-import { caseResultReferences, matchingResultSheetName } from './sheet-mapping-model';
+import { caseResultReferences, matchingResultSheetName, hasExplicitResultReference } from './sheet-mapping-model';
 import { displayTestCaseId } from './register-case-identity';
 import { stepResultSnapshotRows } from './step-sheet-sync';
 import type { TestCase } from './types';
@@ -10,7 +10,7 @@ export const hasRegisterSnapshotData = (testCase: TestCase) => Boolean(testCase.
 export function registerResultSnapshotTargets(cases: TestCase[], sheets: { name: string; rowCount: number }[]) {
   const ends = new Map(sheets.map(sheet => [sheet.name, sheet.rowCount]));
   return cases.flatMap(testCase => {
-    if (!caseResultReferences(testCase).length && !hasRegisterSnapshotData(testCase)) return [];
+    if (!caseResultReferences(testCase).length && (hasExplicitResultReference(testCase) || !hasRegisterSnapshotData(testCase))) return [];
     const names = [...new Set(testCase.sourceSheetName ? [testCase.sourceSheetName] : caseResultReferences(testCase).length ? caseResultReferences(testCase) : [displayTestCaseId(testCase)])];
     return names.map(name => {
       const sheet = sheets.find(candidate => candidate.name === matchingResultSheetName(name, sheets.map(item => item.name)));

@@ -30,7 +30,9 @@ export function mergeWorkspaceAndGoogleCases(localCases: TestCase[], googleCases
     const hasLocalExecution = Boolean(local.persistedLocally || local.results?.length || local.defects?.length);
     const shared = {
       sourceSheetName: google.sourceSheetName,
+      resultReference: google.resultReference,
       resultReferenceTargets: google.resultReferenceTargets,
+      resultReferenceLinks: google.resultReferenceLinks ?? local.resultReferenceLinks,
       registerIdentity: google.registerIdentity ?? local.registerIdentity,
       importIssues: [...new Set([...(local.importIssues ?? []).filter(issue => !isMissingResultReferenceIssue(issue)), ...(google.importIssues ?? [])])],
       sourceFields: google.sourceFields ?? local.sourceFields,

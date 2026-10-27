@@ -1,3 +1,4 @@
+import {hasExplicitResultReference} from "./sheet-mapping-model";
 import { displayTestCaseId } from "./register-case-identity";
 import { registerResultSnapshotTargets } from "./register-result-write-plan";
 import { canonicalCaseId } from "./sync/canonical";
@@ -6,7 +7,7 @@ import { strFromU8, strToU8, unzipSync, zipSync, type Unzipped } from "fflate";
 import type { TestCase, TestStatus, WorkbookFreeformResult, WorkbookResultImage, WorkbookSheet, WorkbookSheetContent, WorkbookSheetKind, WorkbookSource } from "./types";
 import { freeformTextFromCells } from "./sheet-detail";
 import { parseStepTestCases, stepColumnName } from "./step-testcases";
-import { isProjectSummarySheet, automaticSheetCaseIds, referencedSheetCaseIds, caseResultReferences, referenceKey, registeredTestCases } from "./sheet-mapping-model";
+import { isProjectSummarySheet, automaticSheetCaseIds, referencedSheetCaseIds, referenceKey, registeredTestCases } from "./sheet-mapping-model";
 import { parseStepSheetResults } from "./step-sheet-results";
 import { parseCoverSnapshot } from "./workbook-validation";
 import { buildStepSheetWritePlan, readStepResultSnapshots, readStepCaseSnapshot, snapshotOwnership, STEP_SNAPSHOT_START } from "./step-sheet-sync";
@@ -428,7 +429,7 @@ export function readWorkbookResultImages(source: WorkbookSource, cases: TestCase
   for (const sheet of source.sheets.filter((item) => item.kind !== "testcase" && item.kind !== "summary" && item.kind !== "defect")) {
     const referenced = referencedSheetCaseIds(sheet.name, cases);
     const ownerIds = referenced.length ? referenced : sheet.testCaseIds.length ? sheet.testCaseIds : automaticSheetCaseIds(sheet.name, cases);
-    const sheetOwners = cases.filter(item => ownerIds.includes(item.id) && (!caseResultReferences(item).length || referenced.includes(item.id)));
+    const sheetOwners = cases.filter(item => ownerIds.includes(item.id) && (!hasExplicitResultReference(item) || referenced.includes(item.id)));
     const ownerCase = sheetOwners[0];
     // Do not emit an unmapped tab name as a real case ID: the register Ref
     // explicitly owns another tab. Raw workbook preview still retains it.
@@ -507,7 +508,7 @@ export function readWorkbookFreeformResults(source: WorkbookSource, cases: TestC
   for (const sheet of source.sheets.filter((item) => item.kind !== "testcase" && item.kind !== "summary" && item.kind !== "defect")) {
     const referenced = referencedSheetCaseIds(sheet.name, cases);
     const ownerIds = referenced.length ? referenced : sheet.testCaseIds.length ? sheet.testCaseIds : automaticSheetCaseIds(sheet.name, cases);
-    const sheetOwners = cases.filter(item => ownerIds.includes(item.id) && (!caseResultReferences(item).length || referenced.includes(item.id)));
+    const sheetOwners = cases.filter(item => ownerIds.includes(item.id) && (!hasExplicitResultReference(item) || referenced.includes(item.id)));
     const ownerCase = sheetOwners[0];
     // Do not emit an unmapped tab name as a real case ID: the register Ref
     // explicitly owns another tab. Raw workbook preview still retains it.

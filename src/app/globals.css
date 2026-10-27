@@ -1420,3 +1420,10 @@ a[href^="http"][target="_blank"]:not(:has(.lucide-external-link))::after { conte
 .sd-projects td>details dd { margin:2px 0 8px; white-space:pre-wrap; }
 
 .sheet-revision-check { display:flex; align-items:center; gap:8px; margin:12px 0; color:var(--muted); font-size:13px; }
+
+.result-reference-links { margin:16px 0; padding:16px; border:1px solid var(--line); border-radius:10px; background:#f7f9fc; }
+.result-reference-links h3 { margin:0 0 10px; }
+.result-reference-links ul { list-style:none; padding:0; margin:0; display:grid; gap:10px; }
+.result-reference-links li { display:flex; align-items:center; gap:12px; flex-wrap:wrap; overflow-wrap:anywhere; }
+.result-reference-links li>span { flex:1; min-width:0; }
+.result-reference-links p,.result-reference-links small { color:var(--muted); font-size:13px; }

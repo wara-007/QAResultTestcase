@@ -1,3 +1,4 @@
+import {hasExplicitResultReference} from "./sheet-mapping-model";
 import { buildRegisterExecutionWritePlan, registerResultSnapshotTargets, hasRegisterSnapshotData } from "./register-result-write-plan";
 import { caseResultReferences, safeResultSheetName } from "./sheet-mapping-model";
 import { displayTestCaseId } from "./register-case-identity";
@@ -274,7 +275,7 @@ function appendSheetResults(cases: TestCase[], workbookSheets: WorkbookSheet[], 
   // Register Ref is authoritative. Incidental IDs in result cells must not
   // make unrelated cases aliases of the same tab.
   const definitionIds = compactResultCaseIds(rows, cases);
-  const snapshotOwners = registeredTestCases(cases).filter(item => !caseResultReferences(item).length || caseResultReferences(item).includes(name)).filter(item => {
+  const snapshotOwners = registeredTestCases(cases).filter(item => !hasExplicitResultReference(item) || caseResultReferences(item).includes(name)).filter(item => {
     const owned = readStepCaseSnapshot(rows, item.id, item.registerIdentity, !cases.some(other => other.id !== item.id && displayTestCaseId(other) === displayTestCaseId(item)), false, snapshotOwnership(item, cases, name));
     return owned.results.length || owned.defects?.length || owned.customFields?.length;
   }).map(item => item.id);
@@ -544,7 +545,7 @@ export async function writeGoogleSheetResults(spreadsheetId: string, cases: Test
   const registerRows = (await sheets.spreadsheets.values.get({ spreadsheetId, range: "'Testcase'", valueRenderOption: "FORMULA" })).data.values ?? [];
   const duplicateRows = cases.some(item => item.registerIdentity && item.id !== displayTestCaseId(item));
   const stepRegister = registerRows.some(row => stepHeaderColumns(row));
-  const safeRegister = duplicateRows || cases.some(item => caseResultReferences(item).length);
+  const safeRegister = duplicateRows || cases.some(hasExplicitResultReference);
   if (stepRegister || safeRegister) {
     if (stepRegister && cases.some(testCase => testCase.sourceRow > 0 && (!testCase.sourceSheetName || testCase.sourceSheetName === "Testcase") && !testCase.stepDefinitions?.length)) throw new Error("Project นี้ใช้ตารางแบบ Step กรุณาโหลดจาก Sheets ให้ครบก่อนซิงค์");
     const stepCases = stepRegister ? cases.filter(testCase => testCase.stepDefinitions?.length) : cases.filter(testCase => testCase.sourceRow > 0 && !testCase.sourceSheetName);
@@ -554,12 +555,12 @@ export async function writeGoogleSheetResults(spreadsheetId: string, cases: Test
     // drawings, formulas or formatting. Prior snapshots are retained as history;
     // the reader selects the last complete snapshot.
     const safeName = (item: TestCase) => safeResultSheetName(item.id);
-    const missingNames = [...new Set(stepCases.filter(item => !caseResultReferences(item).length && !item.sourceSheetName && hasRegisterSnapshotData(item)).map(safeName))].filter(name => !metadata.data.sheets?.some(sheet => sheet.properties?.title === name));
+    const missingNames = [...new Set(stepCases.filter(item => !hasExplicitResultReference(item) && !item.sourceSheetName && hasRegisterSnapshotData(item)).map(safeName))].filter(name => !metadata.data.sheets?.some(sheet => sheet.properties?.title === name));
     if (missingNames.length) {
       await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: missingNames.map(title => ({ addSheet: { properties: { title } } })) } });
       metadata.data.sheets = (await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets(properties(sheetId,title,gridProperties))" })).data.sheets;
     }
-    const snapshotCases = stepCases.map(item => !caseResultReferences(item).length && hasRegisterSnapshotData(item) ? { ...item, sourceSheetName: safeName(item) } : item);
+    const snapshotCases = stepCases.map(item => !hasExplicitResultReference(item) && hasRegisterSnapshotData(item) ? { ...item, sourceSheetName: safeName(item) } : item);
     const planned = registerResultSnapshotTargets(snapshotCases, (metadata.data.sheets ?? []).map(sheet => ({ name: sheet.properties!.title!, rowCount: sheet.properties?.gridProperties?.rowCount ?? 1000 })));
     const imageEnds = new Map<string, number>();
     const targets = planned.map(target => {

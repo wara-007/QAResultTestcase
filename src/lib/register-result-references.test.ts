@@ -45,7 +45,7 @@ test("Google gid links select the actual local tab and never match an external s
   const original = casesFromRows([["Test Case Id", "Ref (Result Testing)"], ["TC01", "Open results"]]);
   const sheets = [{ name: 'Real proof', sheetId: 42 }];
   assert.deepEqual(resolveRegisterReferenceTargets(original, sheets, new Map([['B2', '#gid=42']]))[0].resultReferenceTargets, ['Real proof']);
-  assert.deepEqual(resolveRegisterReferenceTargets(original, sheets, new Map([['B2', 'https://docs.google.com/spreadsheets/d/other/edit#gid=42']]), 'current')[0].resultReferenceTargets, ['Open results']);
+  assert.deepEqual(resolveRegisterReferenceTargets(original, sheets, new Map([['B2', 'https://docs.google.com/spreadsheets/d/other/edit#gid=42']]), 'current')[0].resultReferenceTargets, []);
 });
 test("repeated register IDs retain separate rows and their own referenced tabs", async () => {
   const { resolveRegisterReferenceTargets } = await import('./register-result-references');

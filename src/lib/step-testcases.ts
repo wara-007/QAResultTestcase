@@ -46,12 +46,13 @@ export function parseStepTestCases(rows: unknown[][], sheetName: string): TestCa
     const id = get("id");
     const conditionColumn = headers.findIndex(value => ["condition", "เงื่อนไข"].includes(stepHeaderKey(value)));
     if (id) {
-      current = { id, sourceRow: index + 1, platform: "", condition: "", scenario: [get("scenario"), get("scenarioDescription")].filter(Boolean).join("\n"), name: get("name"), steps: "", expected: "", status: "Not Start", device: get("device"), testData: "", appVersion: get("appVersion"), environment: get("environment"), resultReference: get("resultReference"), executedBy: get("executedBy"), executedDate: get("executedDate"), executedTime: "", remark: get("remark"), evidence: [], stepDefinitions: [], importIssues: [] };
+      const registerStatus = stepStatus(get("status"));
+      current = { id, sourceRow: index + 1, platform: "", condition: "", scenario: [get("scenario"), get("scenarioDescription")].filter(Boolean).join("\n"), name: get("name"), steps: "", expected: "", status: registerStatus === "Blocked" || registerStatus === "Unknown" ? "In Progress" : registerStatus, device: get("device"), testData: "", appVersion: get("appVersion"), environment: get("environment"), resultReference: get("resultReference"), executedBy: get("executedBy"), executedDate: get("executedDate"), executedTime: "", remark: get("remark"), evidence: [], stepDefinitions: [], importIssues: [] };
       if (conditionColumn >= 0) current.condition = String(row[conditionColumn] ?? "").trim();
-      const caseColumns = new Set([columns.id, columns.scenario, columns.scenarioDescription, columns.name, conditionColumn].filter(column => column >= 0));
+      const caseColumns = new Set([columns.id, columns.scenario, columns.scenarioDescription, columns.name, columns.resultReference, conditionColumn].filter(column => column >= 0));
       current.sourceFields = headers.flatMap((label, column) => caseColumns.has(column) ? [{
         column, label: String(label).trim(), value: String(row[column] ?? "").trim(),
-        field: (column === columns.id ? "id" : column === columns.name ? "name" : column === conditionColumn ? "condition" : undefined) as keyof TestCase | undefined,
+        field: (column === columns.id ? "id" : column === columns.name ? "name" : column === conditionColumn ? "condition" : column === columns.resultReference ? "resultReference" : undefined) as keyof TestCase | undefined,
       }] : []);
       cases.push(current);
     }
@@ -71,7 +72,8 @@ export function parseStepTestCases(rows: unknown[][], sheetName: string): TestCa
   for (const testCase of cases) {
     testCase.steps = testCase.stepDefinitions!.map(s => `${s.name}\n${s.description}`).join("\n\n");
     testCase.expected = testCase.stepDefinitions!.map(s => `${s.name}\n${s.expected}`).join("\n\n");
-    testCase.status = aggregateStepStatus(testCase.stepDefinitions!);
+    // Mixed templates also contain standalone register rows with no Steps.
+    if (testCase.stepDefinitions!.length) testCase.status = aggregateStepStatus(testCase.stepDefinitions!);
   }
   return cases;
 }

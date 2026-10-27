@@ -1,4 +1,6 @@
 "use client";
+import {ResultReferenceLinks} from "./result-reference-links";
+import {needsReferenceLinkRefresh} from "../lib/result-reference-links";
 import { revisionBoundSource, revisionBoundCheckpoint } from "@/lib/revision-bound-source";
 import { canRenderStoredCaseDetails } from "@/lib/source-workbook-storage";
 import { alignRegisterCaseIdentities, displayTestCaseId } from "@/lib/register-case-identity";
@@ -1094,6 +1096,7 @@ function CaseDrawer({ value, projectId, source, associatedSheets, caseDisplayNam
         </header>
         <div className="drawer-body">
           <div className="case-context"><span>{draft.platform || "ไม่ระบุ Platform"}</span><span>{draft.environment || "ไม่ระบุ Env"}</span><span>{draft.appVersion || "ไม่ระบุ Build"}</span></div>
+          <ResultReferenceLinks testCase={draft} />
           {sharedSheets.map(sheet => <SharedSheetDefinition key={sheet.path} caseId={displayTestCaseId(draft)} sheetName={sheet.name} caseIds={sheet.testCaseIds.map(id=>caseDisplayNames[id] ?? id)} table={draft.results?.find(result => result.sourceSheetName === sheet.name && result.sheetDefinitionTable)?.sheetDefinitionTable} />)}
           {!editingCaseDetails && !sharedSheets.length && <TestCaseSourceDetails testCase={draft} />}
           {!sharedSheets.length && <TestCaseSteps testCase={draft} readOnly={readOnly} onChange={setDraft} renderResults={renderResults} onAddResult={stepId => { resetResultForm(); setResultStepId(stepId); setShowResultEntry(true); }} />}
@@ -1450,9 +1453,10 @@ export function QaWorkspace({
     if (!selectedProject) return;
     const cached = workspaceNavigationCache.get(selectedProject.id);
     const needsDetailedData = Boolean((testCaseId || sheetName) && selectedProject.googleSheetId);
+    const upgradeCachedReferences = cached && needsReferenceLinkRefresh(cached.cases);
     const upgradeCachedTemplate = cached && needsStepTemplateRefresh(cached.cases, cached.source);
-    if (cached && cached.hasLoadedSheetMappings && !needsDetailedData) return;
-    if (cached?.hasLoadedSheetMappings && needsDetailedData && cached.source && !upgradeCachedTemplate) {
+    if (cached && cached.hasLoadedSheetMappings && !needsDetailedData && !upgradeCachedReferences) return;
+    if (cached?.hasLoadedSheetMappings && needsDetailedData && cached.source && !upgradeCachedTemplate && !upgradeCachedReferences) {
       const names = selectDetailSheets(cached.source.sheets, sheetName
         ? { sheetName: decodeURIComponent(sheetName) }
         : { testcaseId: decodeURIComponent(testCaseId!) }).map(sheet => sheet.name);
@@ -1470,7 +1474,7 @@ export function QaWorkspace({
               ? { sheetName: decodeURIComponent(sheetName) } : { testcaseId: decodeURIComponent(testCaseId!) }).map(sheet => sheet.name) : [];
           const detailsLoaded = Boolean(saved && sheetRowState(caseDetailLoadKeys(names, decodeURIComponent(testCaseId ?? "")), saved.states) === "loaded");
           if (!shouldFetchGoogleWorkspace(Boolean(workspace.source || workspace.cases.length), needsDetailedData, detailsLoaded,
-            Boolean(saved?.refreshRequired || needsStepTemplateRefresh(workspace.cases, workspace.source)))) return null;
+            Boolean(saved?.refreshRequired || needsStepTemplateRefresh(workspace.cases, workspace.source))) && !needsReferenceLinkRefresh(workspace.cases)) return null;
           if (active && needsDetailedData) setLoadingSheetPreview(true);
           const sourceRevision = needsDetailedData ? await readSourceRevision(selectedProject.id) : undefined;
           const requestedSheets = testCaseId && names.length ? `?${names.map(name => `sheet=${encodeURIComponent(name)}`).join('&')}` : '';

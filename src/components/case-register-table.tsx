@@ -16,6 +16,7 @@ export function CaseRegisterTable({rows,columns,assigneeNames,associatedSheetNam
 }) {
   const span=columns.length+1+(editingAssignments?1:0);
   const displayOwners=new Map<string,Set<string>>();
+  const rowOccurrences=new Map<string,number>();
   for(const {item} of rows) {const label=displayTestCaseId(item);const owners=displayOwners.get(label) ?? new Set<string>();owners.add(item.id);displayOwners.set(label,owners);}
   return <div className="table-wrap case-register-table" aria-busy={loading}><table><colgroup>{editingAssignments && <col style={{width:40}}/>}{columns.map(column=><col key={column.key} style={{width:column.field==='id'?'26%':undefined}}/>)}<col style={{width:52}}/></colgroup>
     <thead><tr>{editingAssignments && <th aria-label="เลือกเคสเพื่อมอบหมาย"/>}{columns.map(column=><th key={column.key}>{column.label}</th>)}<th aria-label="เปิดรายละเอียด"/></tr></thead>
@@ -23,7 +24,11 @@ export function CaseRegisterTable({rows,columns,assigneeNames,associatedSheetNam
       const {item,sheetAlias}=row;
       const idLabel=caseRegisterIdLabel(displayTestCaseId(item),sheetAlias,associatedSheetNames(item));
       const section=testCaseSourceSection(item);
-      return <Fragment key={`${item.id}:${sheetAlias || 'testcase'}`}>
+      // Legacy cases can share an ID; preserve the identity of each source row.
+      const rowIdentity=JSON.stringify([item.id,item.recordId ?? null,item.sourceSheetName ?? null,item.sourceRow,sheetAlias]);
+      const occurrence=rowOccurrences.get(rowIdentity) ?? 0;
+      rowOccurrences.set(rowIdentity,occurrence+1);
+      return <Fragment key={JSON.stringify([rowIdentity,occurrence])}>
         {section && section!==(index?testCaseSourceSection(rows[index-1].item):'') && <tr className="testcase-section-row"><td colSpan={span}>{section}</td></tr>}
         <tr onClick={()=>onOpen(row)}>{editingAssignments && <td onClick={event=>event.stopPropagation()}><input type="checkbox" aria-label={`เลือก ${displayTestCaseId(item)}${sheetAlias?` (${sheetAlias})`:''} เพื่อมอบหมาย`} checked={isSelected(row)} onChange={event=>onToggle(row,event.target.checked)}/></td>}
           {columns.map(column=>{

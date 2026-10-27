@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import {ResultReferenceLinks} from "./result-reference-links";
 import { displayTestCaseId } from "../lib/register-case-identity";
 import Link from "next/link";
 import { ArrowLeft, ExternalLink, Pencil } from "lucide-react";
@@ -34,6 +35,7 @@ export function TestCasePreview({ testCase, projectId, backHref, editHref, sourc
     <header className="testcase-preview-header"><div><span className="eyebrow">TEST CASE PREVIEW · ดูอย่างเดียว</span><h2>{displayTestCaseId(testCase)} · {testCase.name}</h2>{sourceSheetName && <p>แท็บต้นทาง: {sourceSheetName}</p>}</div><div className="testcase-preview-actions">{onBack ? <button type="button" className="secondary-button" onClick={onBack}><ArrowLeft size={16} />กลับ Test cases</button> : <Link href={backHref} className="secondary-button"><ArrowLeft size={16} />กลับ Test cases</Link>}{editHref && <Link href={editHref} className="primary-button"><Pencil size={16} />แก้ไข Test Case</Link>}</div></header>
     <div className="testcase-preview-body">
       <dl className="testcase-preview-metadata">{[["สถานะ", testCase.status], ["Platform", testCase.platform], ["Environment", testCase.environment], ["Device", testCase.device], ["App version", testCase.appVersion], ["ผู้ทดสอบ", testCase.executedBy], ["Test data", testCase.testData]].filter(([, value]) => value).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+      <ResultReferenceLinks testCase={testCase} />
       <TestCaseSourceDetails testCase={testCase} />
       {associatedSheets.filter(sheet => sheet.testCaseIds.length > 1 && (!sourceSheetName || sheet.name === sourceSheetName)).map(sheet => <SharedSheetDefinition key={sheet.path} caseId={displayTestCaseId(testCase)} sheetName={sheet.name} caseIds={sheet.testCaseIds.map(id=>caseDisplayNames[id] ?? id)} table={results.find(result => result.sourceSheetName === sheet.name && result.sheetDefinitionTable)?.sheetDefinitionTable} />)}
       <TestCaseSteps testCase={testCase} readOnly expandAll />

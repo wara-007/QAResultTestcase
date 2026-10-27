@@ -1,3 +1,4 @@
+import {effectiveProjectQa} from "./project-qa-default";
 import type { PlanningTeamMember, Project } from './types';
 import { summarizeSprint, type SprintProjectStatsInput } from './sprint-summary';
 import type { PersonalCase } from './personal-test-performance';
@@ -14,11 +15,15 @@ export function buildSprintDashboard(input: SprintDashboardInput) {
   const members = new Map(input.team.map(p=>[p.userId,p]));
   const approvalByProject = new Map(input.approvals.map(p=>[p.projectId,p]));
   const current = input.projects.filter(p=>p.sprintId===input.sprintId);
+  const effectiveAssignments=current.flatMap(project=>effectiveProjectQa(project,input.assignments).map(userId=>({projectId:project.id,userId})));
+  for(const project of current)if(project.ownerId&&effectiveAssignments.some(item=>item.projectId===project.id&&item.userId===project.ownerId)&&!members.has(project.ownerId)){
+    members.set(project.ownerId,{userId:project.ownerId,name:project.ownerName||'ผู้สร้าง Project',email:'',role:'qa'});
+  }
   const projects = current.map(project=>{
     const counts=summarizeSprint([stats.get(project.id) ?? {id:project.id,cases:[],approvals:[]}]);
     const savedCounts=input.summaries?.find(s=>s.projectId===project.id)?.counts;
     if(savedCounts) Object.assign(counts,savedCounts,{totalDefects:savedCounts.totalDefects ?? savedCounts.openDefects,closedDefects:savedCounts.closedDefects ?? 0,progress:savedCounts.totalCases ? Math.round((savedCounts.pass+savedCounts.failed+savedCounts.skip)/savedCounts.totalCases*100) : 0});
-    const qaIds=[...new Set(input.assignments.filter(a=>a.projectId===project.id).map(a=>a.userId))];
+    const qaIds=effectiveProjectQa(project,effectiveAssignments);
     const qa=qaIds.map(userId=>members.get(userId) ?? {userId,name:'สมาชิกเดิม',email:'',role:'qa'});
     const totals=approvalByProject.get(project.id) ?? {projectId:project.id,total:0,approved:0,pending:0,changesRequested:0};
     const state=totals.changesRequested ? 'changes_requested' : totals.pending ? 'pending' : totals.total && totals.approved===totals.total ? 'approved' : 'not_sent';
@@ -29,7 +34,7 @@ export function buildSprintDashboard(input: SprintDashboardInput) {
   for(const result of activeOrigins) if(!result.inferred && result.authorId && !members.has(result.authorId)) members.set(result.authorId,{userId:result.authorId,name:result.authorName || 'สมาชิกเดิม',email:'',role:'อดีตสมาชิก'});
   const team=[...members.values()].map(member=>{
     const results=activeOrigins.filter(r=>!r.inferred && r.authorId===member.userId);
-    const assignedProjects=new Set(input.assignments.filter(a=>a.userId===member.userId && current.some(p=>p.id===a.projectId)).map(a=>a.projectId)).size;
+    const assignedProjects=new Set(effectiveAssignments.filter(a=>a.userId===member.userId && current.some(p=>p.id===a.projectId)).map(a=>a.projectId)).size;
     const cases=new Set(results.map(r=>JSON.stringify([r.projectId,r.testCaseId]))).size;
     const lastActivity=results.map(r=>r.recordedAt).filter(v=>Number.isFinite(Date.parse(v))).sort().at(-1) ?? '';
     return {...member,assignedProjects,results:results.length,cases,failedResults:results.filter(r=>r.status==='Failed').length,lastActivity};

@@ -1,5 +1,6 @@
+import {hasExplicitResultReference} from "./sheet-mapping-model";
 import type { ProjectSheetMapping, TestCase, WorkbookSheet } from "./types";
-import { automaticSheetCaseIds, referencedSheetCaseIds, caseResultReferences, registeredTestCases, isProjectSummarySheet } from "./sheet-mapping-model";
+import { automaticSheetCaseIds, referencedSheetCaseIds, registeredTestCases, isProjectSummarySheet } from "./sheet-mapping-model";
 
 const identity = (value: string) => value.trim().toLocaleUpperCase().replace(/[\s_-]+/g, "");
 const stableSheetKey = (sheet: WorkbookSheet) => sheet.sheetId == null ? `path:${sheet.path}` : `google:${sheet.sheetId}`;
@@ -44,7 +45,7 @@ export function resolveSheetAssociations(
     const mapping = sheet.sheetId == null ? undefined : mappingsBySheetId.get(sheet.sheetId);
     if (mapping) {
       const mappedCase = casesByIdentity.get(identity(mapping.testcaseKey));
-      if (mappedCase && caseResultReferences(mappedCase).length) unmapped.push(sheet);
+      if (mappedCase && hasExplicitResultReference(mappedCase)) unmapped.push(sheet);
       else if (mappedCase) associations.push({ sheet, testCase: mappedCase, source: "manual", mapping });
       else invalidMappings.push({ sheet, mapping, reason: "missing-testcase" });
       continue;

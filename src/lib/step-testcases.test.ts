@@ -46,3 +46,19 @@ test("blank sections and repeated headers do not attach orphan steps to precedin
   assert.equal(cases[1].stepDefinitions?.[0].status, "Unknown");
   assert.notEqual(cases[1].status, "Pass");
 });
+
+test('a register row without Steps keeps its own Status in a mixed step template', () => {
+  const headers=['Test Case (TC ID)*','Test Case Name*','Step#*','Description Step*','Expected Result*','Status','Ref (Result Testing)'];
+  const cases=casesFromRows([headers,
+    ['TC_01','Normal step case','Step1','Open app','Opened','PASSED','TC_01'],
+    ['MRS-5349','Release check','','','','PASSED','MRS-5349'],
+    ['MRS-5359','External check','','','','Skip','external.xlsx'],
+    ['MRS-5445','Failed check','','','','FAILED',''],
+    ['MRS-5450','Pending check','','','','Not Start',''],
+  ]);
+  assert.deepEqual(cases.map(item=>item.status),['Pass','Pass','Skip','Failed','Not Start']);
+  assert.equal(cases[1].stepDefinitions?.length,0);
+  assert.equal(cases[1].sourceRow,3);
+  assert.equal(cases[1].resultReference,'MRS-5349');
+  assert.equal(cases[0].stepDefinitions?.length,1);
+});

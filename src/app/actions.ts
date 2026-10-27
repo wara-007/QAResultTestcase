@@ -223,6 +223,8 @@ export async function createProject(input: CreateProjectInput): Promise<CreatePr
     return {
       project: {
         id: data.id,
+        ownerId,
+        ownerName: String(claimsData?.claims.user_metadata?.display_name ?? claimsData?.claims.user_metadata?.full_name ?? claimsData?.claims.user_metadata?.name ?? claimsData?.claims.email?.split("@")[0] ?? "QA"),
         name: data.name,
         description: data.description,
         sprintNo: data.sprint_no,

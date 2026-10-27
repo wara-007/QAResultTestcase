@@ -1,3 +1,4 @@
+import {readResultReferenceLinks} from "./result-reference-links";
 import type { TestCase, TestCaseCustomField, TestDefect, TestResult } from "./types";
 
 type StoredResultPayload = {
@@ -9,6 +10,7 @@ type StoredResultPayload = {
   importIssues?: string[];
   resultReference: string;
   resultReferenceTargets?: string[];
+  resultReferenceLinks?: TestCase["resultReferenceLinks"];
   results: TestResult[];
   defects?: TestDefect[];
   customFields?: TestCaseCustomField[];
@@ -42,6 +44,7 @@ export function parseStoredResults(value: string | undefined) {
       sourceSheetName: typeof payload.sourceSheetName === "string" ? payload.sourceSheetName : undefined,
       stepDefinitions: Array.isArray(payload.stepDefinitions) ? payload.stepDefinitions : undefined,
       importIssues: Array.isArray(payload.importIssues) ? payload.importIssues : [],
+      resultReferenceLinks: payload.resultReferenceLinks===undefined?undefined:readResultReferenceLinks(payload.resultReferenceLinks),
       resultReferenceTargets: Array.isArray(payload.resultReferenceTargets) ? payload.resultReferenceTargets.filter((value): value is string => typeof value === "string") : undefined,
       resultReference: typeof payload.resultReference === "string" ? payload.resultReference : "",
       results: results.map((result) => {
@@ -60,7 +63,7 @@ export function parseStoredResults(value: string | undefined) {
 }
 
 export function serializeStoredResults(testCase: TestCase) {
-  const payload: StoredResultPayload = { version: 4, registerIdentity: testCase.registerIdentity, sourceFields: testCase.sourceFields, stepDefinitions: testCase.stepDefinitions, importIssues: testCase.importIssues, resultReference: testCase.resultReference, resultReferenceTargets: testCase.resultReferenceTargets, results: testCase.results ?? [], defects: testCase.defects ?? [], customFields: testCase.customFields ?? [], resultFieldDefinitions: testCase.resultFieldDefinitions ?? [] };
+  const payload: StoredResultPayload = { version: 4, registerIdentity: testCase.registerIdentity, sourceFields: testCase.sourceFields, stepDefinitions: testCase.stepDefinitions, importIssues: testCase.importIssues, resultReference: testCase.resultReference, resultReferenceTargets: testCase.resultReferenceTargets, resultReferenceLinks: testCase.resultReferenceLinks, results: testCase.results ?? [], defects: testCase.defects ?? [], customFields: testCase.customFields ?? [], resultFieldDefinitions: testCase.resultFieldDefinitions ?? [] };
   payload.sourceSheetName = testCase.sourceSheetName;
   return `qa-results:${JSON.stringify(payload)}`;
 }

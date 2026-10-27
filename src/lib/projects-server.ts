@@ -1,4 +1,6 @@
 import "server-only";
+import {createAdminClient} from "./supabase/admin";
+import {readProjectCreatorNames} from "./project-creator-names";
 
 import { hasValidSupabasePublicConfig } from "@/lib/supabase/config";
 import { createClient } from "@/lib/supabase/server";
@@ -45,6 +47,13 @@ export async function loadProjects(groupId: string): Promise<{
 
   if (catalogError || accessResult.error) return { configured: true, projects: [], error: catalogError?.message ?? accessResult.error?.message ?? "โหลดสิทธิ์ Project ไม่สำเร็จ", currentUser };
 
+  // Names only, scoped to owners of projects already authorized by RLS.
+  let creatorNames=new Map<string,string>();
+  if(user&&rows.length){
+    try {creatorNames=await readProjectCreatorNames(createAdminClient(),rows);}
+    catch { /* Optional labels must not prevent opening the project catalog. */ }
+  }
+
   const accessByProject = new Map(((accessResult.data ?? []) as ProjectAccessRpcRow[])
     .map((access) => [access.project_id, projectCapabilitiesFromRow(access)]));
 
@@ -54,6 +63,8 @@ export async function loadProjects(groupId: string): Promise<{
     currentUser,
     projects: rows.map((project) => ({
       id: project.id,
+      ownerId: project.owner_id,
+      ownerName: creatorNames.get(project.owner_id) ?? (project.owner_id===currentUser?.id?currentUser.name:undefined),
       name: project.name,
       description: project.description,
       sprintNo: project.sprint_no,

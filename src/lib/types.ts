@@ -103,6 +103,7 @@ export type TestCase = {
   resultReference: string;
   /** Actual tabs targeted by register Ref links; display text remains unchanged. */
   resultReferenceTargets?: string[];
+  resultReferenceLinks?: import("./result-reference-links").ResultReferenceLink[];
   executedBy: string;
   executedDate: string;
   executedTime: string;
@@ -203,6 +204,8 @@ export type WorkbookFreeformResult = {
 };
 
 export type Project = {
+  ownerId?: string;
+  ownerName?: string;
   dashboardSummary?: import("./project-dashboard-summary").ProjectDashboardSummary;
   coverSummary?: {sheetName:string;fields:{label:string;value:string}[]};
   id: string;

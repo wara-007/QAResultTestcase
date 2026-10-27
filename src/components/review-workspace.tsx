@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import {ResultReferenceLinks} from "./result-reference-links";
 import { AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck, ExternalLink, FileSpreadsheet, LoaderCircle, RotateCcw, Search, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ImageViewerGallery } from "@/components/image-viewer-gallery";
@@ -145,7 +146,7 @@ export function ReviewWorkspace({ token, requestId, currentUserName = "" }: { to
         {!visibleCases.length && <p className="review-empty" role="status">{caseSearch.trim() ? "ไม่พบ Test case ที่ตรงกับคำค้นหา ลองเปลี่ยนคำค้นหาหรือล้างคำค้นหา" : "ยังไม่มี Test case ในรายการรีวิวนี้"}</p>}
         <div className="review-case-list">{visibleCases.map((testCase, index) => <details className="review-case" key={`${currentPage}-${testCase.recordId}-${testCase.id}-${testCase.sourceSheetName}`} open={index === 0}>
           <summary><div><span className="review-case-number">{String((currentPage - 1) * pageSize + index + 1).padStart(2, "0")}</span><div><strong>{testCase.id}{testCase.sourceSheetName && testCase.sourceSheetName !== "Testcase" ? ` (${testCase.sourceSheetName})` : ""} · {testCase.name || "ไม่มีชื่อ Test Case"}</strong><small>{testCase.scenario || "ไม่ระบุ Scenario"}</small><span className="review-source-badge">แหล่งที่มา: {testCase.sourceSheetName || "Testcase"}</span></div></div><div><span className={`status-badge ${statusClass[testCase.status]}`}><span />{testCase.status}</span><ChevronDown size={19} /></div></summary>
-          <div className="review-case-content">
+          <div className="review-case-content"><ResultReferenceLinks testCase={testCase} />
             <TestCaseSteps testCase={testCase} readOnly renderResults={results => (<div className="review-results"><h3>Results <span>{results?.length ?? 0}</span></h3>{results?.length ? results.map((result, resultIndex) => <article key={`${result.id}-${result.sourceSheetName ?? "web"}`}><header><strong>{testCase.stepDefinitions?.length ? stepResultTitle(testCase, result) : `Result ${resultIndex + 1}`}</strong><div className="review-result-origin"><small>แหล่งที่มา: {result.sourceSheetName || testCase.sourceSheetName || "Web"}</small><span className={`status-badge ${statusClass[result.status]}`}><span />{result.status}</span></div></header><ReviewResultContent result={result} evidenceBasePath={evidenceBasePath} /></article>) : <p className="review-empty">ยังไม่มี Result</p>}</div>)} />
             <div className="review-case-grid"><TextBlock label="Test Scenario" value={testCase.scenario} /><TextBlock label="Platform" value={testCase.platform} />{!testCase.stepDefinitions?.length && <><TextBlock label="Test Step Description" value={testCase.steps} /><TextBlock label="Expected Result" value={testCase.expected} /></>}<TextBlock label="Test Data" value={testCase.testData} /><TextBlock label="หมายเหตุ" value={testCase.remark} /></div>
             <div className="review-execution-meta"><span>Device: <strong>{testCase.device || "-"}</strong></span><span>App version: <strong>{testCase.appVersion || "-"}</strong></span><span>ผู้ทดสอบ: <strong>{testCase.executedBy || "-"}</strong></span><span>เวลา: <strong>{[testCase.executedDate, testCase.executedTime].filter(Boolean).join(" ") || "-"}</strong></span></div>

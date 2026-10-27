@@ -1,3 +1,4 @@
+import {isExternalReferenceText} from "./result-reference-links";
 import { displayTestCaseId, type RegisterCaseIdentity } from "./register-case-identity";
 import type { ProjectSheetMapping, TestCase, WorkbookSheet, WorkbookSheetKind } from "./types";
 
@@ -20,8 +21,10 @@ export function registeredTestCases(cases: readonly TestCase[]) {
 
 export const safeResultSheetName = (caseId: string) => caseId.replace(/[\\/?*\[\]:]/g, '-').slice(0, 100);
 export const referenceKey = (value: string) => value.toUpperCase().replace(/[\s:_-]+/g, "");
-export const caseResultReferences = (item: TestCase) => (item.resultReferenceTargets?.length ? item.resultReferenceTargets : [item.resultReference, ...(item.stepDefinitions ?? []).map(step => step.resultReference)])
+export const caseResultReferences = (item: TestCase) => (item.resultReferenceTargets ?? [item.resultReference, ...(item.stepDefinitions ?? []).map(step => step.resultReference)].filter(value=>!value || !isExternalReferenceText(value)))
   .filter((value): value is string => Boolean(value?.trim()));
+
+export const hasExplicitResultReference = (item:TestCase) => Boolean(item.resultReference.trim() || item.resultReferenceTargets?.length || item.resultReferenceLinks?.length || item.stepDefinitions?.some(step=>step.resultReference?.trim()));
 
 /** Exact titles win; punctuation-insensitive fallback must have one destination. */
 export function matchingResultSheetName(reference: string, names: readonly string[]): string | undefined {
@@ -41,7 +44,7 @@ export function automaticSheetCaseIds(name: string, cases: readonly TestCase[], 
   const referenced = referencedSheetCaseIds(name, cases, names);
   if (referenced.length) return referenced;
   // Name/content inference is a fallback only for cases without an explicit Ref.
-  const register = registeredTestCases(cases).filter(item => !caseResultReferences(item).length);
+  const register = registeredTestCases(cases).filter(item => !hasExplicitResultReference(item));
   const ownedDestination = register.filter(item => item.id !== displayTestCaseId(item) && safeResultSheetName(item.id) === name);
   if (ownedDestination.length === 1) return [ownedDestination[0].id];
   const key = referenceKey;

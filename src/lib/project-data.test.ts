@@ -56,7 +56,9 @@ test("workspace loads every testcase beyond the REST response cap", async (conte
     const url = new URL(input instanceof Request ? input.url : String(input));
     assert.equal(url.origin, "https://workspace-paging-test.supabase.co");
     if (url.pathname.endsWith("/source_files")) return Response.json([]);
+    if(url.pathname.endsWith('/test_executions')) return Response.json([]);
     assert.ok(url.pathname.endsWith("/test_cases"));
+    assert.ok(!url.searchParams.get('select')?.includes('test_executions'), 'case definitions must not embed large Result snapshots');
     requests.push(url);
     const offset = Number(url.searchParams.get("offset") ?? 0);
     const limit = Math.min(Number(url.searchParams.get("limit") ?? 1000), 1000);
@@ -77,14 +79,25 @@ test('workspace reads large execution snapshots in bounded pages without losing 
     if(previousKey===undefined)delete process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;else process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=previousKey;
   });
   const rows=Array.from({length:62},(_,index)=>({id:`record-${index}`,testcase_key:`TC-${index}`,source_row:index+2,sort_order:index,platform:'',condition_text:'',scenario:'',case_name:`Case ${index}`,steps:'',expected_result:'',test_data:'',test_executions:[{id:`execution-${index}`,attempt_no:1,status:'Pass',result_reference:`qa-results:${JSON.stringify({version:4,results:[{id:'proof',status:'Pass',evidence:[{fileId:`image-${index}`,name:'proof.gif',mimeType:'image/gif'}]}]})}`}]}));
+  let activeReads=0, maximumReads=0;
   context.mock.method(globalThis,'fetch',async(input:RequestInfo|URL)=>{
     const url=new URL(input instanceof Request?input.url:String(input));
     if(url.pathname.endsWith('/source_files'))return Response.json([]);
     const limit=Number(url.searchParams.get('limit')??1000),offset=Number(url.searchParams.get('offset')??0);
-    if(limit>10)return Response.json({code:'57014',message:'canceling statement due to statement timeout'},{status:500});
-    return Response.json(rows.slice(offset,offset+limit));
+    if(url.pathname.endsWith('/test_cases')) {
+      assert.ok(!url.searchParams.get('select')?.includes('test_executions'), 'case definitions must be separate from execution payloads');
+      return Response.json(rows.slice(offset,offset+limit).map(row=>Object.fromEntries(Object.entries(row).filter(([key])=>key!=='test_executions'))));
+    }
+    assert.ok(url.pathname.endsWith('/test_executions'));
+    assert.equal(limit,1, 'read each large execution independently');
+    assert.equal(url.searchParams.get('project_id'),'eq.project-id');
+    activeReads++; maximumReads=Math.max(maximumReads,activeReads);
+    await new Promise(resolve=>setImmediate(resolve));
+    activeReads--;
+    return Response.json(rows.slice(offset,offset+limit).flatMap(row=>row.test_executions.map(execution=>({...execution,test_case_id:row.id}))));
   });
   const workspace=await loadProjectWorkspace('project-id');
   assert.equal(workspace.cases.length,62);
+  assert.equal(maximumReads,2, 'two bounded pages overlap network latency without flooding the database');
   assert.deepEqual(workspace.cases.map(item=>item.results?.[0].evidence[0].fileId),rows.map((_,index)=>`image-${index}`));
 });

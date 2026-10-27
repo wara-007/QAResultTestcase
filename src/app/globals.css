@@ -16,7 +16,7 @@
 
 /* Sprint control desk: current workload and historical contributions are separate. */
 .sd-shell { min-height:100vh; font-size:13px; }
-.sd-sidebar { position:fixed; inset:0 auto 0 0; width:204px; background:var(--navy); color:#c5cfe0; display:flex; flex-direction:column; z-index:25; }
+.sd-sidebar { position:fixed; inset:0 auto 0 0; width:246px; background:var(--navy); color:#c5cfe0; display:flex; flex-direction:column; z-index:25; }
 .sd-sidebar-brand { display:flex; align-items:center; gap:10px; padding:24px 18px; color:#fff; font-weight:750; text-decoration:none; border-bottom:1px solid #ffffff15; font-size:15px; }
 .sd-sidebar nav { padding:20px 10px; display:grid; gap:7px; }
 .sd-sidebar nav a,.sd-sidebar nav button { display:flex; align-items:center; gap:12px; padding:13px 14px; color:inherit; text-decoration:none; border:0; background:none; border-radius:7px; text-align:left; cursor:pointer; font-size:13px; overflow-wrap:anywhere; }
@@ -24,7 +24,7 @@
 .sd-sidebar nav .active { color:#fff; background:#2f6fed44; box-shadow:inset 3px 0 var(--blue); }
 .sd-nav-section { display:grid; gap:6px; padding-top:12px; border-top:1px solid #ffffff12; }
 .sd-sidebar>p { margin-top:auto; padding:22px 18px; color:#a9b7ce; line-height:1.8; font-size:12px; }
-.sd-main { margin-left:204px; }
+.sd-main { margin-left:246px; }
 .sd-topbar { display:flex; justify-content:space-between; align-items:center; min-height:72px; padding:12px 30px; background:#fff; border-bottom:1px solid var(--line); gap:20px; }
 .sd-topbar>a { color:var(--navy); text-decoration:none; font-size:23px; font-weight:800; }
 .sd-user,.sd-member { display:flex; align-items:center; gap:10px; min-width:0; }
@@ -1427,3 +1427,33 @@ a[href^="http"][target="_blank"]:not(:has(.lucide-external-link))::after { conte
 .result-reference-links li { display:flex; align-items:center; gap:12px; flex-wrap:wrap; overflow-wrap:anywhere; }
 .result-reference-links li>span { flex:1; min-width:0; }
 .result-reference-links p,.result-reference-links small { color:var(--muted); font-size:13px; }
+
+/* One navigation scope at a time, shared by Sprint and Project pages. */
+.sidebar, .sd-sidebar { overflow-y:auto; }
+.sidebar .workspace-sidebar-nav, .sd-sidebar .workspace-sidebar-nav { display:block; padding:14px 12px; overflow:visible; }
+.workspace-sidebar-nav .workspace-sidebar-back { display:flex; align-items:center; gap:10px; min-height:44px; padding:10px; margin-bottom:18px; border:1px solid #ffffff18; border-radius:8px; color:#c5cfe0; text-decoration:none; font-size:12px; }
+.workspace-sidebar-context { display:grid; gap:9px; padding:0 8px 14px; }
+.workspace-sidebar-heading { margin:0; color:#a9b7ce; font-size:11px; font-weight:600; letter-spacing:1px; }
+.workspace-sidebar-context strong { color:#edf2fb; font-size:15px; overflow-wrap:anywhere; }
+.workspace-sidebar-context select { width:100%; min-width:0; min-height:40px; padding:8px; color:#edf2fb; background:#18243a; border:1px solid #ffffff30; border-radius:8px; font:inherit; }
+.workspace-sidebar-links { display:grid; gap:4px; }
+.workspace-sidebar-nav .workspace-sidebar-links a { display:flex; align-items:center; gap:10px; min-height:44px; padding:10px; border-radius:8px; color:#c5cfe0; text-decoration:none; font-size:13px; }
+.workspace-sidebar-links a > span:first-of-type { flex:1; min-width:0; overflow-wrap:anywhere; }
+.workspace-sidebar-nav svg { flex-shrink:0; }
+.workspace-sidebar-nav a:hover { color:#fff; background:#ffffff0a; }
+.workspace-sidebar-nav .workspace-sidebar-links .active { color:#fff; background:#2f6fed44; box-shadow:inset 3px 0 var(--blue); }
+.workspace-sidebar-count { padding:2px 6px; color:inherit; background:#ffffff14; border-radius:5px; font-size:11px; }
+.workspace-sidebar-nav a:focus-visible, .workspace-sidebar-context select:focus-visible { outline:2px solid #9ec0ff; outline-offset:2px; }
+@media(max-width:760px) {
+  .sd-sidebar .workspace-sidebar-nav { padding:10px 14px; }
+  .sd-sidebar .workspace-sidebar-back { width:fit-content; margin-bottom:10px; }
+  .sd-sidebar .workspace-sidebar-context { padding:0 0 10px; gap:4px; }
+  .sd-sidebar .workspace-sidebar-links { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .sd-sidebar .workspace-sidebar-links a { white-space:normal; }
+}
+
+.sprint-pending-projects { padding:18px 20px; }
+.sprint-pending-projects h2 { margin:0 0 12px; font-size:14px; }
+.sprint-pending-projects ul { margin:0; padding:0; list-style:none; }
+.sprint-pending-projects li { display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:6px 16px; padding:8px 0; font-size:13px; overflow-wrap:anywhere; }
+.sprint-pending-status { color:var(--muted); font-size:12px; }

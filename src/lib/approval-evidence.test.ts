@@ -63,3 +63,14 @@ for (const failSecondImage of [false, true]) test(`whole-project evidence import
   assert.equal(approvalEvidenceReadiness(snapshot, storedCases, tabs).ready, !failSecondImage);
   assert.equal(approvalEvidenceReadiness(snapshot, storedCases, tabs).persisted, failSecondImage ? 1 : 2);
 });
+
+test('a fully saved interrupted import can finalize without rewriting results only at the same revision', async () => {
+ const { canFinalizeSavedImport } = await import('./approval-evidence');
+ const state = {...complete(),complete:false,sourceRevision:'revision-1'};
+ assert.equal(canFinalizeSavedImport(state,saved,['TC_01'],'revision-1'),true);
+ assert.equal(canFinalizeSavedImport(state,saved,['TC_01'],'revision-2'),false);
+ assert.equal(canFinalizeSavedImport({...state,refreshRequired:true},saved,['TC_01'],'revision-1'),false);
+ assert.equal(canFinalizeSavedImport(state,[],['TC_01'],'revision-1'),false);
+ assert.equal(canFinalizeSavedImport({...state,states:{TC_01:'queued'}},saved,['TC_01'],'revision-1'),false);
+ assert.equal(canFinalizeSavedImport({...state,evidenceManifest:undefined},saved,['TC_01'],'revision-1'),false);
+});

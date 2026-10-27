@@ -63,7 +63,7 @@ export function projectImportProgress(names: string[], states: Record<string, Ro
   const stage: 'complete' | 'error' | 'conflict' | 'saving' | 'images' | 'details' | 'workbook' = ready ? 'complete'
     : conflictPending && entries.some(item => item.phase === 'conflict') ? 'conflict' : !active ? 'error'
     : imageTotal !== undefined ? (uploaded + failedImages >= imageTotal ? 'saving' : 'images')
-    : entries.some(item => item.phase === 'details' || item.phase === 'text-saving') ? 'details' : 'workbook';
+    : entries.some(item => item.phase === 'details' || item.phase === 'text-saving') ? 'details' : entries.some(item => item.phase === 'saving') ? 'saving' : 'workbook';
   return { ...summary, imageTotal, uploaded, failedImages, ready, stage };
 }
 

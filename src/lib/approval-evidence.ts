@@ -29,3 +29,10 @@ export function approvalEvidenceReadiness(state: SheetImportState | undefined, c
     reason: ready ? "นำเข้าหลักฐานครบแล้ว" : verified && missing.length ? `รูปหลักฐานยังบันทึกไม่ครบ ${persisted}/${targets.length} รายการ` : !imported ? "ยังนำเข้ารายละเอียดและรูปหลักฐานไม่ครบ"
       : !verified ? "ยังไม่ได้ตรวจการอัปโหลดรูปทั้งโปรเจค" : `รูปหลักฐานยังบันทึกไม่ครบ ${persisted}/${targets.length} รายการ` };
 }
+
+/** Recover a failed final acknowledgement using durable checkpoints and evidence.
+ * Never use an old or invalidated workbook, or infer success from uploaded counts. */
+export function canFinalizeSavedImport(state: SheetImportState | undefined, cases: EvidenceCase[], tabs: string[], revision: string): boolean {
+  return !!state?.sourceRevision && state.sourceRevision === revision && !state.refreshRequired
+    && approvalEvidenceReadiness({...state,complete:true},cases,tabs).ready;
+}

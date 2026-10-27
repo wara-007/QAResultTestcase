@@ -218,3 +218,12 @@ test('reopening a completed project hides import progress without hiding incompl
   assert.equal(shouldShowProjectImportProgress({...done,active:true,loading:true}),false);
   assert.equal(shouldShowProjectImportProgress({...done,active:true,hasSheet:false}),false);
 });
+
+test('saving imported tab data is not reported as waiting for the workbook', () => {
+  const view = projectImportProgress(['Testcase','E2E'], {Testcase:'loading',E2E:'loading'}, {
+    Testcase:{phase:'workbook'}, E2E:{phase:'saving'},
+  }, true, false);
+  assert.equal(view.stage, 'saving');
+  assert.equal(view.imageTotal, undefined);
+  assert.equal(view.ready, false);
+});

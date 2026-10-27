@@ -10,6 +10,7 @@ import { SprintProjectList } from './sprint-project-list';
 import type { SprintDashboardData } from '../lib/sprint-dashboard';
 import { GlobalProjectSearch } from './global-project-search';
 import { ProjectBreadcrumb } from './project-breadcrumb';
+import { WorkspaceSidebarNavigation } from './workspace-sidebar-navigation';
 import { ProjectEvidenceProgress } from './project-evidence-progress';
 
 import {
@@ -24,7 +25,6 @@ import {
   FileSpreadsheet,
   Filter,
   FolderKanban,
-  LayoutDashboard,
   LoaderCircle,
   Mail,
   Menu,
@@ -71,7 +71,7 @@ import { collectProjectDefects, isProjectDefectSheet, summarizeProjectDefects } 
 import { ProjectManagement } from "@/components/project-management";
 import { approvalDraftBody, isApprovalDraft } from "@/lib/approval-draft";
 import { workspaceEnvironment } from "@/lib/workspace-environment";
-import { approvalEvidenceReadiness, importedEvidenceKey } from "@/lib/approval-evidence";
+import { approvalEvidenceReadiness, canFinalizeSavedImport, importedEvidenceKey } from "@/lib/approval-evidence";
 import { evidenceUploadBatch, sharedEvidenceFiles } from "@/lib/evidence-upload-batch";
 import { waitForProjectDetailWrites, beginProjectDetailRefresh, completeProjectDetailWrites, projectDetailRefreshPending } from "@/lib/project-detail-lock";
 import { TestCaseAssignmentDialog, type AssignmentData } from './test-case-assignment-dialog';
@@ -1788,11 +1788,29 @@ export function QaWorkspace({
       previousImport = readSheetImportState(latestWorkspace.source?.sheetImport, selectedProject.googleSheetId);
       const sourceRevision = checkedRevision ?? await readSourceRevision(selectedProject.id);
       setSheetCheckErrorProject(null);
+      if (savedSource?.id && savedSource.sourceOrigin === "google-sheets"
+        && canFinalizeSavedImport(previousImport, importWorkspaceCases, savedSource.sheets.map(sheet => sheet.name), sourceRevision)) {
+        // Every tab and image was committed before an interrupted final step.
+        // Confirm that snapshot instead of writing the same large Results again.
+        importSource = {...savedSource, sheetImport: await persistSheetImportState(selectedProject.id, savedSource.id,
+          selectedProject.googleSheetId, {}, true, false, previousImport!.evidenceManifest, sourceRevision)};
+        try {
+          const summarySource = await refreshProjectDashboardSummary(selectedProject.id);
+          if (summarySource && summarySource.id === importSource.id) importSource.dashboardSummary = summarySource.dashboardSummary;
+        } catch { /* Derived totals can retry independently of completed evidence. */ }
+        setCases(importWorkspaceCases);
+        setSource(importSource);
+        setSheetRowLoads(importSource.sheetImport!.states);
+        setHasUnsyncedChanges(false);
+        publishProgress(importWorkspaceCases, importSource, importSource.sheetImport!.states);
+        flash("ตรวจและบันทึกหลักฐานครบแล้ว พร้อมส่งให้ PO");
+        return;
+      }
       // Never resume a workbook captured from a different source revision.
       resume = resume && savedSource?.sourceOrigin === "google-sheets" && !!previousImport?.sourceRevision
         && !sheetRefreshRequired(previousImport, sourceRevision);
       if (savedSource?.id) {
-        const pendingCheckpoint = await persistSheetImportState(selectedProject.id, savedSource.id, selectedProject.googleSheetId, {}, false, true);
+        const pendingCheckpoint = await persistSheetImportState(selectedProject.id, savedSource.id, selectedProject.googleSheetId, {}, false, !resume);
         savedSource = { ...savedSource, sheetImport: pendingCheckpoint };
         setSource(savedSource);
         publishProgress(importWorkspaceCases, savedSource, importStates);
@@ -1930,16 +1948,9 @@ export function QaWorkspace({
         changedCaseIds.add(testCase.id);
       }
 
-      // Persist freeform text first. A failed evidence upload must not make the whole Result disappear.
-      if (changedCaseIds.size) {
-        const textOnlySavedCases = new Map((await completeProjectDetailWrites(importedCases
-          .filter((testCase) => changedCaseIds.has(testCase.id))
-          .map((testCase) => persistTestCaseResult(selectedProject.id, testCase))))
-          .map((testCase) => [testCase.id, testCase]));
-        importedCases.forEach((testCase, index) => {
-          importedCases[index] = textOnlySavedCases.get(testCase.id) ?? testCase;
-        });
-      }
+      // The snapshot save below persists every case and its freeform text
+      // before evidence starts. Avoid saving the same cases individually first:
+      // those RPCs serialize on the Project lock and duplicate the snapshot work.
       setCases([...importedCases]);
       const mergedSheets = mergeGoogleSheetsWithSource(imported.source.sheets, data.sheets);
       // Keep the last saved source/checkpoint visible until the replacement
@@ -2058,7 +2069,11 @@ export function QaWorkspace({
       }, async (name, complete) => {
         if (!complete) incompleteEvidenceTabs.add(name);
         const tabCases = importedCases.filter(item => changedCaseIds.has(item.id) && item.results?.some(result => result.sourceSheetName === name));
-        await completeProjectDetailWrites(tabCases.map(item => persistTestCaseResult(selectedProject.id, item)));
+        const savedTabCases = await completeProjectDetailWrites(tabCases.map(item => persistTestCaseResult(selectedProject.id, item)));
+        for (const saved of savedTabCases) {
+          const index = importedCases.findIndex(item => item.id === saved.id);
+          if (index >= 0) importedCases[index] = withSavedCaseIdentity(importedCases[index], saved);
+        }
         importStates[name] = complete ? "loaded" : "error";
         importSource!.sheetImport = await persistSheetImportState(selectedProject.id, importSource!.id!, selectedProject.googleSheetId, { [name]: importStates[name] }, false);
         setSource({ ...importSource! });
@@ -2070,11 +2085,10 @@ export function QaWorkspace({
         setSheetRowLoads(current => ({ ...current, [name]: state }));
         publishProgress(importedCases, importSource, importStates);
       });
-      const savedCases = new Map((await completeProjectDetailWrites(importedCases
-        .filter((testCase) => changedCaseIds.has(testCase.id))
-        .map((testCase) => persistTestCaseResult(selectedProject.id, testCase))))
-        .map((testCase) => [testCase.id, testCase]));
-      const nextCases = importedCases.map((testCase) => savedCases.get(testCase.id) ?? testCase);
+      // Every affected case was persisted by its tab checkpoint above, which
+      // runSheetEvidenceImports waits for. Repeating all writes here can fail
+      // after the import is already durably complete.
+      const nextCases = importedCases;
       setCases(nextCases);
       completedResultTabs.forEach(name => { importStates[name] = incompleteEvidenceTabs.has(name) ? "error" : "loaded"; });
       for (const item of nextCases) {
@@ -2347,28 +2361,25 @@ export function QaWorkspace({
     <div className="app-shell">
       <aside className={`sidebar ${mobileNav ? "mobile-open" : ""}`}>
         <div className="brand"><div className="brand-mark"><ClipboardCheck size={23} /></div><div><strong>QA Workspace</strong><span>Test execution</span></div></div>
-        {!selectedProject ? <>
-          <nav className="main-nav" aria-label="เมนูระดับกลุ่ม">
-            <Link href={scopedYear ? `/groups?year=${scopedYear}` : "/groups"}><Users size={19} />Groups</Link>
-            <Link href={scopedYear ? `/groups/${groupId}/years/${scopedYear}/sprints` : `/groups/${groupId}/years`}>Sprints</Link>
-            {sprintBase && <Link href={sprintBase}><LayoutDashboard size={19} />Sprint Dashboard</Link>}
-            <Link className="active" href={projectsHref}><FolderKanban size={19} />Projects<span className="nav-count">{projects.length}</span></Link>
-          </nav>
-          <div className="sidebar-footer"><button><Settings size={18} />ตั้งค่ากลุ่ม</button></div>
-        </> : <>
-          <div className="sidebar-section project-context">
-            <Link className="back-to-projects" href={projectsHref}><ChevronRight size={15} />กลับไป Projects</Link>
-            <label className="project-switcher"><span>PROJECT</span><select value={selectedProject.id} onChange={(event) => router.push(`/groups/${groupId}/projects/${event.target.value}/overview`)}>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></label>
-          </div>
-          <nav className="main-nav project-nav" aria-label="Project Workspace">
-            <p className="nav-heading">PROJECT WORKSPACE</p>
-            <Link className={activePage === "overview" ? "active" : ""} href={`/groups/${groupId}/projects/${selectedProject.id}/overview`}><LayoutDashboard size={19} />ภาพรวม</Link>
-            <Link className={activePage === "test-cases" ? "active" : ""} href={`/groups/${groupId}/projects/${selectedProject.id}/test-cases`}><ClipboardCheck size={19} />Test cases<span className="nav-count">{loadingWorkspace ? "…" : cases.length}</span></Link>
-            <Link className={activePage === "defects" ? "active" : ""} href={`/groups/${groupId}/projects/${selectedProject.id}/defects`}><CircleAlert size={19} />Defects<span className="nav-count alert">{allDefects.length}</span></Link>
-            <Link className={activePage === "files" ? "active" : ""} href={`/groups/${groupId}/projects/${selectedProject.id}/files`}><FileArchive size={19} />เอกสาร/ไฟล์</Link>
-            <Link className={activePage === "settings" ? "active" : ""} href={`/groups/${groupId}/projects/${selectedProject.id}/settings`}><Settings size={19} />ตั้งค่า</Link>
-          </nav>
-        </>}
+        {!selectedProject ? sprintBase ? <WorkspaceSidebarNavigation
+          scope="sprint"
+          sprintName={planningSprint?.name ?? "Sprint"}
+          sprintHref={sprintBase}
+          backHref={scopedYear ? `/groups/${groupId}/years/${scopedYear}/sprints` : `/groups/${groupId}/years`}
+          activePage="projects"
+          onNavigate={() => setMobileNav(false)}
+        /> : <nav className="main-nav" aria-label="เมนู Projects"><Link href={projectsHref}>ย้อนกลับ</Link></nav> : <WorkspaceSidebarNavigation
+          scope="project"
+          projectName={selectedProject.name}
+          projectHref={`/groups/${groupId}/projects/${selectedProject.id}`}
+          backHref={projectsHref}
+          backLabel={sprintBase ? "กลับไป Sprint · รายการ Projects" : "ย้อนกลับ"}
+          activePage={activePage === "projects" ? "overview" : activePage}
+          caseCount={loadingWorkspace ? "…" : cases.length}
+          defectCount={allDefects.length}
+          onNavigate={() => setMobileNav(false)}
+          projectSwitcher={<select aria-label="เลือก Project" value={selectedProject.id} onChange={(event) => { setMobileNav(false); router.push(`/groups/${groupId}/projects/${event.target.value}/overview`); }}>{projects.filter(project => project.id === selectedProject.id || (project.sprintId === selectedProject.sprintId && project.year === selectedProject.year)).map(project => <option value={project.id} key={project.id}>{project.name}</option>)}</select>}
+        />}
         {currentUser && <div className="signed-in-user"><span className="avatar compact">{currentUser.name.slice(0, 2).toUpperCase()}</span><div><strong>{currentUser.name}</strong><span>{currentUser.email}</span></div><form action={signOut}><button type="submit" aria-label="ออกจากระบบ">ออก</button></form></div>}
       </aside>
       {mobileNav && <button className="mobile-overlay" aria-label="ปิดเมนู" onClick={() => setMobileNav(false)} />}

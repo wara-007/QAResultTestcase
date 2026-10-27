@@ -7,7 +7,7 @@ import { readSheetImportState } from "./sheet-import-state";
 import type { SheetImportState } from "./sheet-import-state";
 import type { RowLoadState } from "./result-preview";
 import type { TestCase, TestStatus, WorkbookSheet, WorkbookSource } from "@/lib/types";
-import { readAllRows } from "./paged-rows";
+import { readAllRows, readAllRowsConcurrent } from "./paged-rows";
 import { retryTimedOutProjectWrite, enqueueProjectDetailWrite } from "./project-detail-lock";
 
 const SOURCE_BUCKET = "testcase-source-files";
@@ -127,14 +127,34 @@ export async function loadProjectWorkspace(projectId: string, options: { include
       .order("id", { ascending: false })
       .limit(1)
       .maybeSingle());
-  const readCases=()=>readAllRows<CaseRow>((start, end) => supabase
+  const readCases=async () => {
+    // Keep lightweight definitions out of the large execution query. A nested
+    // REST join used to aggregate several megabytes before its page could return.
+    const definitions = await readAllRows<Omit<CaseRow, "test_executions">>((start, end) => supabase
       .from("test_cases")
-      .select("id, testcase_key, source_row, sort_order, platform, condition_text, scenario, case_name, steps, expected_result, test_data, test_executions(id, status, device, app_version, environment, remark, result_reference, executed_by_name, executed_date, executed_time, attempt_no)")
+      .select("id, testcase_key, source_row, sort_order, platform, condition_text, scenario, case_name, steps, expected_result, test_data")
       .eq("project_id", projectId)
       .order("sort_order", { ascending: true })
       .order("source_row", { ascending: true })
       .order("id", { ascending: true })
-      .range(start, end), 10, { shrinkOnTimeout: true });
+      .range(start, end));
+    if (!definitions.length) return [];
+    const executions = await readAllRowsConcurrent<ExecutionRow & {test_case_id: string}>((start, end) => supabase
+      .from("test_executions")
+      .select("id, test_case_id, status, device, app_version, environment, remark, result_reference, executed_by_name, executed_date, executed_time, attempt_no")
+      .eq("project_id", projectId)
+      .order("test_case_id", {ascending:true})
+      .order("attempt_no", {ascending:false})
+      .order("id", {ascending:true})
+      .range(start, end), 1, 2);
+    const byCase = new Map<string, ExecutionRow[]>();
+    for (const execution of executions) {
+      const values = byCase.get(execution.test_case_id) ?? [];
+      values.push(execution);
+      byCase.set(execution.test_case_id, values);
+    }
+    return definitions.map(row => ({...row, test_executions:byCase.get(row.id) ?? []}));
+  };
   // Snapshot token must precede case reads. A competing writer then causes a
   // CAS conflict instead of accepting stale rows with its newer token.
   const [sourceResult,casesResult]=await Promise.all([

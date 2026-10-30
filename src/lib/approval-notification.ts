@@ -6,5 +6,5 @@ export function approvalNotificationPatch(now: string, userId: string, name: str
 }
 
 export function approvalUpdateNotice(emailId: string, requestedAt: string, reviewedAt: string | null) {
-  return (emailId === "mailto-update" || /^(smtp|gmail|microsoft)-update:/.test(emailId)) && (!reviewedAt || Date.parse(requestedAt) > Date.parse(reviewedAt));
+  return (emailId === "mailto-update" || /^manual-update:/.test(emailId) || /^(smtp|gmail|microsoft)-update:/.test(emailId)) && (!reviewedAt || Date.parse(requestedAt) > Date.parse(reviewedAt));
 }

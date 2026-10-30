@@ -85,7 +85,7 @@ export function buildTeamProjectReport(data:SprintDashboardData,groupId:string,y
       return {
         projectId,name:entry?.name ?? activity[0]?.projectName ?? assigned[0]?.projectName ?? project?.name ?? 'Project',
         environment:historical?.project.environment ?? project?.environment ?? '',
-        href:entry?sprintEntryHref(entry,groupId,year):`/groups/${groupId}/projects/${projectId}/test-cases`,
+        href:entry?.kind==='continued'?sprintEntryHref(entry,groupId,year):`/groups/${groupId}/projects/${projectId}/overview`,
         role,roleLabel:isProjectQa?'QA ที่รับผิดชอบ Project':assigned.length?'ผู้รับผิดชอบ Test cases':'มีส่วนร่วมจากผลทดสอบ',
         ...deliveryState(counts,approval,entry?.kind==='continued'),counts,approval,activity,recordedResults:activity.length,collaborators:collaboratorsByProject.get(projectId) ?? [],
         workSummary:activity.length?`มีผลทดสอบบันทึกไว้ ${activity.length} รายการ${assigned.length?` · รับผิดชอบรายเคส ${assigned.length} เคส`:''}`:assigned.length?`ได้รับมอบหมาย ${assigned.length} เคส · ยังไม่มีผลทดสอบของคนนี้`:'ได้รับมอบหมายเป็น QA ของ Project · ยังไม่มีผลทดสอบของคนนี้',
@@ -100,7 +100,7 @@ export function buildTeamProjectReport(data:SprintDashboardData,groupId:string,y
     const counts=data.summaryPending?.includes(entry.projectId) && !historical?undefined:historical?.counts ?? project?.counts;
     const approval=historical?.approval ?? project?.approval;
     projectReports.set(entry.projectId,{
-      projectId:entry.projectId,name:entry.name,environment:historical?.project.environment ?? project?.environment ?? '',href:sprintEntryHref(entry,groupId,year),
+      projectId:entry.projectId,name:entry.name,environment:historical?.project.environment ?? project?.environment ?? '',href:entry.kind==='continued'?sprintEntryHref(entry,groupId,year):`/groups/${groupId}/projects/${entry.projectId}/overview`,
       ...deliveryState(counts,approval,entry.kind==='continued'),counts,approval,collaborators:collaboratorsByProject.get(entry.projectId) ?? [],qaNames:(historical?.qa ?? project?.qa ?? []).map(person=>person.name),
     });
   }

@@ -9,7 +9,7 @@ export function googleConsentOptions(purpose: "mail" | "drive", state: string, e
 }
 export type GoogleMailCredentials = Auth.Credentials & { mail_email: string };
 export class GoogleMailConnectionRequiredError extends Error {
-  constructor() { super("กรุณาเชื่อม Gmail ของบัญชี QA ที่เข้าสู่ระบบ และอนุญาตส่งอีเมล"); this.name = "GoogleMailConnectionRequiredError"; }
+  constructor() { super("กรุณาเชื่อม Gmail ของอีเมลผู้ส่งที่ระบุ และอนุญาตส่งอีเมล"); this.name = "GoogleMailConnectionRequiredError"; }
 }
 
 export function canSendGoogleMail(credentials: (Auth.Credentials & {mail_email?: string}) | null, expectedEmail: string) {
@@ -19,7 +19,7 @@ export function canSendGoogleMail(credentials: (Auth.Credentials & {mail_email?:
 
 export function mailCredentials(tokens: Auth.Credentials, profile: {email?: string | null; verified_email?: boolean | null}, expectedEmail: string, existing: GoogleMailCredentials | null): GoogleMailCredentials {
   const email = profile.email?.trim().toLowerCase();
-  if (!expectedEmail || !profile.verified_email || email !== expectedEmail.trim().toLowerCase()) throw new Error("กรุณาเลือกบัญชี Google อีเมลเดียวกับ QA ที่เข้าสู่ระบบ");
+  if (!expectedEmail || !profile.verified_email || email !== expectedEmail.trim().toLowerCase()) throw new Error("กรุณาเลือกบัญชี Google อีเมลเดียวกับผู้ส่งที่ระบุ");
   const refresh = tokens.refresh_token || (existing?.mail_email === email ? existing.refresh_token : undefined);
   const saved = {...tokens, refresh_token: refresh, mail_email: email};
   if (!canSendGoogleMail(saved, expectedEmail)) throw new GoogleMailConnectionRequiredError();

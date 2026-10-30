@@ -35,7 +35,7 @@ export function buildApprovalEmail(input: {
   const subject = `${input.repeat ? "[อัปเดต] " : ""}${input.subject.trim() || `[QA Approval] ${input.projectName.replace(/[\r\n]/g, " ")}`}`;
   const reviewUrl = `${url.origin}/approvals/${encodeURIComponent(input.requestId)}`;
   const sender = address(input.senderEmail ?? input.replyTo);
-  if (sender !== address(input.replyTo)) throw new Error("ผู้ส่งต้องตรงกับบัญชี QA ที่เข้าสู่ระบบ");
+  if (sender !== address(input.replyTo)) throw new Error("ผู้ส่งและ Reply-To ต้องตรงกับบัญชีที่เชื่อมสิทธิ์ส่งเมล");
   return { from: { name: (input.senderName || sender).replace(/[\r\n]/g, " ").slice(0, 160), address: sender }, to, cc, replyTo: sender, subject,
     text: [input.repeat ? "มีการอัปเดตผลการทดสอบ Project กรุณาตรวจสอบข้อมูลล่าสุด สถานะอนุมัติเดิมยังคงเดิม" : "", input.body.trim(), "", `เปิดหน้า Review และ Approve: ${reviewUrl}`, `Google Sheets: ${input.sheetUrl}`].filter(Boolean).join("\n") };
 }

@@ -1,7 +1,18 @@
+import type { ManualApprovalDelivery } from "./approval-manual";
 import { formatFlexibleDate } from "./date-format";
 
 export type MailProvider = "gmail" | "microsoft";
 export type MailConnection = { email: string; provider: MailProvider | null; connected: boolean; configured: boolean; error?: string };
+
+export function approvalSenderEmail(selected: string | undefined, fallback: string) {
+  const email = selected === undefined ? fallback : selected;
+  if (typeof email !== "string" || /[\r\n]/.test(email)) throw new Error("กรุณากรอกอีเมลผู้ส่งให้ถูกต้อง");
+  const normalized = email.trim().toLowerCase();
+  if (!/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[^\s@]+$/i.test(normalized) || normalized.length > 254 || !mailProvider(normalized)) {
+    throw new Error("รองรับอีเมลผู้ส่ง @gmail.com และ @truecorp.co.th เท่านั้น");
+  }
+  return normalized;
+}
 
 export function mailProvider(email: string): MailProvider | null {
   const normalized = email.trim().toLowerCase();
@@ -32,19 +43,24 @@ export function mailReturnTo(returnTo: string, error?: string) {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
-export function mailConnectUrl(provider: MailProvider, returnTo: string) {
+export function mailConnectUrl(provider: MailProvider, returnTo: string, senderEmail?: string) {
   const url = cleanReturnUrl(returnTo);
+  const sender = senderEmail === undefined ? "" : `&senderEmail=${encodeURIComponent(approvalSenderEmail(senderEmail, ""))}`;
   const path = `${url.pathname}${url.search}${url.hash}`;
   return provider === "gmail"
-    ? `/api/google/auth/start?purpose=mail&returnTo=${encodeURIComponent(path)}`
-    : `/api/microsoft/auth/start?returnTo=${encodeURIComponent(path)}`;
+    ? `/api/google/auth/start?purpose=mail&returnTo=${encodeURIComponent(path)}${sender}`
+    : `/api/microsoft/auth/start?returnTo=${encodeURIComponent(path)}${sender}`;
 }
 
 export function mailProviderLabel(provider: MailProvider | null) {
   return provider === "gmail" ? "Gmail" : provider === "microsoft" ? "Microsoft 365 / Outlook" : "อีเมล";
 }
 
-export function mailDeliveryLabel(emailId: string, sentAt: string) {
+export function mailDeliveryLabel(emailId: string, sentAt: string, manual?: Pick<ManualApprovalDelivery, "confirmedAt" | "confirmedByName">) {
+  if (/^manual(?:-update)?:/.test(emailId)) {
+    return manual?.confirmedAt ? `ผู้ใช้ยืนยันว่าส่งแล้ว · ${manual.confirmedByName} · ${formatFlexibleDate(manual.confirmedAt)}` : "เตรียมแล้ว · ยังไม่ยืนยันการส่ง";
+  }
+  if (emailId === "mailto" || emailId === "mailto-update") return "เตรียมร่างแล้ว · รอผู้ใช้ส่งผ่าน Outlook";
   if (/^(smtp|gmail|microsoft)-pending/.test(emailId)) return "กำลังส่งอีเมล / รอยืนยันผลการส่ง";
   if (/^(smtp|gmail|microsoft)-unknown/.test(emailId)) return "ยังยืนยันการส่งไม่ได้ กรุณาตรวจ Sent ก่อนส่งซ้ำ";
   if (/^(smtp|gmail|microsoft)(-update)?:/.test(emailId)) {

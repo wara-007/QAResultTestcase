@@ -16,8 +16,10 @@ import { readAllRows } from '@/lib/paged-rows';
 import { approvalNotificationPatch } from "@/lib/approval-notification";
 import { approvalSendBlocked, buildApprovalEmail, deliverApprovalEmail } from "@/lib/approval-email";
 import { getQaMailConnection, getQaMailSender, qaMailPreparationFailure } from "@/lib/qa-mail-server";
-import { mailProvider, mailConnectUrl, type MailConnection } from "@/lib/mail-provider";
+import { approvalSenderEmail, mailProvider, mailConnectUrl, type MailConnection } from "@/lib/mail-provider";
 import { requireProjectCapability, type ProjectCapability } from "@/lib/project-access-server";
+import { manualDeliveryId, readManualDelivery, type ManualApprovalDelivery } from "@/lib/approval-manual";
+import type { ApprovalOutlookDraft } from "@/lib/approval-outlook";
 import { requireApprovalEvidenceReady } from "@/lib/approval-evidence-server";
 
 export type ProjectApprovalSummary = {
@@ -32,6 +34,7 @@ export type ProjectApprovalSummary = {
   emailSentAt: string;
   emailId: string;
   emailError: string;
+  manualDelivery?: ManualApprovalDelivery;
 };
 
 async function getSignedInProject(projectId: string, capability: ProjectCapability = "view"): Promise<{ userId: string; name: string; email: string; googleSheetId: string } | { error: string }> {
@@ -45,28 +48,48 @@ async function getSignedInProject(projectId: string, capability: ProjectCapabili
   }
 }
 
+type ApprovalSummaryRow = {
+  id: string; recipient_email: string; status: string; requested_at: string; expires_at: string;
+  reviewed_at: string | null; reviewer_name: string; reviewer_comment: string;
+  email_sent_at: string | null; email_id: string; email_error: string;
+};
+
+function approvalSummary(row: ApprovalSummaryRow, manualDelivery?: ManualApprovalDelivery): ProjectApprovalSummary {
+  return {id: row.id, recipientEmail: row.recipient_email, status: row.status as ApprovalStatus,
+    requestedAt: row.requested_at, expiresAt: row.expires_at, reviewedAt: row.reviewed_at ?? "",
+    reviewerName: row.reviewer_name ?? "", reviewerComment: row.reviewer_comment ?? "",
+    emailSentAt: row.email_sent_at ?? "", emailId: row.email_id ?? "", emailError: row.email_error ?? "",
+    ...(manualDelivery ? {manualDelivery} : {})};
+}
+
+async function loadManualApprovalDelivery(admin: ReturnType<typeof createAdminClient>, row: ApprovalSummaryRow) {
+  const id = manualDeliveryId(row.email_id);
+  if (!id) return undefined;
+  const result = await admin.from("project_approval_manual_deliveries")
+    .select("id, draft, prepared_at, confirmed_at, confirmed_by_name").eq("id", id).eq("request_id", row.id).maybeSingle();
+  if (result.error) throw new Error("โหลดร่างอีเมลไม่สำเร็จ กรุณาตรวจ migration project_approval_manual_deliveries");
+  return readManualDelivery(result.data);
+}
+
 export async function getLatestProjectApproval(projectId: string): Promise<{ approval: ProjectApprovalSummary | null } | { error: string }> {
   try {
     const access = await getSignedInProject(projectId);
     if ("error" in access) return access;
-    const result = await createAdminClient().from("project_approval_requests")
+    const admin = createAdminClient();
+    const result = await admin.from("project_approval_requests")
       .select("id, recipient_email, status, requested_at, expires_at, reviewed_at, reviewer_name, reviewer_comment, email_sent_at, email_id, email_error")
       .eq("project_id", projectId).order("requested_at", { ascending: false }).limit(1).maybeSingle();
     if (result.error) return { error: result.error.message };
     if (!result.data) return { approval: null };
-    return { approval: {
-      id: result.data.id, recipientEmail: result.data.recipient_email, status: result.data.status as ApprovalStatus,
-      requestedAt: result.data.requested_at, expiresAt: result.data.expires_at,
-      reviewedAt: result.data.reviewed_at ?? "", reviewerName: result.data.reviewer_name,
-      reviewerComment: result.data.reviewer_comment, emailSentAt: result.data.email_sent_at ?? "",
-      emailId: result.data.email_id ?? "", emailError: result.data.email_error ?? "",
-    } };
+    return {approval: approvalSummary(result.data, await loadManualApprovalDelivery(admin, result.data))};
   } catch (reason) {
     return { error: reason instanceof Error ? reason.message : "โหลดสถานะ Approval ไม่สำเร็จ" };
   }
 }
 
 type CreateApprovalInput = {
+  deliveryMode?: "oauth" | "manual" | "outlook";
+  senderEmail?: string;
   projectId: string;
   recipientEmail: string;
   cc: string;
@@ -77,13 +100,16 @@ type CreateApprovalInput = {
   counts: { total: number; pass: number; failed: number; skip: number; notStart: number; inProgress: number };
 };
 
-type CreateApprovalResult = { request: ProjectApprovalSummary; warning?: string } | { error: string; authUrl?: string };
+type CreateApprovalResult = { request: ProjectApprovalSummary; warning?: string; outlookDraft?: ApprovalOutlookDraft } | { error: string; authUrl?: string };
 
-export async function getApprovalMailConnection(projectId: string): Promise<MailConnection | {error: string}> {
+export async function getApprovalMailConnection(projectId: string, senderEmail?: string): Promise<MailConnection | {error: string}> {
   const access = await getSignedInProject(projectId, "edit");
   if ("error" in access) return access;
-  try { return await getQaMailConnection(access.email); }
-  catch (reason) { return {error: qaMailPreparationFailure(reason, access.email).message}; }
+  let email: string;
+  try { email = approvalSenderEmail(senderEmail, access.email); }
+  catch (reason) { return {error: reason instanceof Error ? reason.message : "กรุณากรอกอีเมลผู้ส่งให้ถูกต้อง"}; }
+  try { return await getQaMailConnection(email); }
+  catch (reason) { return {error: qaMailPreparationFailure(reason, email).message}; }
 }
 
 // Compatibility for callers from an already-open page during deployment.
@@ -96,13 +122,22 @@ export async function createProjectApprovalRequest(input: CreateApprovalInput): 
     const access = await getSignedInProject(input.projectId, "edit");
     if ("error" in access) return access;
     await requireApprovalEvidenceReady(input.projectId, access.googleSheetId);
-    // Verify the signed-in QA's real mailbox grant before reserving a request.
-    const provider = mailProvider(access.email);
-    let sender: Awaited<ReturnType<typeof getQaMailSender>>;
-    try { sender = await getQaMailSender(access.email); }
-    catch (reason) {
-      const failure = qaMailPreparationFailure(reason, access.email);
-      return {error: failure.message, ...(failure.reauthorize && provider ? {authUrl: mailConnectUrl(provider, "/groups")} : {})};
+    if (input.deliveryMode !== undefined && input.deliveryMode !== "oauth" && input.deliveryMode !== "manual" && input.deliveryMode !== "outlook") return {error: "วิธีส่งอีเมลไม่ถูกต้อง"};
+    const outlookMode = input.deliveryMode === "outlook"; // Compatibility with already-open Outlook draft pages.
+    const manualMode = input.deliveryMode === "manual";
+    // Direct delivery requires a verified grant. Outlook mode only prepares a draft.
+    // Manual preparation uses the authenticated actor only to build internal
+    // headers; the user does not choose or verify a sending mailbox here.
+    const senderEmail = manualMode ? access.email.trim().toLowerCase() : approvalSenderEmail(input.senderEmail, access.email);
+    const provider = mailProvider(senderEmail);
+    if (outlookMode && provider !== "microsoft") return {error: "เปิด Outlook เพื่อส่งรองรับอีเมลผู้ส่ง @truecorp.co.th"};
+    let sender: Awaited<ReturnType<typeof getQaMailSender>> | undefined;
+    if (!outlookMode && !manualMode) {
+      try { sender = await getQaMailSender(senderEmail); }
+      catch (reason) {
+        const failure = qaMailPreparationFailure(reason, senderEmail);
+        return {error: failure.message, ...(failure.reauthorize && provider ? {authUrl: mailConnectUrl(provider, "/groups", senderEmail)} : {})};
+      }
     }
     const email = input.recipientEmail.trim().toLowerCase();
     const admin = createAdminClient();
@@ -123,11 +158,13 @@ export async function createProjectApprovalRequest(input: CreateApprovalInput): 
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
     const requestId = existingResult.data?.id ?? randomUUID();
     // Real emails always link to the configured public site, never localhost or an untrusted Origin header.
-    const message = buildApprovalEmail({ ...input, senderEmail: access.email, senderName: access.name, replyTo: access.email, projectName: projectResult.data.name,
+    const message = buildApprovalEmail({ ...input, subject: manualMode ? projectResult.data.name : input.subject, senderEmail, senderName: senderEmail === access.email.toLowerCase() ? access.name : senderEmail, replyTo: senderEmail, projectName: projectResult.data.name,
       sheetUrl: projectResult.data.google_sheet_url, siteUrl: process.env.NEXT_PUBLIC_SITE_URL ?? "",
       requestId, repeat: Boolean(existingResult.data) });
-    const notification = approvalNotificationPatch(new Date().toISOString(), access.userId, access.name, Boolean(existingResult.data), sender.provider);
-    notification.email_id += `:${randomUUID()}`;
+    const notification = approvalNotificationPatch(new Date().toISOString(), access.userId, access.name, Boolean(existingResult.data), provider ?? "gmail");
+    const manualId = manualMode ? randomUUID() : undefined;
+    const manualDraft = {projectName: projectResult.data.name, senderEmail: manualMode ? "" : senderEmail, recipientEmail: message.to, cc: message.cc, subject: message.subject, body: message.text};
+    notification.email_id = manualId ? `${existingResult.data ? "manual-update" : "manual"}:${manualId}` : outlookMode ? (existingResult.data ? "mailto-update" : "mailto") : `${notification.email_id}:${randomUUID()}`;
     const requestData = {
       id: requestId,
       project_id: input.projectId,
@@ -141,23 +178,62 @@ export async function createProjectApprovalRequest(input: CreateApprovalInput): 
       ...notification,
     };
     const columns = "id, recipient_email, status, requested_at, expires_at, reviewed_at, reviewer_name, reviewer_comment, email_sent_at, email_id, email_error";
-    const result = existingResult.data
+    const result = manualId
+      ? await admin.rpc("prepare_project_approval_manual_delivery", {
+        p_request: requestData, p_existing: existingResult.data ? {requested_at: existingResult.data.requested_at, email_id: existingResult.data.email_id} : null,
+        p_delivery_id: manualId, p_draft: manualDraft,
+      }).single<ApprovalSummaryRow>()
+      : existingResult.data
       ? await admin.from("project_approval_requests").update(notification).eq("id", requestId).eq("requested_at", existingResult.data.requested_at).eq("email_id", existingResult.data.email_id).neq("status", "revoked").select(columns).single()
       : await admin.from("project_approval_requests").insert(requestData).select(columns).single();
     if (result.error) return { error: result.error.code === "23505" || result.error.code === "PGRST116" ? "คำขอนี้กำลังถูกส่งหรือมีการเปลี่ยนแปลง กรุณาโหลดสถานะใหม่ก่อนส่งซ้ำ" : result.error.message };
 
     let saved = result.data;
-    const delivery = await deliverApprovalEmail(message, Boolean(existingResult.data), sender.send, async patch => {
-      const updated = await admin.from("project_approval_requests").update(patch).eq("id", requestId)
-        .eq("email_id", notification.email_id).select(columns).single();
-      if (updated.error) throw new Error("Could not persist email receipt");
-      saved = updated.data;
-    }, sender.provider);
-    revalidatePath("/approvals");
-    if (!delivery.ok) return {error: delivery.error, authUrl: delivery.reauthorize ? mailConnectUrl(sender.provider, "/groups") : undefined};
-    return { request: { id: saved.id, recipientEmail: email, status: saved.status as ApprovalStatus, requestedAt: saved.requested_at, expiresAt: saved.expires_at, emailSentAt: saved.email_sent_at ?? "", emailId: saved.email_id, emailError: saved.email_error, reviewedAt: saved.reviewed_at ?? "", reviewerName: saved.reviewer_name, reviewerComment: saved.reviewer_comment }, warning: delivery.warning };
+    let warning: string | undefined;
+    if (sender) {
+      const delivery = await deliverApprovalEmail(message, Boolean(existingResult.data), sender.send, async patch => {
+        const updated = await admin.from("project_approval_requests").update(patch).eq("id", requestId)
+          .eq("email_id", notification.email_id).select(columns).single();
+        if (updated.error) throw new Error("Could not persist email receipt");
+        saved = updated.data;
+      }, sender.provider);
+      revalidatePath("/approvals");
+      if (!delivery.ok) return {error: delivery.error, authUrl: delivery.reauthorize ? mailConnectUrl(sender.provider, "/groups", senderEmail) : undefined};
+      warning = delivery.warning;
+    } else {
+      revalidatePath("/approvals");
+    }
+    const manualDelivery: ManualApprovalDelivery | undefined = manualId ? {
+      id: manualId, draft: manualDraft, preparedAt: notification.requested_at, confirmedAt: "", confirmedByName: "",
+    } : undefined;
+    return {request: approvalSummary(saved, manualDelivery), warning, ...(outlookMode ? {outlookDraft: manualDraft} : {})};
   } catch (reason) {
     return { error: reason instanceof Error ? reason.message : "สร้างลิงก์รีวิวไม่สำเร็จ" };
+  }
+}
+
+export async function confirmManualApprovalSent(input: {projectId: string; requestId: string; deliveryId: string}): Promise<{request: ProjectApprovalSummary} | {error: string}> {
+  try {
+    const access = await getSignedInProject(input.projectId, "edit");
+    if ("error" in access) return access;
+    const admin = createAdminClient();
+    const result = await admin.rpc("confirm_project_approval_manual_delivery", {
+      p_project_id: input.projectId, p_request_id: input.requestId, p_delivery_id: input.deliveryId,
+      p_confirmed_by: access.userId, p_confirmed_by_name: access.name,
+    }).single();
+    if (result.error) return {error: result.error.message};
+    const delivery = readManualDelivery(result.data);
+    const approval = await admin.from("project_approval_requests")
+      .select("id, recipient_email, status, requested_at, expires_at, reviewed_at, reviewer_name, reviewer_comment, email_sent_at, email_id, email_error")
+      .eq("id", input.requestId).eq("project_id", input.projectId).maybeSingle();
+    if (approval.error) return {error: approval.error.message};
+    if (!approval.data || manualDeliveryId(approval.data.email_id) !== delivery.id || approval.data.status === "revoked") {
+      return {error: "รอบอีเมลมีการเปลี่ยนแปลง กรุณาเปิดร่างล่าสุด"};
+    }
+    revalidatePath("/approvals");
+    return {request: approvalSummary(approval.data, delivery)};
+  } catch (reason) {
+    return {error: reason instanceof Error ? reason.message : "ยืนยันการส่งไม่สำเร็จ กรุณาลองอีกครั้ง"};
   }
 }
 

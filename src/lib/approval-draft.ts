@@ -1,9 +1,11 @@
 import type { TestStatus } from "./types";
 
-export function isApprovalDraft(value: unknown): value is { poEmail: string; cc: string; subject: string; body: string | null } {
+export function isApprovalDraft(value: unknown): value is { deliveryMode?: "oauth" | "manual" | "outlook"; senderEmail?: string; poEmail: string; cc: string; subject: string; body: string | null } {
   if (!value || typeof value !== "object") return false;
   const draft = value as Record<string, unknown>;
-  return [draft.poEmail, draft.cc, draft.subject].every(item => typeof item === "string")
+  return (draft.deliveryMode === undefined || draft.deliveryMode === "oauth" || draft.deliveryMode === "manual" || draft.deliveryMode === "outlook")
+    && (draft.senderEmail === undefined || typeof draft.senderEmail === "string")
+    && [draft.poEmail, draft.cc, draft.subject].every(item => typeof item === "string")
     && (draft.body === null || typeof draft.body === "string");
 }
 

@@ -29,7 +29,7 @@ test('recorded contributors are linked to projects without being labelled projec
   const {people}=buildTeamProjectReport(dashboard({assigned:false,cases:[recorded()]}),'g',2026);
   assert.equal(people[0].projects[0].role,'contributor');
   assert.equal(people[0].projects[0].activity[0].detailPath,'/case/TC1');
-  assert.equal(people[0].projects[0].href,'/groups/g/projects/p/test-cases');
+  assert.equal(people[0].projects[0].href,'/groups/g/projects/p/overview');
 });
 
 test('unmatched imported names stay separate from accounts; anonymous work stays in issues',()=>{

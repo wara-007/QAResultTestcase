@@ -3,7 +3,7 @@ import type { buildApprovalEmail } from "./approval-email";
 export const MICROSOFT_MAIL_SCOPES = ["openid", "profile", "email", "offline_access", "User.Read", "Mail.Send"];
 export const MICROSOFT_GRAPH_SCOPES = ["User.Read", "Mail.Send"];
 export class MicrosoftMailConnectionRequiredError extends Error {
-  constructor() { super("กรุณาเชื่อม Microsoft 365 ด้วยอีเมลเดียวกับ QA ที่เข้าสู่ระบบ และอนุญาตส่งอีเมล"); this.name = "MicrosoftMailConnectionRequiredError"; }
+  constructor() { super("กรุณาเชื่อม Microsoft 365 ด้วยอีเมลผู้ส่งที่ระบุ และอนุญาตส่งอีเมล"); this.name = "MicrosoftMailConnectionRequiredError"; }
 }
 export class MicrosoftMailSetupError extends Error {
   constructor() { super("ระบบยังไม่ได้ตั้งค่าการส่งเมล Microsoft 365 / Outlook กรุณาติดต่อผู้ดูแลระบบ"); this.name = "MicrosoftMailSetupError"; }
@@ -18,7 +18,7 @@ export function hasMicrosoftMailScopes(scopes: string[]) {
   const granted = new Set(scopes.map(scope => scope.toLowerCase().replace(/^https:\/\/graph\.microsoft\.com\//, "")));
   return MICROSOFT_GRAPH_SCOPES.every(scope => granted.has(scope.toLowerCase()));
 }
-export type MicrosoftOAuthState = {state: string; userId: string; returnTo: string; verifier: string; redirectUri: string; expiresAt: number};
+export type MicrosoftOAuthState = {state: string; userId: string; senderEmail?: string; returnTo: string; verifier: string; redirectUri: string; expiresAt: number};
 export function validateMicrosoftState(value: unknown, state: string | null, userId: string, redirectUri: string, now = Date.now()): MicrosoftOAuthState {
   const saved = value as Partial<MicrosoftOAuthState> | null;
   if (!saved || !state || saved.state !== state || !userId || saved.userId !== userId || saved.redirectUri !== redirectUri

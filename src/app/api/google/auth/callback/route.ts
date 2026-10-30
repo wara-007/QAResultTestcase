@@ -5,6 +5,7 @@ import { googleAuthorizationReturn } from "@/lib/google-authorization";
 import { google } from "googleapis";
 import { gmailReturnTo, mailCredentials } from "@/lib/google-mail";
 import { loadGoogleMailCredentials, saveGoogleMailCredentials } from "@/lib/google-mail-server";
+import { approvalSenderEmail } from "@/lib/mail-provider";
 
 export const runtime = "nodejs";
 
@@ -16,7 +17,7 @@ export async function GET(request: Request) {
   try {
     const stateCookie = request.headers.get("cookie")?.match(new RegExp(`(?:^|; )${GOOGLE_OAUTH_STATE_COOKIE}=([^;]+)`))?.[1];
     if (!stateCookie) throw new Error("Google OAuth session หมดอายุ");
-    const stateData = openGoogleToken(decodeURIComponent(stateCookie)) as { state?: string; returnTo?: string; userId?: string; purpose?: string };
+    const stateData = openGoogleToken(decodeURIComponent(stateCookie)) as { state?: string; returnTo?: string; userId?: string; purpose?: string; senderEmail?: string };
     if (!url.searchParams.get("state") || url.searchParams.get("state") !== stateData.state) throw new Error("Google OAuth state ไม่ถูกต้อง");
     returnTo = safeReturnTo(stateData.returnTo ?? null);
     mailPurpose = stateData.purpose === "mail";
@@ -33,7 +34,7 @@ export async function GET(request: Request) {
       const profile = await google.oauth2({version: "v2", auth: oauth}).userinfo.get({}, {timeout: 15_000, retry: false});
       // Verify actual granted scopes, including granular-consent users who did not select Send.
       if (!tokens.scope && tokens.access_token) tokens.scope = (await oauth.getTokenInfo(tokens.access_token)).scopes.join(" ");
-      const expectedEmail = typeof claimsData?.claims?.email === "string" ? claimsData.claims.email : "";
+      const expectedEmail = approvalSenderEmail(stateData.senderEmail, typeof claimsData?.claims?.email === "string" ? claimsData.claims.email : "");
       const persistent = mailCredentials(tokens, profile.data, expectedEmail, await loadGoogleMailCredentials());
       await saveGoogleMailCredentials(persistent);
       const response = NextResponse.redirect(new URL(gmailReturnTo(returnTo), origin));

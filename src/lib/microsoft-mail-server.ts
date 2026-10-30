@@ -47,8 +47,7 @@ async function loadConnection(): Promise<MicrosoftConnection | null> {
   } catch { throw new MicrosoftMailConnectionRequiredError(); }
 }
 async function saveConnection(connection: MicrosoftConnection) {
-  const {supabase,userId,email} = await store();
-  if (email !== connection.mailEmail) throw new MicrosoftMailConnectionRequiredError();
+  const {supabase,userId} = await store();
   const {error} = await supabase.from("microsoft_mail_connections").upsert({user_id:userId,token_ciphertext:sealMailToken(connection,process.env.MAIL_TOKEN_ENCRYPTION_SECRET!),updated_at:new Date().toISOString()},{onConflict:"user_id"});
   if (error) throw new Error("บันทึกสิทธิ์ Outlook ไม่สำเร็จ กรุณาตรวจ migration และสิทธิ์ฐานข้อมูล");
 }
@@ -59,14 +58,14 @@ export async function getMicrosoftMailConnection(expectedEmail: string) {
 }
 export async function beginMicrosoftMailConnection(userId: string, email: string, returnTo: string, redirectUri: string) {
   const verifier = randomBytes(48).toString("base64url");
-  const state: MicrosoftOAuthState = {state:randomUUID(),userId,returnTo,redirectUri,verifier,expiresAt:Date.now()+600_000};
+  const state: MicrosoftOAuthState = {state:randomUUID(),userId,senderEmail:email,returnTo,redirectUri,verifier,expiresAt:Date.now()+600_000};
   const url = await client().getAuthCodeUrl({scopes:MICROSOFT_MAIL_SCOPES,redirectUri,state:state.state,
     codeChallenge:createHash("sha256").update(verifier).digest("base64url"),codeChallengeMethod:"S256",loginHint:email,prompt:"select_account"});
   return {url,state};
 }
 export async function completeMicrosoftMailConnection(code: string, state: MicrosoftOAuthState, expectedEmail: string) {
-  const {userId,email} = await store();
-  if (userId !== state.userId || email !== expectedEmail.trim().toLowerCase()) throw new MicrosoftMailConnectionRequiredError();
+  const {userId} = await store();
+  if (userId !== state.userId) throw new MicrosoftMailConnectionRequiredError();
   const app = client();
   const result = await app.acquireTokenByCode({code,scopes:MICROSOFT_MAIL_SCOPES,redirectUri:state.redirectUri,codeVerifier:state.verifier});
   if (!result?.account || !hasMicrosoftMailScopes(result.scopes)) throw new MicrosoftMailConnectionRequiredError();

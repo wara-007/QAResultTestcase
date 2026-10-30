@@ -21,3 +21,20 @@ test("unedited approval draft follows loaded counts and subsequent result change
   assert.equal(approvalDraftBody("ข้อความที่ QA แก้เอง", loaded), "ข้อความที่ QA แก้เอง");
   assert.equal(approvalDraftBody("", loaded), "");
 });
+
+test("sender survives draft restoration while malformed sender is rejected", () => {
+  const draft = {poEmail: "po@example.com", cc: "", subject: "Review", body: null, senderEmail: "other@gmail.com"};
+  assert.equal(isApprovalDraft(JSON.parse(JSON.stringify(draft))), true);
+  assert.equal(isApprovalDraft({...draft, senderEmail: 42}), false);
+});
+
+test("OAuth draft restoration preserves chosen delivery method and rejects unknown methods", () => {
+  const draft = {senderEmail: "qa@truecorp.co.th", poEmail: "po@example.com", cc: "", subject: "Review", body: null};
+  assert.equal(isApprovalDraft({...draft, deliveryMode: "oauth"}), true);
+  assert.equal(isApprovalDraft({...draft, deliveryMode: "outlook"}), true);
+  assert.equal(isApprovalDraft({...draft, deliveryMode: "unknown"}), false);
+});
+
+test("copy mode survives draft restoration", () => {
+  assert.equal(isApprovalDraft({senderEmail: "qa@gmail.com", deliveryMode: "manual", poEmail: "po@example.com", cc: "", subject: "Review", body: null}), true);
+});

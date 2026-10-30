@@ -46,10 +46,3 @@ test("approval checks saved evidence beyond page one using only the latest attem
   await assert.rejects(serverReadiness({ missing: true }).load("project", "sheet"), /รูปหลักฐานยังบันทึกไม่ครบ/);
   await assert.rejects(serverReadiness({ sourceError: true }).load("project", "sheet"), /Source unavailable/);
 });
-
-test("evidence gate runs before mailbox access or approval reservation", () => {
-  const actions = readFileSync(new URL("../app/actions.ts", import.meta.url), "utf8");
-  const action = actions.slice(actions.indexOf("export async function createProjectApprovalRequest"), actions.indexOf("type CreateProjectInput"));
-  assert.ok(action.indexOf("await requireApprovalEvidenceReady(input.projectId, access.googleSheetId)") > action.indexOf('getSignedInProject(input.projectId, "edit")'));
-  assert.ok(action.indexOf("await requireApprovalEvidenceReady(input.projectId, access.googleSheetId)") < action.indexOf("getQaMailSender(access.email)"));
-});

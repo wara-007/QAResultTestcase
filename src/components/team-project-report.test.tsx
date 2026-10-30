@@ -15,7 +15,7 @@ test('team report opens with a member and their assigned project without a pass 
   assert.match(html,/QA ที่รับผิดชอบ Project/);
   assert.match(html,/ยังไม่มีผลทดสอบของคนนี้/);
   assert.match(html,/กำลังทดสอบ/);
-  assert.match(html,/href="\/groups\/g\/projects\/p\/test-cases"/);
+  assert.match(html,/href="\/groups\/g\/projects\/p\/overview"/);
   assert.doesNotMatch(html,/ผลการทดสอบรายบุคคล|<table|ปิด Project แล้ว/);
 });
 
@@ -31,6 +31,8 @@ test('project mode shows unassigned projects and their team rather than a person
   const html=renderToStaticMarkup(<TeamProjectReport data={data} groupId="g" year={2026} mode="project"/>);
   assert.match(html,/เลือก Project เพื่อดูทีม/);
   assert.match(html,/Unassigned Project/);
+  assert.match(html,/href="\/groups\/g\/projects\/p\/overview"/);
+  assert.match(html,/เปิด ภาพรวม Project/);
   assert.match(html,/ยังไม่มอบหมาย QA/);
   assert.doesNotMatch(html,/ยังไม่มีงานที่เชื่อมโยงกับสมาชิก|คนที่เลือก|ยังไม่มีผลทดสอบของคนนี้/);
 });

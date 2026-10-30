@@ -40,7 +40,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { ChangeEvent, useCallback, useEffect, useEffectEvent, useMemo, useReducer, useRef, useState, useTransition } from "react";
+import { ChangeEvent, useCallback, useEffect, useEffectEvent, useId, useMemo, useReducer, useRef, useState, useTransition } from "react";
 import { CaseTableTools } from './case-table-tools';
 import { CaseRegisterTable, type CaseRegisterRow } from './case-register-table';
 import { useCaseTableView } from './use-case-table-view';
@@ -49,8 +49,12 @@ import { assignmentModeReducer, isAssignmentEditing } from '@/lib/case-assignmen
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { GoogleCleanupWarning } from './google-cleanup-warning';
-import { createProject, createProjectApprovalRequest, deleteProject, getLatestProjectApproval, getApprovalMailConnection, updateProjectGoogleSheet, type ProjectApprovalSummary } from "@/app/actions";
-import { mailConnectUrl, mailProvider, mailProviderLabel, mailDeliveryLabel, type MailConnection } from "@/lib/mail-provider";
+import { createProject, createProjectApprovalRequest, confirmManualApprovalSent, deleteProject, getLatestProjectApproval, getApprovalMailConnection, updateProjectGoogleSheet, type ProjectApprovalSummary } from "@/app/actions";
+import { ApprovalManualComposer } from "@/components/approval-manual-composer";
+import { ApprovalManualDialog } from "@/components/approval-manual-dialog";
+import { ApprovalDeliveryModePicker } from "@/components/approval-delivery-mode-picker";
+import { approvalComposerSelection, approvalDeliveryMode, websiteDeliveryAvailable } from "@/lib/approval-manual";
+import { approvalSenderEmail, mailConnectUrl, mailProvider, mailProviderLabel, mailDeliveryLabel, type MailConnection } from "@/lib/mail-provider";
 import { GoogleDrivePickerButton } from "@/components/google-drive-picker-button";
 import { ProjectFileActions } from "@/components/project-file-actions";
 import { googleAuthorizationTarget } from "@/lib/google-authorization";
@@ -88,6 +92,7 @@ import { automaticSheetImportMode, withWorkbookDefinitions, withSavedCaseIdentit
 import { checkpointSheetImport, readSheetImportState, pendingImportSheets, initialSheetImportStates } from "@/lib/sheet-import-state";
 import { filterProjects } from "@/lib/project-search";
 import { resolveSheetAssociations } from "@/lib/sheet-mapping-resolution";
+import { ProjectTeamParticipation } from "@/components/project-team-participation";
 import { workspaceCasesForRegister } from "@/lib/sheet-register-cases";
 import { clearProjectWorkbook, getProjectWorkbook } from "@/lib/workbook-cache";
 import { detectBootstrapCaseConflicts, detectThreeWayCaseConflicts, mergeCaseChoices, type CaseChoice, type CaseConflict } from "@/lib/sync/client-conflicts";
@@ -528,15 +533,27 @@ function ProjectApprovalPanel({ project, cases, counts, testingFinished, loading
   onPrepareEvidence: () => Promise<void>;
   evidenceProgressVisible?: boolean;
 }) {
+  const approvalTabsId = useId();
   const draftKey = `qa-approval-draft:${currentUser?.id ?? ""}:${project.id}`;
   const saved = useMemo(() => {
     try {
       const draft = JSON.parse(window.sessionStorage.getItem(draftKey) ?? "null");
       if (isApprovalDraft(draft)) return draft;
-      return JSON.parse(window.localStorage.getItem(`qa-approval-email:${project.id}`) ?? "{}") as { poEmail?: string; cc?: string; subject?: string; body?: string };
+      return JSON.parse(window.localStorage.getItem(`qa-approval-email:${project.id}`) ?? "{}") as { deliveryMode?: "oauth" | "manual" | "outlook"; senderEmail?: string; poEmail?: string; cc?: string; subject?: string; body?: string };
     }
     catch { return {}; }
   }, [project.id, draftKey]);
+  const [composerSelection, dispatchComposerSelection] = useReducer(approvalComposerSelection, {
+    senderEmail: saved.senderEmail ?? null,
+    deliveryMode: saved.deliveryMode ? approvalDeliveryMode(saved.deliveryMode, saved.senderEmail ?? currentUser?.email ?? "") : null,
+  });
+  const senderEmail = composerSelection.senderEmail ?? currentUser?.email ?? "";
+  const normalizedSenderEmail = senderEmail.trim().toLowerCase();
+  const senderProvider = mailProvider(normalizedSenderEmail);
+  const deliveryMode = approvalDeliveryMode(composerSelection.deliveryMode, normalizedSenderEmail);
+  const manualMode = deliveryMode === "manual";
+  const [manualApproval, setManualApproval] = useState<ProjectApprovalSummary | null>(null);
+  const [confirmingManual, setConfirmingManual] = useState(false);
   const [poEmail, setPoEmail] = useState(saved.poEmail ?? "");
   const [ccEmail, setCcEmail] = useState(saved.cc ?? "");
   const [emailSubject, setEmailSubject] = useState(saved.subject ?? `[QA Approval] ${project.name}`);
@@ -553,25 +570,29 @@ function ProjectApprovalPanel({ project, cases, counts, testingFinished, loading
   useEffect(() => {
     if (!canSubmit) return;
     let active = true;
-    void getApprovalMailConnection(project.id).then(result => {
+    const timer = window.setTimeout(() => { void getApprovalMailConnection(project.id, normalizedSenderEmail).then(result => {
       if (!active) return;
-      setMailConnection("email" in result ? result : {email: currentUser?.email ?? "", provider: mailProvider(currentUser?.email ?? ""), configured: true, connected: false, error: result.error});
+      setMailConnection("email" in result ? result : {email: normalizedSenderEmail, provider: mailProvider(normalizedSenderEmail), configured: true, connected: false, error: result.error});
       const query = new URLSearchParams(window.location.search);
       setMailNotice(query.get("mailAuthError") ?? query.get("gmailAuthError") ?? (query.has("mailAuth") || query.has("gmailAuth") ? "เชื่อมบัญชีส่งเมลแล้ว กรุณาตรวจร่างและกดส่งอีเมลอีกครั้ง" : ""));
-    }).catch(() => { if (active) setMailConnection({email: currentUser?.email ?? "", provider: mailProvider(currentUser?.email ?? ""), configured: true, connected: false, error: "โหลดสถานะส่งเมลไม่สำเร็จ กรุณาโหลดหน้าใหม่"}); });
-    return () => { active = false; };
-  }, [project.id, canSubmit, currentUser?.email]);
+    }).catch(() => { if (active) setMailConnection({email: normalizedSenderEmail, provider: mailProvider(normalizedSenderEmail), configured: true, connected: false, error: "โหลดสถานะส่งเมลไม่สำเร็จ กรุณาโหลดหน้าใหม่"}); });
+    }, 300);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [project.id, canSubmit, normalizedSenderEmail]);
 
-  const senderProvider = mailConnection?.provider ?? mailProvider(currentUser?.email ?? "");
+  const senderConnected = mailConnection?.email.trim().toLowerCase() === normalizedSenderEmail && mailConnection.connected;
   const senderProviderLabel = mailProviderLabel(senderProvider);
+  const websiteAvailable = websiteDeliveryAvailable(senderProvider, mailConnection);
 
   function connectMail() {
-    if (!senderProvider) return flash("รองรับบัญชี QA @gmail.com และ @truecorp.co.th สำหรับส่งเมล");
+    try { approvalSenderEmail(senderEmail, ""); }
+    catch (reason) { return flash(reason instanceof Error ? reason.message : "กรุณากรอกอีเมลผู้ส่งให้ถูกต้อง"); }
+    if (!senderProvider) return flash("รองรับอีเมลผู้ส่ง @gmail.com และ @truecorp.co.th สำหรับส่งเมล");
     if (mailConnection?.configured === false) return flash(mailConnection.error || "กรุณาให้ผู้ดูแลตั้งค่าระบบส่งเมลก่อน");
-    try { window.sessionStorage.setItem(draftKey, JSON.stringify({poEmail, cc: ccEmail, subject: emailSubject, body: editedEmailBody})); }
+    try { window.sessionStorage.setItem(draftKey, JSON.stringify({deliveryMode, senderEmail: normalizedSenderEmail, poEmail, cc: ccEmail, subject: emailSubject, body: editedEmailBody})); }
     catch { return flash("เก็บร่างอีเมลไม่ได้ กรุณาคัดลอกร่างไว้และอนุญาต Session Storage ก่อนเชื่อมบัญชีเมล"); }
     const current = new URL(window.location.href);
-    window.location.assign(mailConnectUrl(senderProvider, `${current.pathname}${current.search}${current.hash}`));
+    window.location.assign(mailConnectUrl(senderProvider, `${current.pathname}${current.search}${current.hash}`, normalizedSenderEmail));
   }
 
   useEffect(() => {
@@ -586,12 +607,17 @@ function ProjectApprovalPanel({ project, cases, counts, testingFinished, loading
   }, [project.id]);
 
   function openApprovalEmail() {
-    if (loading || sendingApproval) return;
+    if (loading || sendingApproval || confirmingManual) return;
     if (!evidenceReady || preparingEvidence) return flash("กรุณานำเข้ารายละเอียดและรูปหลักฐานทั้งโปรเจคให้เสร็จก่อนส่งให้ PO");
     const recipient = poEmail.trim();
-    if (!/^\S+@\S+\.\S+$/.test(recipient)) return flash("กรุณากรอกอีเมล PO ให้ถูกต้อง");
+    if (!/^\S+@\S+\.\S+$/.test(recipient)) { return flash("กรุณากรอกอีเมล PO ให้ถูกต้อง"); }
     if (!project.googleSheetUrl) return flash("กรุณาเชื่อม Google Sheet ก่อนส่งขอ Approve");
-    if (!mailConnection?.connected) { connectMail(); return; }
+    if (!manualMode) {
+      try { approvalSenderEmail(senderEmail, ""); }
+      catch (reason) { return flash(reason instanceof Error ? reason.message : "กรุณากรอกอีเมลผู้ส่งให้ถูกต้อง"); }
+    }
+    if (!manualMode && !websiteAvailable) return flash("บัญชีนี้ยังไม่มีสิทธิ์ส่งผ่านเว็บ กรุณาเลือกคัดลอกไปส่งเอง");
+    if (!manualMode && !senderConnected) { connectMail(); return; }
     if (!testingFinished) {
       setShowUntestedConfirmation(true);
       return;
@@ -600,7 +626,7 @@ function ProjectApprovalPanel({ project, cases, counts, testingFinished, loading
   }
 
   async function launchApprovalEmail() {
-    if (sendingApproval) return;
+    if (sendingApproval || confirmingManual) return;
     if (!evidenceReady || preparingEvidence) return flash("หลักฐานยังไม่พร้อมส่ง กรุณานำเข้าทั้งโปรเจคให้เสร็จก่อน");
     const recipient = poEmail.trim();
     setShowUntestedConfirmation(false);
@@ -608,8 +634,10 @@ function ProjectApprovalPanel({ project, cases, counts, testingFinished, loading
     try {
       const created = await createProjectApprovalRequest({
         projectId: project.id,
+        senderEmail: manualMode ? undefined : normalizedSenderEmail,
+        deliveryMode,
         recipientEmail: recipient,
-        cc: ccEmail.trim(),
+        cc: manualMode ? "" : ccEmail.trim(),
         subject: emailSubject,
         body: emailBody,
         note: "",
@@ -624,26 +652,65 @@ function ProjectApprovalPanel({ project, cases, counts, testingFinished, loading
         return;
       }
       setApproval(created.request);
+      if (created.request.manualDelivery) {
+        setManualApproval(created.request);
+        try { window.sessionStorage.setItem(draftKey, JSON.stringify({deliveryMode, senderEmail: normalizedSenderEmail, poEmail: recipient, cc: ccEmail, subject: emailSubject, body: editedEmailBody})); } catch { /* The prepared draft is persisted on the server. */ }
+        try {
+          await navigator.clipboard.writeText(created.request.manualDelivery.draft.body);
+          flash("คัดลอกเนื้อหาและลิงก์ Approve แล้ว ส่งอีเมลเองแล้วกลับมายืนยันการส่ง");
+        } catch {
+          flash("เตรียมร่างแล้ว แต่คัดลอกอัตโนมัติไม่ได้ กรุณากดคัดลอกในหน้าร่าง");
+        }
+        return;
+      }
       try { window.localStorage.setItem(`qa-approval-email:${project.id}`, JSON.stringify({ poEmail: recipient })); } catch { /* Browser storage must not change the delivery outcome. */ }
       try { window.sessionStorage.removeItem(draftKey); } catch { /* Delivery already succeeded. */ }
       flash(created.warning ?? `${senderProviderLabel} รับคำขอส่งแล้ว กรุณาตรวจ Sent เพื่อดูเมลที่ส่ง`);
     } catch {
-      flash("ยังยืนยันผลการส่งไม่ได้ กรุณาตรวจ Sent ของบัญชี QA ก่อนส่งซ้ำ");
+      flash(manualMode ? "เตรียมร่างไม่สำเร็จ กรุณาลองอีกครั้ง" : "ยังยืนยันผลการส่งไม่ได้ กรุณาตรวจ Sent ของบัญชี QA ก่อนส่งซ้ำ");
     } finally {
       setSendingApproval(false);
     }
   }
 
-  const approvalLabel = approval?.status === "approved" ? "Approved" : approval?.status === "changes_requested" ? "ขอให้แก้ไข" : approval?.status === "pending" ? "รอ PO รีวิว" : "";
+  async function confirmManualSending() {
+    if (!manualApproval?.manualDelivery || confirmingManual) return;
+    setConfirmingManual(true);
+    try {
+      const result = await confirmManualApprovalSent({projectId: project.id, requestId: manualApproval.id, deliveryId: manualApproval.manualDelivery.id});
+      if ("error" in result) {
+        flash(result.error);
+        const latest = await getLatestProjectApproval(project.id);
+        if ("approval" in latest) {
+          setApproval(latest.approval);
+          if (latest.approval?.manualDelivery?.id !== manualApproval.manualDelivery.id) setManualApproval(null);
+        }
+        return;
+      }
+      setApproval(result.request);
+      setManualApproval(current => current?.manualDelivery?.id === result.request.manualDelivery?.id ? result.request : current);
+      flash("บันทึกว่าผู้ใช้ยืนยันว่าส่งคำขอ Approve แล้ว");
+    } catch { flash("บันทึกการยืนยันไม่สำเร็จ กรุณาลองอีกครั้ง"); }
+    finally { setConfirmingManual(false); }
+  }
+
+  const approvalLabel = approval?.status === "approved" ? "Approved" : approval?.status === "changes_requested" ? "ขอให้แก้ไข" : approval?.status === "pending" ? (approval.manualDelivery && !approval.manualDelivery.confirmedAt ? "รอยืนยันการส่ง" : "รอ PO รีวิว") : "";
   const approvalMatchesRecipient = approval?.recipientEmail === poEmail.trim().toLowerCase();
 
   return <><section className="panel approval-panel">
     {canSubmit && !evidenceProgressVisible && <section className="approval-evidence-status" aria-label="ความพร้อมของรูปหลักฐาน"><p role="status"><strong>{preparingEvidence ? "กำลังนำเข้ารายละเอียดและรูปหลักฐานทั้งโปรเจค…" : evidenceNotice}</strong></p><p>ระบบต้องอัปโหลดและบันทึกรูปครบก่อนส่งให้ PO โดยไม่ต้องเปิด Test case ทีละรายการ</p>{!evidenceReady && project.googleSheetId && <button type="button" className="secondary-button" disabled={loading || preparingEvidence || sendingApproval} onClick={() => void onPrepareEvidence()}>{preparingEvidence ? "กำลังนำเข้าหลักฐาน…" : "นำเข้าข้อมูลจาก Sheets"}</button>}</section>}
-    <div className="approval-heading"><div className="approval-icon"><Mail size={23} /></div><div><h2>ส่งผลทดสอบให้ PO Approve</h2><p>ส่งจากอีเมล QA ที่เข้าสู่ระบบถึงผู้รับที่ระบุ พร้อมสรุปผลและลิงก์รีวิว · PO กด Reply ในเมลเพื่อตอบกลับ QA ได้</p></div><span className={`approval-readiness ${testingFinished && evidenceReady ? "ready" : "pending"}`}>{loading ? "กำลังโหลด..." : !evidenceReady ? "หลักฐานยังไม่พร้อม" : testingFinished ? "พร้อมส่ง" : cases.length ? `ยังไม่ได้ทดสอบ ${untested} cases` : "ยังไม่มี Test Case"}</span></div>
-    {canSubmit && <div className="approval-form"><label className="text-field"><span>ผู้ส่ง (บัญชี QA)</span><input type="email" value={mailConnection?.email || currentUser?.email || ""} readOnly /><small>{!mailConnection ? "กำลังตรวจสิทธิ์ส่งเมล…" : mailConnection.connected ? `เชื่อม ${senderProviderLabel} แล้ว · ส่งจากบัญชีนี้โดยตรง · PO กด Reply กลับหาคุณได้` : `ต้องเชื่อม ${senderProviderLabel} และอนุญาตส่งเมลก่อนใช้งานครั้งแรก`}</small></label><label className="text-field"><span>ผู้รับ *</span><input type="email" value={poEmail} onChange={(event) => setPoEmail(event.target.value)} placeholder="po@company.com" /></label><div className="approval-wide-field">{mailConnection && <button type="button" className="secondary-button" onClick={connectMail} disabled={sendingApproval || !senderProvider || !mailConnection.configured}>{mailConnection.connected ? `เชื่อมสิทธิ์ ${senderProviderLabel} ใหม่` : `เชื่อม ${senderProviderLabel} เพื่อส่งอีเมล`}</button>}{(mailNotice || mailConnection?.error) && <p role="status">{mailConnection?.error || mailNotice}</p>}</div><label className="text-field approval-wide-field"><span>CC</span><input type="text" value={ccEmail} onChange={(event) => setCcEmail(event.target.value)} placeholder="qa-lead@company.com, manager@company.com (ไม่เกิน 10 คน)" /></label><label className="text-field approval-wide-field"><span>หัวข้ออีเมล</span><input value={emailSubject} onChange={(event) => setEmailSubject(event.target.value)} maxLength={300} /></label><label className="text-field approval-note"><span>เนื้อหาอีเมล (แก้ไขได้)</span><textarea rows={9} value={emailBody} onChange={(event) => setEmailBody(event.target.value)} maxLength={50000} /></label></div>}
-    {approval && <div className={`approval-status-card ${approval.status}`}><div><strong>{approvalLabel}</strong><span>{approval.recipientEmail} · {mailDeliveryLabel(approval.emailId, approval.emailSentAt)}</span>{approval.emailError && <p role="status">{approval.emailError}</p>}</div>{approval.reviewerName && <span>โดย {approval.reviewerName}</span>}{approval.reviewerComment && <p>{approval.reviewerComment}</p>}</div>}
-    <div className="approval-footer"><div>{project.googleSheetUrl ? <a href={project.googleSheetUrl} target="_blank" rel="noreferrer"><FileSpreadsheet size={16} />เปิด Google Sheets</a> : canSubmit ? <button type="button" className="text-button" onClick={onConnectSheet}>เชื่อม Google Sheet ก่อนส่ง</button> : <span>ยังไม่ได้เชื่อม Google Sheet</span>}<small>{canSubmit ? (!evidenceReady ? "นำเข้าหลักฐานให้ครบเพื่อเปิดการส่งให้ PO" : testingFinished ? "อีเมลจะมีลิงก์ให้ PO เปิดรีวิวและกด Approved" : "กดส่งได้ แต่ระบบจะแจ้งเตือนให้ยืนยันก่อน") : "คุณมีสิทธิ์ดูสถานะ Approval เท่านั้น"}</small></div>{canSubmit && <button type="button" className="primary-button" onClick={openApprovalEmail} disabled={loading || sendingApproval || preparingEvidence || !evidenceReady || !project.googleSheetUrl || !mailConnection || mailConnection.configured === false}>{sendingApproval ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}{approvalMatchesRecipient ? "ส่งอัปเดตให้ PO" : "ส่งอีเมลขอ Approve"}</button>}</div>
+    <div className="approval-heading"><div className="approval-icon"><Mail size={23} /></div><div><h2>ส่งผลทดสอบให้ PO Approve</h2><p>ส่งจากอีเมลผู้ส่งที่ระบุถึงผู้รับ พร้อมสรุปผลและลิงก์รีวิว · PO กด Reply ในเมลเพื่อตอบกลับ QA ได้</p></div><span className={`approval-readiness ${testingFinished && evidenceReady ? "ready" : "pending"}`}>{loading ? "กำลังโหลด..." : !evidenceReady ? "หลักฐานยังไม่พร้อม" : testingFinished ? "พร้อมส่ง" : cases.length ? `ยังไม่ได้ทดสอบ ${untested} cases` : "ยังไม่มี Test Case"}</span></div>
+    {canSubmit && <ApprovalDeliveryModePicker idPrefix={approvalTabsId} value={deliveryMode} provider={senderProvider} connection={mailConnection} disabled={sendingApproval || confirmingManual} onChange={mode => { dispatchComposerSelection({type: "mode", value: mode}); setMailNotice(""); }} />}
+    {canSubmit && <div role="tabpanel" id={`${approvalTabsId}-panel-${deliveryMode}`} aria-labelledby={`${approvalTabsId}-tab-${deliveryMode}`} tabIndex={0} className="approval-form">
+      {manualMode ? <ApprovalManualComposer projectName={project.name} body={emailBody} recipientEmail={poEmail} disabled={sendingApproval || confirmingManual} onBodyChange={setEmailBody} onRecipientChange={setPoEmail} onCopyBody={openApprovalEmail} copyBodyDisabled={loading || preparingEvidence || !evidenceReady || !project.googleSheetUrl} preparing={sendingApproval} flash={flash} /> : <>
+      <label className="text-field"><span>อีเมลผู้ส่ง (แก้ไขได้) *</span><input type="email" value={senderEmail} onChange={(event) => { if (event.target.value.trim().toLowerCase() !== normalizedSenderEmail) { setMailConnection(null); } dispatchComposerSelection({type: "sender", value: event.target.value}); setMailNotice(""); }} disabled={sendingApproval} placeholder="qa@gmail.com หรือ qa@truecorp.co.th" /><small>{manualMode ? "คัดลอกไปส่งจากบัญชีนี้ด้วยตนเอง แล้วกลับมายืนยันการส่ง" : !mailConnection ? "กำลังตรวจสิทธิ์ส่งเมล…" : senderConnected ? `เชื่อม ${senderProviderLabel} แล้ว · ส่งจากบัญชีนี้โดยตรง · PO กด Reply กลับหาคุณได้` : `ต้องเชื่อม ${senderProviderLabel} ด้วยอีเมลผู้ส่งที่ระบุและอนุญาตส่งเมล`}</small></label><label className="text-field"><span>ผู้รับ *</span><input type="email" value={poEmail} onChange={(event) => setPoEmail(event.target.value)} placeholder="po@company.com" /></label><div className="approval-wide-field">{!manualMode && mailConnection && <button type="button" className="secondary-button" onClick={connectMail} disabled={sendingApproval || !senderProvider || !mailConnection.configured}>{senderConnected ? `เชื่อมสิทธิ์ ${senderProviderLabel} ใหม่` : `เชื่อม ${senderProviderLabel} เพื่อส่งอีเมล`}</button>}{!manualMode && (mailNotice || mailConnection?.error) && <p role="status">{mailConnection?.error || mailNotice}</p>}</div><label className="text-field approval-wide-field"><span>CC</span><input type="text" value={ccEmail} onChange={(event) => setCcEmail(event.target.value)} placeholder="qa-lead@company.com, manager@company.com (ไม่เกิน 10 คน)" /></label><label className="text-field approval-wide-field"><span>หัวข้ออีเมล</span><input value={emailSubject} onChange={(event) => setEmailSubject(event.target.value)} maxLength={300} /></label><label className="text-field approval-note"><span>เนื้อหาอีเมล (แก้ไขได้)</span><textarea rows={9} value={emailBody} onChange={(event) => setEmailBody(event.target.value)} maxLength={50000} /></label>
+      </>}
+    </div>}
+    {canSubmit && <div role="tabpanel" id={`${approvalTabsId}-panel-${manualMode ? "oauth" : "manual"}`} aria-labelledby={`${approvalTabsId}-tab-${manualMode ? "oauth" : "manual"}`} hidden />}
+    {approval && <div className={`approval-status-card ${approval.status}`}><div><strong>{approvalLabel}</strong><span>{approval.recipientEmail} · {mailDeliveryLabel(approval.emailId, approval.emailSentAt, approval.manualDelivery)}</span>{approval.emailError && <p role="status">{approval.emailError}</p>}</div>{approval.reviewerName && <span>โดย {approval.reviewerName}</span>}{approval.reviewerComment && <p>{approval.reviewerComment}</p>}{canSubmit && approval.manualDelivery && <button type="button" className="secondary-button" onClick={() => setManualApproval(approval)}>{approval.manualDelivery.confirmedAt ? "ดูอีเมลที่ส่งเอง" : "เปิดร่าง / ยืนยันการส่ง"}</button>}</div>}
+    <div className="approval-footer"><div>{project.googleSheetUrl ? <a href={project.googleSheetUrl} target="_blank" rel="noreferrer"><FileSpreadsheet size={16} />เปิด Google Sheets</a> : canSubmit ? <button type="button" className="text-button" onClick={onConnectSheet}>เชื่อม Google Sheet ก่อนส่ง</button> : <span>ยังไม่ได้เชื่อม Google Sheet</span>}<small>{canSubmit ? (!evidenceReady ? "นำเข้าหลักฐานให้ครบเพื่อเปิดการส่งให้ PO" : testingFinished ? "อีเมลจะมีลิงก์ให้ PO เปิดรีวิวและกด Approved" : "กดส่งได้ แต่ระบบจะแจ้งเตือนให้ยืนยันก่อน") : "คุณมีสิทธิ์ดูสถานะ Approval เท่านั้น"}</small></div>{canSubmit && !manualMode && <button type="button" className="primary-button" onClick={openApprovalEmail} disabled={loading || sendingApproval || confirmingManual || preparingEvidence || !evidenceReady || !project.googleSheetUrl || (!manualMode && (!mailConnection || !websiteAvailable))}>{sendingApproval ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}{manualMode ? (approvalMatchesRecipient ? "เตรียมอีเมลอัปเดตสำหรับคัดลอก" : "เตรียมอีเมลสำหรับคัดลอก") : approvalMatchesRecipient ? "ส่งอัปเดตให้ PO" : "ส่งอีเมลขอ Approve"}</button>}</div>
   </section>
+  {canSubmit && manualApproval?.manualDelivery && <ApprovalManualDialog delivery={manualApproval.manualDelivery} projectName={project.name} onClose={() => setManualApproval(null)} onConfirm={() => void confirmManualSending()} confirming={confirmingManual} flash={flash} />}
   {canSubmit && showUntestedConfirmation && <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowUntestedConfirmation(false)}><section className="approval-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="approval-confirm-title" onMouseDown={(event) => event.stopPropagation()}>
     <button type="button" className="icon-button close-button" onClick={() => setShowUntestedConfirmation(false)} aria-label="ปิด"><X size={19} /></button>
     <div className="approval-confirm-icon"><CircleAlert size={28} /></div>
@@ -651,7 +718,7 @@ function ProjectApprovalPanel({ project, cases, counts, testingFinished, loading
     <p>{cases.length ? `พบ Test Case ที่ยังดำเนินการไม่เสร็จ ${untested} รายการ` : "Project นี้ยังไม่มี Test Case"}</p>
     {cases.length > 0 && <div className="approval-pending-summary"><div><span>Not Start</span><strong>{counts["Not Start"]}</strong></div><div><span>Inprogress</span><strong>{counts["In Progress"]}</strong></div></div>}
     <div className="approval-confirm-note"><CircleAlert size={17} /><span>อีเมลจะระบุจำนวน Test Case ที่ยังไม่ได้ทดสอบให้ PO เห็นด้วย</span></div>
-    <div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setShowUntestedConfirmation(false)}>ยกเลิก</button><button type="button" className="primary-button" disabled={sendingApproval} onClick={() => void launchApprovalEmail()}>{sendingApproval ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}ยืนยันส่งอีเมล</button></div>
+    <div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setShowUntestedConfirmation(false)}>ยกเลิก</button><button type="button" className="primary-button" disabled={sendingApproval} onClick={() => void launchApprovalEmail()}>{sendingApproval ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}{manualMode ? "ยืนยันและคัดลอกเนื้อหา" : "ยืนยันส่งอีเมล"}</button></div>
   </section></div>}
   </>;
 }
@@ -2472,6 +2539,7 @@ export function QaWorkspace({
           </section>
 
           {source && <WorkbookSummary cases={cases} source={source} />}
+          <ProjectTeamParticipation cases={cases} projectHref={`/groups/${groupId}/projects/${selectedProject.id}`} loading={loadingWorkspace} />
           <section className="overview-grid">
             <article className="panel progress-panel"><div className="panel-heading"><div><h2>ความคืบหน้า</h2><p>สถานะรวมของ Testcase</p></div><button className="icon-button"><MoreHorizontal size={19} /></button></div><div className="progress-content"><div className="progress-ring" style={{ "--progress": `${progress * 3.6}deg` } as React.CSSProperties}><div><strong>{progress}%</strong><span>ดำเนินการแล้ว</span></div></div><div className="progress-legend">{TEST_STATUSES.filter((status) => status !== "In Progress").map((status) => <button key={status} onClick={() => setStatusFilter(status)}><span className={`legend-dot ${statusMeta[status].className}`} /><span>{statusMeta[status].label}</span><strong>{counts[status]}</strong></button>)}</div></div></article>
             <article className="panel activity-panel"><div className="panel-heading"><div><h2>กิจกรรมล่าสุด</h2><p>การเปลี่ยนแปลงจากข้อมูลจริง</p></div></div><div className="empty-state compact-empty"><Clock3 size={24} /><strong>ยังไม่มีกิจกรรม</strong><span>กิจกรรมจะแสดงเมื่อเชื่อมการบันทึกผลกับ Supabase</span></div></article>

@@ -11,7 +11,7 @@ import { CalendarDays, ClipboardCheck, History, Pencil, ChevronRight, LogOut, Mo
 import { signOut } from '@/app/auth/actions';
 import { updateSprint } from '@/app/planning-actions';
 import { ProjectManagement } from './project-management';
-import { PersonalTestPerformance } from './personal-test-performance';
+import { TeamProjectReport } from './team-project-report';
 import { SprintAttention, SprintRecentActivity } from './sprint-insights';
 import { type SprintDashboardData } from '@/lib/sprint-dashboard';
 import { formatFlexibleDate } from '@/lib/date-format';
@@ -33,7 +33,6 @@ export function SprintDashboard({groupId,groupName,sprint,data,currentUser,sprin
   const projectHref=(id:string,section='test-cases')=>`/groups/${groupId}/projects/${id}/${section}`;
   function navigate(next:string) {const search=new URLSearchParams(params.toString()); if(next==='overview')search.delete('view');else search.set('view',next);router.push(`${pathname}${search.size ? `?${search}` : ''}`,{scroll:false});}
   const activity=[...data.moves.map(move=>({id:move.id,createdAt:move.createdAt,actor:move.actorEmail,title:`${String(move.after.name || move.before?.name || 'Project')} · ${String(move.before?.sprint || '')} → ${String(move.after.sprint || '')}`,detail:String(move.after.reason || '')})),...sprintHistory.map(entry=>({id:entry.id,createdAt:entry.created_at,actor:entry.actor_email,title:'แก้ไขข้อมูล Sprint',detail:['name','start_date','end_date','goal','status'].filter(key=>entry.before_data?.[key]!==entry.after_data[key]).map(key=>`${({name:'ชื่อ',start_date:'เริ่ม',end_date:'สิ้นสุด',goal:'เป้าหมาย',status:'สถานะ'} as Record<string,string>)[key]}: ${String(entry.before_data?.[key] ?? '—')} → ${String(entry.after_data[key] ?? '—')}`).join(' · ')}))].sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
-  const teamSection=<PersonalTestPerformance data={data.personalPerformance} compact={view==='overview'} onViewAll={()=>navigate('team')}/>;
   return <main className="sd-shell">
     <aside className="sd-sidebar"><Link className="sd-sidebar-brand" href="/groups"><ClipboardCheck size={24}/><span>QA Workspace</span></Link><WorkspaceSidebarNavigation
       scope="sprint"
@@ -46,13 +45,18 @@ export function SprintDashboard({groupId,groupName,sprint,data,currentUser,sprin
       <div className="sd-content"><nav className="breadcrumb"><Link href="/groups">เลือกปี</Link><ChevronRight size={14}/><Link href={`/groups?year=${sprint.year}`}>ปี {sprint.year} · Groups</Link><ChevronRight size={14}/><Link href={base}>{groupName}</Link><ChevronRight size={14}/><strong>{sprint.name}</strong></nav>
         <div className="sd-heading"><div><div className="sd-title"><h1>{sprint.name}</h1><span className={`sd-sprint-status sd-${sprint.status ?? 'Planned'}`}>{({Planned:'วางแผน',Active:'กำลังดำเนินการ',Completed:'สิ้นสุดแล้ว'})[sprint.status ?? 'Planned']}</span></div><p><CalendarDays size={16}/>{sprint.startDate ? formatFlexibleDate(sprint.startDate,false) : 'ไม่ระบุวันเริ่ม'} — {sprint.endDate ? formatFlexibleDate(sprint.endDate,false) : 'ไม่ระบุวันสิ้นสุด'}</p>{sprint.goal && <p className="sd-goal">เป้าหมาย: {sprint.goal}</p>}</div>{sprint.canManage && <button className="secondary-button" onClick={()=>setShowEdit(true)}><Pencil size={16}/>แก้ไข Sprint</button>}</div>
         {notice && <p className="sd-success" role="status"><CheckCircle2 size={18}/>{notice}</p>}
-        <SprintOverviewMetrics data={data} showSummary={view==='overview'}/>
+        {view!=='team' && <SprintOverviewMetrics data={data} showSummary={view==='overview'}/>}
         {view==='overview' && <>
           <section className="sd-panel sprint-saved-summary"><p>ยอดสรุปจากข้อมูลที่บันทึกไว้ในแต่ละ Project · ดูเวลาที่อัปเดตได้ในตาราง</p><div className="sd-filters"><button className="secondary-button" onClick={()=>navigate('team')}>ดูผลงานรายบุคคล</button><button className="secondary-button" onClick={()=>navigate('activity')}>ดูกิจกรรมผลทดสอบ</button></div></section>
           <SprintProjectList data={data} groupId={groupId} year={sprint.year} renderActions={project=><RowMenu project={project} href={projectHref(project.id)} onManage={()=>setManaged(project)}/>}/>
           <Link className="primary-button" href={projectsHref}>ดู / เพิ่ม Projects<ArrowRight size={17}/></Link>
         </>}
-        {view==='team' && <>{teamSection}<SprintAttention data={data} groupId={groupId}/></>}
+        {view==='team' && <><TeamProjectReport data={data} groupId={groupId} year={sprint.year} mode={params.get('teamBy')==='project'?'project':'person'} onModeChange={mode=>{
+          if(mode===(params.get('teamBy')==='project'?'project':'person'))return;
+          const search=new URLSearchParams(params.toString());
+          if(mode==='project')search.set('teamBy','project');else search.delete('teamBy');
+          window.history.pushState(null,'',`${pathname}?${search}${window.location.hash}`);
+        }}/><SprintAttention data={data} groupId={groupId}/></>}
         {view==='activity' && <><button className="secondary-button" onClick={()=>navigate('overview')}>กลับภาพรวม</button><SprintRecentActivity data={data}/></>}
         {view==='history' && <><section className="sd-panel"><div className="sd-section-heading"><div><h2><History size={20}/>ประวัติ Sprint และการย้าย Projects</h2><p>เก็บผู้แก้ไข เวลา และค่าก่อน–หลัง</p></div></div><div className="sd-history">{activity.slice(historyPage*10,(historyPage+1)*10).map(item=><article key={item.id}><header><strong>{item.title}</strong><time>{formatFlexibleDate(item.createdAt)}</time></header><small>{item.actor || 'ระบบ'}</small><p>{item.detail}</p></article>)}{!activity.length && <p className="sd-empty">ยังไม่มีประวัติการแก้ไขหรือย้าย</p>}</div><Pager page={historyPage} count={activity.length} onChange={setHistoryPage}/></section></>}
       </div>

@@ -5,7 +5,7 @@ export type PersonalCase = {projectId:string;projectName:string;currentSprintId:
 export type PerformanceFilters = {projectId?:string;testerKey?:string;source?:'web'|'sheets'};
 export type PersonalEntry = {key:string;projectId:string;projectName:string;caseId:string;caseName:string;sourceRowKey:string;detailPath:string;status:TestStatus;source:'web'|'sheets'|'pending';inferred:boolean;recordedAt:string};
 export type PersonalPerformanceRow = {key:string;name:string;email:string;unresolved:boolean;projects:number;assigned:number;assignedEntries:PersonalEntry[];tested:number;pass:number;failed:number;inProgress:number;skip:number;notStart:number;entries:PersonalEntry[]};
-export type PersonalPerformanceInput = {sprintId:string;members:PlanningTeamMember[];cases:PersonalCase[];filters?:PerformanceFilters};
+export type PersonalPerformanceInput = {sprintId:string;members:PlanningTeamMember[];cases:PersonalCase[];filters?:PerformanceFilters;basis?:'test-cases'};
 
 const normalized = (value:string) => value.trim().toLocaleLowerCase().replace(/\s+/g,' ');
 function statusOf(value:string): TestStatus {
@@ -58,6 +58,24 @@ export function buildPersonalPerformance(input: PersonalPerformanceInput): Perso
       if(!applicable) continue;
       const person=tester(result,input.members),previous=latest.get(person.key);
       if(!previous || newer(result,previous.result)) latest.set(person.key,{person,result});
+    }
+    if(input.basis==='test-cases') {
+      // The register owns one current tester per case; detail-sheet Results
+      // must never add additional people to this reporting basis.
+      if(!latest.size) add({key:'unassigned',name:'ยังไม่ระบุผู้รับผิดชอบ',email:'',unresolved:false},entry('Not Start','pending'));
+      for(const {person,result} of latest.values()) {
+        const status=statusOf(result.status);
+        if(person.key==='unknown' && status==='Not Start') {
+          add({key:'unassigned',name:'ยังไม่ระบุผู้รับผิดชอบ',email:'',unresolved:false},entry('Not Start','pending'));
+          continue;
+        }
+        if(person.key!=='unknown' && (!filters.testerKey || filters.testerKey===person.key)) {
+          const assigned=ensure(person);
+          if(!assigned.assignedEntries.some(item=>item.key===key))assigned.assignedEntries.push(entry('Not Start','pending'));
+        }
+        add(person,entry(status,status==='Not Start'?'pending':result.source,result.inferred,result.recordedAt));
+      }
+      continue;
     }
     const started=new Set<string>();
     for(const [personKey,{person,result}] of latest) {

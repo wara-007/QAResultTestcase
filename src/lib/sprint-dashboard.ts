@@ -1,7 +1,7 @@
 import {effectiveProjectQa} from "./project-qa-default";
 import type { PlanningTeamMember, Project } from './types';
 import { summarizeSprint, type SprintProjectStatsInput } from './sprint-summary';
-import type { PersonalCase } from './personal-test-performance';
+import type { PersonalCase, PersonalPerformanceInput } from './personal-test-performance';
 import { selectSprintProjectEpisodes, type Participation, type SnapshotHeader, type SprintProjectEntry } from './project-sprint-participation';
 
 export type ApprovalTotals = { projectId: string; total: number; approved: number; pending: number; changesRequested: number };
@@ -76,7 +76,8 @@ export function buildSprintDashboard(input: SprintDashboardInput) {
     if(header.approval.pending) summary.pendingApprovalProjects++;
   }
   summary.progress=summary.totalCases ? Math.round((summary.pass+summary.failed+summary.skip)/summary.totalCases*100) : 0;
-  return {summary,projects,entries,episodes:input.episodes ?? [],team,attention,movedOut,moves,inferredResults:activeOrigins.filter(r=>r.inferred || !r.authorId).length,personalPerformance:{sprintId:input.sprintId,members:input.team,cases:input.personalCases ?? []}};
+  const personalPerformance:PersonalPerformanceInput={sprintId:input.sprintId,members:input.team,cases:input.personalCases ?? []};
+  return {summary,projects,entries,episodes:input.episodes ?? [],team,attention,movedOut,moves,inferredResults:activeOrigins.filter(r=>r.inferred || !r.authorId).length,personalPerformance};
 }
 export type SprintDashboardData = ReturnType<typeof buildSprintDashboard> & {summaryPending?:string[];loadedDetails?:boolean};
 export function filterDashboardProjects(projects: SprintDashboardData['projects'], query: string, qaId: string) {

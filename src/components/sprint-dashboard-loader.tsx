@@ -15,7 +15,7 @@ type Loaded = SprintDashboardLoad;
 export function SprintDashboardLoader({groupId,groupName,sprint,projects,currentUser}:Props) {
   const params=useSearchParams();
   const view=params.get('view');
-  const mode=view==='team'||view==='activity'?'details':view==='history'?'history':'overview';
+  const mode=view==='team'?'team':view==='activity'?'details':view==='history'?'history':'overview';
   const [loaded,setLoaded]=useState<{mode:string;result:Loaded}|null>(null);
   const [progress,setProgress]=useState('กำลังอ่านข้อมูล Sprint');
   const [error,setError]=useState('');
@@ -29,6 +29,12 @@ export function SprintDashboardLoader({groupId,groupName,sprint,projects,current
     if(!request.current || request.current.id!==id || request.current.projects!==projects || request.current.attempt!==attempt) {
       // Reuse the same pending read when React checks effects twice in development.
       const promise:Promise<Loaded>=Promise.resolve().then(async()=>{
+        if(mode==='team') {
+          const {readSprintTeamData}=await import('@/lib/sprint-team-data');
+          return readSprintTeamData(createClient(),groupId,sprint.id,projects,message=>{
+            if(mounted.current && request.current?.promise===promise)setProgress(message);
+          });
+        }
         if(mode!=='details')return readSprintDashboardOverview(createClient(),groupId,sprint.id,projects,mode==='history');
         const {readSprintDashboardData}=await import('@/lib/sprint-dashboard-data');
         const result=await readSprintDashboardData(createClient(),groupId,sprint.id,projects,message=>{

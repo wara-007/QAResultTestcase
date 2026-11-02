@@ -1,4 +1,4 @@
-import { readGoogleSheetRevision, readGoogleSheet, writeGoogleSheetResults } from "@/lib/google-sheets";
+import { readGoogleSheetRevision, readGoogleSheetRevisionSnapshot, readGoogleSheet, writeGoogleSheetResults } from "@/lib/google-sheets";
 import type { TestCase, WorkbookSheet } from "@/lib/types";
 import { withCachedProjectDefects } from "@/lib/project-defect-cache";
 import { getGoogleUserAuth } from "@/lib/google-user-oauth";
@@ -7,6 +7,7 @@ import { canonicalizeCases } from "@/lib/sync/canonical";
 import { loadBaselines, replaceBaselines } from "@/lib/sync/store";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { ProjectAccessError, requireProjectCapability } from "@/lib/project-access-server";
+import { ImportTimeoutError, withImportTimeout } from "@/lib/import-timeout";
 
 export const runtime = "nodejs";
 
@@ -48,8 +49,25 @@ export async function GET(request: Request, { params }: { params: Promise<{ proj
     const { projectId } = await params;
     const query = new URL(request.url).searchParams;
     if (query.get("revision") === "1") {
-      const revision = await readGoogleSheetRevision(await spreadsheetIdForProject(projectId), await getGoogleUserAuth());
-      return Response.json({ revision }, { headers: { "Cache-Control": "no-store" } });
+      // Keep access/auth and every Google fallback within one budget so the
+      // host can receive a JSON error before its inactivity cutoff.
+      return await withImportTimeout(async signal => {
+        const spreadsheetId = await spreadsheetIdForProject(projectId);
+        signal.throwIfAborted();
+        const auth = await getGoogleUserAuth();
+        signal.throwIfAborted();
+        if (query.get("includeWorkbook") === "1") {
+          const snapshot = await readGoogleSheetRevisionSnapshot(spreadsheetId, auth, signal);
+          if (snapshot.workbook && snapshot.revision !== query.get("knownRevision")) return new Response(snapshot.workbook, { headers: {
+            "Cache-Control": "private, no-store",
+            "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "X-Workbook-Revision": snapshot.revision,
+          } });
+          return Response.json({ revision: snapshot.revision }, { headers: { "Cache-Control": "private, no-store" } });
+        }
+        const revision = await readGoogleSheetRevision(spreadsheetId, auth, signal);
+        return Response.json({ revision }, { headers: { "Cache-Control": "no-store" } });
+      }, 20_000, "ตรวจข้อมูลล่าสุดจาก Sheets");
     }
     const summary = query.get("summary") === "1";
     const requestedSheets = query.getAll("sheet");
@@ -60,6 +78,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ proj
   } catch (reason) {
     const authError = googleAuthError(reason, request);
     if (authError) return authError;
+    if (reason instanceof ImportTimeoutError) return Response.json({ error: reason.message }, { status: 504, headers: { "Cache-Control": "no-store" } });
     return Response.json({ error: reason instanceof Error ? reason.message : "โหลด Google Sheet ไม่สำเร็จ" }, { status: reason instanceof ProjectAccessError ? reason.status : 400 });
   }
 }

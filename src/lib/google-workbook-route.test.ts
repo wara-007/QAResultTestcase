@@ -5,14 +5,14 @@ import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 import { revisionCheckedWorkbook, WorkbookRevisionError } from './revision-checked-workbook';
 
-function route(revisions: string[], fingerprint = 'xlsx-v2:correct') {
+function route(revisions: string[], fingerprint = 'xlsx-v2:correct', name = 'Fixture') {
   let downloads = 0;
   const compiled = ts.transpileModule(readFileSync(new URL('../app/api/projects/[projectId]/google-sheet/workbook/route.ts', import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText;
   const routeModule = { exports: {} as { GET: (request: Request, context: { params: Promise<{projectId:string}> }) => Promise<Response> } };
   const dependencies: Record<string, unknown> = {
-    '@/lib/project-access-server': { ProjectAccessError: class extends Error {}, requireProjectCapability: async () => ({ project: { google_sheet_id: 'sheet', name: 'Fixture' } }) },
+    '@/lib/project-access-server': { ProjectAccessError: class extends Error {}, requireProjectCapability: async () => ({ project: { google_sheet_id: 'sheet', name } }) },
     '@/lib/revision-checked-workbook': { revisionCheckedWorkbook, WorkbookRevisionError },
     '@/lib/workbook-revision': { workbookContentRevision: () => fingerprint },
     '@/lib/sheet-import-state': {},
@@ -26,6 +26,16 @@ function route(revisions: string[], fingerprint = 'xlsx-v2:correct') {
   } });
   return { get: (query:string) => routeModule.exports.GET(new Request(`http://localhost/api/projects/p/google-sheet/workbook?${query}`), { params: Promise.resolve({projectId:'p'}) }), downloads: () => downloads };
 }
+test('workbook downloads support Thai and Unicode project names without invalid headers', async () => {
+  const api = route([], undefined, "[SUN-8417] กรณี don't allow location 🧪");
+  const response = await api.get('');
+  assert.equal(response.status, 200);
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), new Uint8Array([1, 2, 3]));
+  const disposition = response.headers.get('Content-Disposition')!;
+  assert.match(disposition, /^attachment; filename="[\x20-\x7e]+"; filename\*=UTF-8''/);
+  assert.equal(decodeURIComponent(disposition.split("filename*=UTF-8''")[1]), "[SUN-8417] กรณี don't allow location 🧪.xlsx");
+  assert.doesNotMatch(disposition.split("filename*=UTF-8''")[1], /'/);
+});
 test('partial download returns bytes only if the captured Drive revision remains stable', async () => {
   const stable=route(['drive:2','drive:2']);
   assert.equal((await stable.get('expectedRevision=drive%3A2')).status,200);

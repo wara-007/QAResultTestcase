@@ -30,11 +30,13 @@ export async function GET(request: Request, { params }: { params: Promise<{ proj
       workbook=await revisionCheckedWorkbook(expectedRevision,()=>readGoogleSheetRevision(data.google_sheet_id!,auth),download,bytes=>workbookContentRevision(new Uint8Array(bytes)));
     } else workbook=await download();
     const safeName = String(data.name ?? "google-sheet").replace(/[\\/:*?"<>|]+/g, "_");
+    // HTTP headers require byte strings; carry Unicode filenames in RFC 5987 form.
+    const encodedName = encodeURIComponent(`${safeName}.xlsx`).replace(/[!'()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
     return new Response(workbook, {
       headers: {
         "Cache-Control": "no-store",
         "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "Content-Disposition": `attachment; filename="${safeName}.xlsx"`,
+        "Content-Disposition": `attachment; filename="google-sheet.xlsx"; filename*=UTF-8''${encodedName}`,
       },
     });
   } catch (reason) {

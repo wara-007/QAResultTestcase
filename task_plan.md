@@ -59,3 +59,36 @@ User requested essential link settings above the copy action, always expanded. R
 # Remove sender input from manual copying (2026-10-30)
 
 Removed the manual sender field and its composer props. Manual client no longer validates or submits a chosen sender; server ignores a user-supplied manual sender and leaves that metadata blank. Authenticated QA identity still authorizes the request and records confirmation. Direct-send sender validation/grants are unchanged. Regression tests cover absent/blank/invalid selected sender with successful manual preparation and no provider access. Full suite 770/770, TypeScript, scoped ESLint and diff checks passed. No additional migration, deployment or real email sending.
+# Reduce duplicate Sheets workbook downloads (2026-11-02)
+
+Objective: Reduce Netlify compute/bandwidth from repeated workbook exports without weakening freshness or project access checks.
+
+Evidence: `readGoogleSheetRevision` exports the whole workbook on Drive metadata 404; the browser later requests the same revision's workbook again. The reported failing request uses an `xlsx-v2:` revision, confirming this fallback is used. Billing is team-wide; no endpoint-level production measurements are available yet.
+
+- [x] Inspect revision, download, browser cache and automatic import paths.
+- [x] Add failing tests for reuse of fallback bytes, ordinary metadata-only checks, malformed responses and revision validation.
+- [x] Return fallback bytes only on an explicit revision request option; retain existing JSON behavior for other callers. Reuse the bytes in the existing browser revision-keyed cache.
+- [x] Verify regression tests, full available suite, typecheck, scoped lint and diff.
+
+Constraints: Authenticate and authorize each server request as before. No shared server cache of private files. No change to automatic import/freshness policy. Keep the earlier Unicode filename fix. No deployment in this task.
+
+Verification: Confirmed new snapshot/reuse tests fail before implementation, then pass. Node 22.23.2 full discovered source suite: 789/789 passed. Final TypeScript and scoped ESLint passed. Metadata-only checks, unchanged completed revision checks, authorization denial, malformed/HTML errors, revision-bound byte reuse and cancellation are covered. Concurrent revision-timeout work was preserved and tested together. Stable callback dependencies avoid re-triggering workspace loading on source changes.
+
+Outcome: Fallback revision bytes can satisfy the subsequent workbook request with no second export. Completed unchanged imports receive JSON only; final consistency checks do not transfer workbook bytes. This reduces duplicate export work, but cannot quantify team-wide credit savings without production endpoint timings and usage measurements.
+
+Next action: Deploy via the normal release process, verify the affected Project, and compare export requests/latency and Compute usage for equivalent activity. No deployment or remote data mutation performed.
+
+# Sheets revision inactivity timeout (2026-11-02)
+
+Objective: Bound revision checks before the hosting timeout and handle HTML gateway errors without JSON syntax errors. Preserve existing workbook filename changes and the separate pending download-reuse work above.
+
+Evidence: Reported `google-sheet?revision=1` returns HTML HTTP 504. Revision fallback exports XLSX with a 120s fetch timeout; Drive revision lookup alone allows 30s, and fallback repeats metadata lookup. Existing incident notes record a 30s Netlify invocation cutoff. Exact production upstream latency is not available locally.
+
+- [x] Trace revision route, Google fallback, and browser parser; read installed Next route-handler guide.
+- [x] Reproduce HTML-response handling and revision cancellation with regression tests.
+- [x] Add a 20s total revision deadline (including access/auth), propagate cancellation to Google requests, and preserve auth/error behavior in the browser.
+- [x] Verify focused/full tests, TypeScript, scoped ESLint and diff.
+
+Success: slow checks return a controlled JSON timeout, Google requests receive cancellation, HTML 504 yields actionable Thai text, and successful/auth-denied responses retain current behavior. Production load performance remains to be measured after deployment; this does not make a slow Google export faster.
+
+Verification: New cancellation tests failed before propagation; route tests reproduced unbounded hangs before the deadline change. Focused tests passed 27/27; full Node 22.23.2 suite passed 789/789. Final TypeScript, scoped ESLint and `git diff --check` passed. Corrected optional auth and untyped fetch mock parameters found by TypeScript. Concurrent workspace changes provide workbook reuse and HTML response handling; preserved those changes. No deployment or remote data writes. Next action: deploy through the normal release process and measure the affected project's revision/export latency; slow exports may still return the controlled timeout.

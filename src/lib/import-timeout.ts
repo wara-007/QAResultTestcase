@@ -1,9 +1,11 @@
+export class ImportTimeoutError extends Error {}
+
 export async function withImportTimeout<T>(operation: (signal: AbortSignal) => Promise<T>, milliseconds: number, stage: string): Promise<T> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout>;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      reject(new Error(`${stage} ใช้เวลานานเกินกำหนด กรุณาลองใหม่ ข้อมูลที่บันทึกแล้วจะยังอยู่`));
+      reject(new ImportTimeoutError(`${stage} ใช้เวลานานเกินกำหนด กรุณาลองใหม่ ข้อมูลที่บันทึกแล้วจะยังอยู่`));
       controller.abort();
     }, milliseconds);
   });

@@ -11,7 +11,7 @@ const originalLoad = loader._load;
 const marker = mock.method(loader, "_load", function (this: unknown, ...args: unknown[]) {
   return args[0] === "server-only" ? {} : Reflect.apply(originalLoad, this, args);
 });
-const { readGoogleSheet, exportGoogleSheetWorkbook, writeGoogleSheetResults, extractGoogleSheetId } = createRequire(__filename)("./google-sheets") as typeof import("./google-sheets");
+const { readGoogleSheet, readGoogleSheetRevisionSnapshot, exportGoogleSheetWorkbook, writeGoogleSheetResults, extractGoogleSheetId } = createRequire(__filename)("./google-sheets") as typeof import("./google-sheets");
 marker.mock.restore();
 
 const api = google as unknown as { drive: () => unknown; sheets: () => unknown };
@@ -21,7 +21,55 @@ const fixture = () => zipSync({
   "xl/worksheets/register.xml": strToU8('<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Test Case Id</t></is></c><c r="B1" t="inlineStr"><is><t>Test Case Name</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>TC01</t></is></c><c r="B2" t="inlineStr"><is><t>First case</t></is></c></row></sheetData></worksheet>'),
   "xl/worksheets/detail.xml": strToU8('<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Result ID</t></is></c><c r="B1" t="inlineStr"><is><t>Actual Result</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>R1</t></is></c><c r="B2" t="inlineStr"><is><t>Expected screen appears</t></is></c></row></sheetData></worksheet>'),
 });
-const auth = { getAccessToken: async () => ({ token: "test-token" }) } as Parameters<typeof readGoogleSheet>[1];
+const auth = { getAccessToken: async () => ({ token: "test-token" }) } as NonNullable<Parameters<typeof readGoogleSheet>[1]>;
+
+test("revision cancellation reaches an in-flight fallback export", async () => {
+  const controller = new AbortController();
+  const metadata = mock.method(api, "drive", () => ({ files: { get: async () => { throw Object.assign(new Error("File not found"), { code: 404 }); } } }));
+  const download = mock.method(globalThis, "fetch", async (_input: unknown, options?: RequestInit) => {
+    controller.abort();
+    assert.equal(options?.signal?.aborted, true);
+    throw new DOMException("Aborted", "AbortError");
+  });
+  try {
+    await assert.rejects(readGoogleSheetRevisionSnapshot("native-id", auth, controller.signal), /Aborted/);
+  } finally { metadata.mock.restore(); download.mock.restore(); }
+});
+
+test("revision metadata receives cancellation and preserves metadata-only revisions", async () => {
+  const controller = new AbortController();
+  const metadata = mock.method(api, "drive", () => ({ files: { get: async (_params: unknown, options: { signal?: AbortSignal }) => {
+    assert.equal(options.signal, controller.signal);
+    return { data: { version: "42" } };
+  } } }));
+  try { assert.equal((await readGoogleSheetRevisionSnapshot("native-id", auth, controller.signal)).revision, "drive:42"); }
+  finally { metadata.mock.restore(); }
+});
+
+test('revision fallback retains the exact exported bytes instead of requiring a second export', async () => {
+  const bytes = fixture();
+  const metadata = mock.method(api, 'drive', () => ({ files: { get: async () => { throw Object.assign(new Error('not found'), { code: 404 }); } } }));
+  const download = mock.method(globalThis, 'fetch', async () => new Response(bytes));
+  try {
+    const snapshot = await readGoogleSheetRevisionSnapshot('native-id', auth);
+    assert.match(snapshot.revision, /^xlsx-v2:/);
+    assert.deepEqual(new Uint8Array(snapshot.workbook!), bytes);
+    assert.equal(download.mock.callCount(), 1);
+  } finally { metadata.mock.restore(); download.mock.restore(); }
+});
+
+test('Drive revision checks remain metadata-only and permission errors do not trigger export', async () => {
+  const metadata = mock.method(api, 'drive', () => ({ files: { get: async () => ({ data: { version: '42' } }) } }));
+  const download = mock.method(globalThis, 'fetch', async () => { throw new Error('must not export'); });
+  try {
+    assert.deepEqual(await readGoogleSheetRevisionSnapshot('native-id', auth), { revision: 'drive:42' });
+    metadata.mock.restore();
+    const denied = mock.method(api, 'drive', () => ({ files: { get: async () => { throw Object.assign(new Error('denied'), { code: 403 }); } } }));
+    try { await assert.rejects(readGoogleSheetRevisionSnapshot('native-id', auth), /denied/); }
+    finally { denied.mock.restore(); }
+    assert.equal(download.mock.callCount(), 0);
+  } finally { metadata.mock.restore(); download.mock.restore(); }
+});
 
 test("Office workbook routes download bytes, parse Results, respect summary and refuse sync without Sheets writes", async () => {
   const bytes = fixture();

@@ -2,6 +2,7 @@
 import {ResultReferenceLinks} from "./result-reference-links";
 import {needsReferenceLinkRefresh} from "../lib/result-reference-links";
 import { revisionBoundSource, revisionBoundCheckpoint } from "@/lib/revision-bound-source";
+import { readGoogleSourceRevision } from "@/lib/google-source-revision";
 import { canRenderStoredCaseDetails } from "@/lib/source-workbook-storage";
 import { alignRegisterCaseIdentities, displayTestCaseId } from "@/lib/register-case-identity";
 
@@ -1371,6 +1372,13 @@ export function QaWorkspace({
       }, 180_000, "ดาวน์โหลดไฟล์ต้นฉบับเพื่อตรวจรูป");
     });
   }, [selectedProject]);
+  const readSourceRevision = useCallback(async (projectId: string, signal?: AbortSignal, includeWorkbook = true): Promise<string> => {
+    if (selectedProject?.id !== projectId || !selectedProject.googleSheetId) throw new Error("ไม่พบ Google Sheets ของ Project");
+    const saved = readSheetImportState(workspaceNavigationCache.get(projectId)?.source?.sheetImport, selectedProject.googleSheetId);
+    return readGoogleSourceRevision(projectId, selectedProject.googleSheetId, url => continueGoogleAuthorization(url), signal, {
+      includeWorkbook, knownRevision: saved?.complete && !saved.refreshRequired ? saved.sourceRevision : undefined,
+    });
+  }, [selectedProject]);
   const currentEnvironment = workspaceEnvironment(cases, selectedProject?.environment);
   const evidenceReadiness = approvalEvidenceReadiness(readSheetImportState(source?.sheetImport, selectedProject?.googleSheetId), workspaceCases, source?.sheets.map(sheet => sheet.name));
   const importAction = sheetImportAction(source?.sheetImport);
@@ -1662,7 +1670,7 @@ export function QaWorkspace({
               }
               const workbookSource = await revisionBoundSource(googleWorkspace.sourceRevision ?? "", cached?.source,
                 revision => getGoogleWorkbook(false, revision), bytes => importTestCases(bytes, `${selectedProject.name}.xlsx`).source,
-                () => readSourceRevision(selectedProject.id));
+                () => readSourceRevision(selectedProject.id, undefined, false));
               if (!active) return;
               let loadedSource = { ...workbookSource, sheets: mergeGoogleSheetsWithSource(workbookSource.sheets, googleWorkspace.sheets) };
               // Parse every requested tab before claiming that its evidence is available.
@@ -1715,7 +1723,7 @@ export function QaWorkspace({
         if (active) { setLoadingWorkspace(false); setLoadingSheetPreview(false); }
       });
     return () => { active = false; };
-  }, [selectedProject, currentUser?.name, testCaseId, sheetName, getGoogleWorkbook]);
+  }, [selectedProject, currentUser?.name, testCaseId, sheetName, getGoogleWorkbook, readSourceRevision]);
 
   useEffect(() => {
     if (!selectedProjectId || loadingWorkspace) return;
@@ -1800,17 +1808,6 @@ export function QaWorkspace({
     return saved;
   }
 
-  async function readSourceRevision(projectId: string, signal?: AbortSignal): Promise<string> {
-    const response = await fetch(`/api/projects/${projectId}/google-sheet?revision=1`, { cache: "no-store", signal });
-    const data = await response.json();
-    if (response.status === 401 && data.authUrl) {
-      continueGoogleAuthorization(data.authUrl);
-      throw new Error("กรุณาเชื่อมต่อ Google เพื่ออัปเดตข้อมูลล่าสุด");
-    }
-    if (!response.ok || typeof data.revision !== "string" || !data.revision) throw new Error(data.error ?? "ตรวจการเปลี่ยนแปลงของ Sheets ไม่สำเร็จ");
-    return data.revision;
-  }
-
   async function pullFromGoogle(resume = false, checkedRevision?: string) {
     if (!selectedProject?.googleSheetId) return setShowGoogleSheetDialog(true);
     if (!canEditProject) return flash("Project นี้เปิดให้คุณดูอย่างเดียว");
@@ -1883,7 +1880,7 @@ export function QaWorkspace({
         publishProgress(importWorkspaceCases, savedSource, importStates);
       }
       const workbookPending = resume && previousImport && savedSource?.id
-        ? getProjectWorkbook(`${selectedProject.id}:${savedSource.id}`, () => withImportTimeout(() => loadProjectWorkbook(selectedProject.id, savedSource!.id), 90_000, "โหลดไฟล์ต้นฉบับที่บันทึกไว้")) : getGoogleWorkbook(true, sourceRevision);
+        ? getProjectWorkbook(`${selectedProject.id}:${savedSource.id}`, () => withImportTimeout(() => loadProjectWorkbook(selectedProject.id, savedSource!.id), 90_000, "โหลดไฟล์ต้นฉบับที่บันทึกไว้")) : getGoogleWorkbook(false, sourceRevision);
       // Attach a rejection handler immediately while the text requests run.
       void workbookPending.catch(() => {});
       const { response, data } = await withImportTimeout(async signal => {
@@ -2161,7 +2158,7 @@ export function QaWorkspace({
       for (const item of nextCases) {
         if (!selectDetailSheets(mergedSheets, { testcaseId: item.id }).length) importStates[`testcase:${item.id}`] = "loaded";
       }
-      const latestRevision = await readSourceRevision(selectedProject.id);
+      const latestRevision = await readSourceRevision(selectedProject.id, undefined, false);
       const dataComplete = detailSheets.every(sheet => importStates[sheet.name] === "loaded")
         && approvalEvidenceReadiness({ ...importSource.sheetImport!, complete: true, refreshRequired: false, states: importStates, evidenceManifest }, nextCases, detailSheets.map(sheet => sheet.name)).ready;
       const revisionStatus = sheetImportRevisionStatus(sourceRevision, latestRevision, dataComplete);
@@ -2285,7 +2282,7 @@ export function QaWorkspace({
         setSheetLoadProgress(current => ({ ...current, [name]: { phase: "workbook" } }));
         const workbookSource = await revisionBoundSource(sourceRevision, source,
           revision => getGoogleWorkbook(false, revision), bytes => importTestCases(bytes, `${selectedProject.name}.xlsx`).source,
-          () => readSourceRevision(selectedProject.id));
+          () => readSourceRevision(selectedProject.id, undefined, false));
         let loadedSource = { ...workbookSource, sheets: mergeGoogleSheetsWithSource(workbookSource.sheets, data.sheets ?? []) };
         const sheet = loadedSource.sheets.find(sheet => sheet.name === name);
         if (!sheet) throw new Error(`ไม่พบรูปแบบรายละเอียดของ ${name}`);

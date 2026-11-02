@@ -38,21 +38,27 @@ const GOOGLE_SCOPES = [
 
 type GoogleApiAuth = ReturnType<typeof getGoogleServiceAuth> | ReturnType<typeof googleOAuthClient>;
 
-export async function readGoogleSheetRevision(spreadsheetId: string, auth: GoogleApiAuth) {
+export async function readGoogleSheetRevision(spreadsheetId: string, auth: GoogleApiAuth, signal?: AbortSignal) {
+  return (await readGoogleSheetRevisionSnapshot(spreadsheetId, auth, signal)).revision;
+}
+
+export async function readGoogleSheetRevisionSnapshot(spreadsheetId: string, auth: GoogleApiAuth, signal?: AbortSignal): Promise<{ revision: string; workbook?: ArrayBuffer }> {
+  signal?.throwIfAborted();
   try {
     const file = await google.drive({ version: "v3", auth }).files.get({
       fileId: spreadsheetId, fields: "id,version", supportsAllDrives: true,
-    }, { timeout: 30_000 });
+    }, { timeout: 30_000, signal, retry: signal ? false : undefined });
     if (!file.data.version) throw new Error("ตรวจการเปลี่ยนแปลงของ Sheets ไม่สำเร็จ");
-    return `drive:${file.data.version}`;
+    return { revision: `drive:${file.data.version}` };
   } catch (error) {
     const reason = error as { code?: number | string; response?: { status?: number } };
     // Existing connections use drive.file: native Sheets can be readable via
     // spreadsheets scope while Drive returns 404. Check the authorized export
     // contents (including drawings/media) rather than requesting wider access.
     if (Number(reason.code ?? reason.response?.status) !== 404) throw error;
-    const bytes = new Uint8Array(await exportGoogleSheetWorkbook(spreadsheetId, auth));
-    return workbookContentRevision(bytes);
+    signal?.throwIfAborted();
+    const workbook = await exportGoogleSheetWorkbook(spreadsheetId, auth, signal);
+    return { revision: workbookContentRevision(new Uint8Array(workbook)), workbook };
   }
 }
 
@@ -166,9 +172,10 @@ export class GoogleFileSelectionRequiredError extends Error {
   }
 }
 
-async function driveWorkbookMetadata(spreadsheetId: string, auth: GoogleApiAuth) {
+async function driveWorkbookMetadata(spreadsheetId: string, auth: GoogleApiAuth, signal?: AbortSignal) {
+  signal?.throwIfAborted();
   try {
-    return (await google.drive({ version: "v3", auth }).files.get({ fileId: spreadsheetId, fields: "id,name,mimeType", supportsAllDrives: true })).data;
+    return (await google.drive({ version: "v3", auth }).files.get({ fileId: spreadsheetId, fields: "id,name,mimeType", supportsAllDrives: true }, { signal, retry: signal ? false : undefined })).data;
   } catch (error) {
     // drive.file access is narrower than spreadsheets access. A Drive 404 must
     // not prevent the same account from reading a native Sheet through v4.
@@ -508,24 +515,26 @@ function defectsFromRows(rows: unknown[][]): TestDefect[] {
   });
 }
 
-async function downloadOfficeWorkbook(fileId: string, auth: GoogleApiAuth) {
+async function downloadOfficeWorkbook(fileId: string, auth: GoogleApiAuth, signal?: AbortSignal) {
   const { token } = await auth.getAccessToken();
   if (!token) throw new Error("ขอ access token สำหรับ Google Drive ไม่สำเร็จ");
+  signal?.throwIfAborted();
   const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`, {
-    headers: { Authorization: `Bearer ${token}` }, cache: "no-store",
+    headers: { Authorization: `Bearer ${token}` }, cache: "no-store", signal,
   });
   if (!response.ok) throw new Error(`ดาวน์โหลด Excel จาก Google Drive ไม่สำเร็จ (${response.status})`);
   return response.arrayBuffer();
 }
 
-export async function exportGoogleSheetWorkbook(spreadsheetId: string, auth: GoogleApiAuth = getGoogleServiceAuth()) {
-  const file = await driveWorkbookMetadata(spreadsheetId, auth);
-  if (file && driveWorkbookType(file.mimeType) === "xlsx") return downloadOfficeWorkbook(spreadsheetId, auth);
+export async function exportGoogleSheetWorkbook(spreadsheetId: string, auth: GoogleApiAuth = getGoogleServiceAuth(), signal?: AbortSignal) {
+  const file = await driveWorkbookMetadata(spreadsheetId, auth, signal);
+  if (file && driveWorkbookType(file.mimeType) === "xlsx") return downloadOfficeWorkbook(spreadsheetId, auth, signal);
   const { token } = await auth.getAccessToken();
   if (!token) throw new Error("ขอ access token สำหรับ Google Sheets ไม่สำเร็จ");
+  signal?.throwIfAborted();
   const response = await fetch(`https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/export?format=xlsx`, {
     headers: { Authorization: `Bearer ${token}` },
-    cache: "no-store", signal: AbortSignal.timeout(120_000),
+    cache: "no-store", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000),
   });
   if (!response.ok) {
     if (!file && [400, 403, 404].includes(response.status)) throw new GoogleFileSelectionRequiredError();

@@ -36,6 +36,20 @@ test('a failed refresh never presents the old completed snapshot as a successful
  const html=renderToStaticMarkup(React.createElement(ProjectEvidenceProgress,{projectName:'Project',names:['TC_01'],states:{TC_01:'loaded'},progress:{},active:false,ready:true,expectedImages:1,persistedImages:1,errorMessage:'statement timeout',canRetry:true,onRetry:()=>{}}));
  assert.match(html,/นำเข้าหยุดชั่วคราว/);assert.doesNotMatch(html,/บันทึกหลักฐานครบแล้ว/);
 });
+
+test('saved evidence and tabs stay complete when the final Sheets check times out', () => {
+  const html = renderToStaticMarkup(React.createElement(ProjectEvidenceProgress, {
+    projectName: 'Project', names: ['Testcase', 'Results'], states: { Testcase: 'loaded', Results: 'loaded' }, progress: {},
+    active: false, ready: false, expectedImages: 73, persistedImages: 73, revisionCheckFailed: true,
+    errorMessage: 'ตรวจข้อมูลล่าสุดจาก Sheets ใช้เวลานานเกินกำหนด',
+    actionLabel: 'นำเข้าส่วนที่เหลือต่อ', actionDescription: 'ตรวจรายการที่ยังไม่ครบ', canRetry: true, onRetry: () => {},
+  }));
+  assert.match(html, /บันทึกข้อมูลและหลักฐานครบแล้ว/);
+  assert.match(html, /รอยืนยันข้อมูลล่าสุดจาก Sheets/);
+  assert.match(html, /ตรวจข้อมูลล่าสุดอีกครั้ง/);
+  assert.match(html, /73\/73/);
+  assert.doesNotMatch(html, /นำเข้าหยุดชั่วคราว|นำเข้าส่วนที่เหลือต่อ|พร้อมใช้ส่งให้ PO/);
+});
 test('the warning identifies which loaded tab is still missing evidence',()=>{
  const html=renderToStaticMarkup(React.createElement(ProjectEvidenceProgress,{projectName:'Project',names:['SUN-8073_01'],states:{'SUN-8073_01':'loaded'},progress:{},active:false,ready:false,expectedImages:2,persistedImages:1,missingEvidence:[{sheetName:'SUN-8073_01'}],canRetry:true,onRetry:()=>{}}));
  assert.match(html,/ยังขาดรูปหลักฐาน 1 รูป/);

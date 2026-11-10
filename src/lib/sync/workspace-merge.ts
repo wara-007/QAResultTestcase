@@ -1,4 +1,5 @@
 import { isMissingResultReferenceIssue } from "../register-result-references";
+import { withoutSupersededRegisterPlaceholders } from "../register-case-identity";
 import type { TestCase, TestCaseCustomField } from "../types";
 import { normalizedCaseId } from "./client-conflicts";
 import { reconcileStepCases, replaceLegacyStepPreviews } from "../step-reconciliation";
@@ -76,6 +77,7 @@ export function mergeWorkspaceAndGoogleCases(localCases: TestCase[], googleCases
     };
   });
   const googleIds = new Set(googleCases.map((item) => normalizedCaseId(item.id)));
-  const localOnlyCases = localCases.filter((item) => !googleIds.has(normalizedCaseId(item.id)));
-  return { cases: [...mergedGoogleCases, ...localOnlyCases], localOnlyCases };
+  const localOnly = localCases.filter((item) => !googleIds.has(normalizedCaseId(item.id)));
+  const cases = withoutSupersededRegisterPlaceholders([...mergedGoogleCases, ...localOnly], new Set(mergedGoogleCases.map(item => item.id)));
+  return { cases, localOnlyCases: cases.slice(mergedGoogleCases.length) };
 }

@@ -4,6 +4,7 @@ import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 import { strToU8, strFromU8, zipSync, unzipSync } from "fflate";
 import { exportTestCases, importTestCases, readWorkbookFreeformResults, readWorkbookResultImages, readWorkbookSheet } from "./excel-ooxml";
 import { casesFromRows } from "./testcase-rows";
+import { alignGoogleWorkbookImport } from "./google-workbook-sheets";
 import type { WorkbookSource } from "./types";
 
 Object.assign(globalThis, { DOMParser });
@@ -41,6 +42,19 @@ test("combined result evidence remains accessible to both referenced cases", () 
   const cases = casesFromRows([["Test Case Id", "Test Case Name"], ["TC01", "First"], ["TC02", "Second"]]);
   const images = readWorkbookResultImages(source, cases);
   assert.deepEqual(images.map(image => [image.testCaseId, image.resultId]), [["TC01", "SHEET-IMPORT-TC01, TC02-API-2"], ["TC02", "SHEET-IMPORT-TC01, TC02-API-2"]]);
+
+  const fullName = "TC01, TC02 — Shared API evidence for regression";
+  const exportName = fullName.slice(0, 31);
+  source.sheets[0].name = exportName;
+  for (const item of cases) item.resultReferenceTargets = [exportName];
+  const liveTab = { ...source.sheets[0], name: fullName, path: "42" };
+  const aligned = alignGoogleWorkbookImport({ source, cases }, [liveTab]);
+  assert.equal(aligned.source.sheets[0].path, source.sheets[0].path);
+  assert.deepEqual(readWorkbookResultImages(aligned.source, aligned.cases)
+    .map(image => [image.sheetName, image.testCaseId, image.resultId]),
+    ["TC01", "TC02"].map(id => [fullName, id, `SHEET-IMPORT-${fullName}-API-2`]));
+  assert.equal(alignGoogleWorkbookImport({ source, cases }, [liveTab, { ...liveTab, name: fullName + " 2" }]).source.sheets[0].name, exportName);
+  assert.equal(alignGoogleWorkbookImport({ source, cases }, [liveTab, { ...liveTab, name: exportName }]).source.sheets[0].name, exportName);
 });
 
 test("embedded evidence on an aliased result tab belongs to the register case without a dash", () => {

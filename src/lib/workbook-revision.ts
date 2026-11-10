@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
+import { setImmediate } from 'node:timers/promises';
 import { DOMParser } from '@xmldom/xmldom';
 import { unzipSync, strFromU8, strToU8 } from 'fflate';
 import { workbookXmlNormalizer } from './workbook-revision-xml';
@@ -9,19 +10,40 @@ const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest(
 /** Google renumbers identical media between exports. Compare their contents and
  * resolved relationships, retaining placement, image bytes, cells and styles. */
 export function workbookContentRevision(bytes: Uint8Array): string {
+  const steps = workbookRevisionSteps(bytes);
+  let step = steps.next();
+  while (!step.done) step = steps.next();
+  return step.value;
+}
+
+export async function abortableWorkbookContentRevision(bytes: Uint8Array, signal?: AbortSignal): Promise<string> {
+  if (!signal) return workbookContentRevision(bytes);
+  const steps = workbookRevisionSteps(bytes);
+  // Give the deadline a chance to fire between ZIP/XML processing steps.
+  for (;;) {
+    await setImmediate(undefined, { signal });
+    signal.throwIfAborted();
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+function* workbookRevisionSteps(bytes: Uint8Array): Generator<void, string> {
   const files = unzipSync(bytes);
+  yield;
   const normalizeXml = workbookXmlNormalizer(files);
+  yield;
   const media = new Map(Object.keys(files).filter(name => name.startsWith('xl/media/'))
     .map(name => [name, digest(files[name])]));
-  const entries: [string, Uint8Array][] = [];
-  for (const [name, content] of Object.entries(files)) {
-    if (name.endsWith('/') || name === 'docProps/core.xml') continue;
-    if (media.has(name)) {
-      entries.push([`media:${media.get(name)}`, content]);
-      continue;
-    }
+  const entries = Object.keys(files)
+    .filter(name => !name.endsWith('/') && name !== 'docProps/core.xml')
+    .map(name => ({ name, key: media.has(name) ? `media:${media.get(name)}` : name }))
+    .sort((a, b) => a.key.localeCompare(b.key));
+  const hash = createHash('sha256');
+  for (const { name, key } of entries) {
+    const content = files[name];
     let normalized = content;
-    if (name.endsWith('.rels') || name.endsWith('.xml')) {
+    if (!media.has(name) && (name.endsWith('.rels') || name.endsWith('.xml'))) {
       const doc = new DOMParser().parseFromString(strFromU8(content), 'application/xml');
       if (name.endsWith('.rels')) {
         const owner = name.replace(/(^|\/)\_rels\//, '$1').replace(/\.rels$/, '');
@@ -38,13 +60,9 @@ export function workbookContentRevision(bytes: Uint8Array): string {
       }
       normalized = strToU8(normalizeXml(doc, name));
     }
-    entries.push([name, normalized]);
-  }
-  entries.sort(([a], [b]) => a.localeCompare(b));
-  const hash = createHash('sha256');
-  for (const [name, content] of entries) {
-    hash.update(JSON.stringify([name, content.byteLength]));
-    hash.update(content);
+    hash.update(JSON.stringify([key, normalized.byteLength]));
+    hash.update(normalized);
+    yield;
   }
   return `xlsx-v2:${hash.digest('hex')}`;
 }

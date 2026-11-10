@@ -61,6 +61,7 @@ import { ProjectFileActions } from "@/components/project-file-actions";
 import { googleAuthorizationTarget } from "@/lib/google-authorization";
 import { signOut } from "@/app/auth/actions";
 import { exportTestCases, importTestCases, readWorkbookFreeformResults, readWorkbookResultImages, readWorkbookSheet } from "@/lib/excel-ooxml";
+import { alignGoogleWorkbookImport, mergeGoogleSheetsWithSource } from "@/lib/google-workbook-sheets";
 import { evidenceImageUrl } from "@/lib/evidence";
 import { ImageViewerGallery } from "@/components/image-viewer-gallery";
 import { ResultTextViewer } from "@/components/result-text-viewer";
@@ -194,24 +195,6 @@ function isResultRecordField(label: string) {
 function testCaseIdsFromSheet(sheet: WorkbookSheet) {
   const ids = Array.from(sheet.name.matchAll(/\b(?:TC|TEST\s*CASE|TESTCASE|CASE)[\s:_-]*(\d+)/gi), (match) => `TC-${Number(match[1])}`);
   return ids.length ? [...new Set(ids)] : sheet.testCaseIds;
-}
-
-function mergeGoogleSheetsWithSource(sourceSheets: WorkbookSheet[], googleSheets: WorkbookSheet[]) {
-  const sourceByName = new Map(sourceSheets.map((sheet) => [sheet.name.trim().toLowerCase(), sheet]));
-  return googleSheets.map((googleSheet) => {
-    const sourceSheet = sourceByName.get(googleSheet.name.trim().toLowerCase());
-    if (!sourceSheet) return googleSheet;
-    return {
-      ...googleSheet,
-      path: sourceSheet.path,
-      imageCount: sourceSheet.imageCount,
-      defects: googleSheet.defects ?? sourceSheet.defects,
-      // Keep the live Google metadata. The uploaded workbook can be stale and
-      // previously caused newly added/non-TC tabs to disappear from the UI.
-      kind: googleSheet.kind,
-      testCaseIds: googleSheet.testCaseIds,
-    };
-  });
 }
 
 function evidenceViewerImages(evidence: TestEvidence[]) {
@@ -1815,7 +1798,17 @@ export function QaWorkspace({
     activeProjectImports.add(selectedProject.id);
     setPullingGoogle(true);
     setWorkspaceError("");
+    setSheetCheckErrorProject(null);
     setRowLoadProjectId(selectedProject.id);
+    const projectId = selectedProject.id;
+    const checkImportRevision = async (includeWorkbook: boolean) => {
+      try {
+        return await readSourceRevision(projectId, undefined, includeWorkbook);
+      } catch (reason) {
+        setSheetCheckErrorProject(projectId);
+        throw reason;
+      }
+    };
     const completedResultTabs = new Set<string>();
     const incompleteEvidenceTabs = new Set<string>();
     let previousImport = readSheetImportState(source?.sheetImport, selectedProject.googleSheetId);
@@ -1850,8 +1843,7 @@ export function QaWorkspace({
         ? { ...latestWorkspace.source, buffer: source.buffer, bufferLoaded: true }
         : latestWorkspace.source;
       previousImport = readSheetImportState(latestWorkspace.source?.sheetImport, selectedProject.googleSheetId);
-      const sourceRevision = checkedRevision ?? await readSourceRevision(selectedProject.id);
-      setSheetCheckErrorProject(null);
+      const sourceRevision = checkedRevision ?? await checkImportRevision(true);
       if (savedSource?.id && savedSource.sourceOrigin === "google-sheets"
         && canFinalizeSavedImport(previousImport, importWorkspaceCases, savedSource.sheets.map(sheet => sheet.name), sourceRevision)) {
         // Every tab and image was committed before an interrupted final step.
@@ -1951,7 +1943,7 @@ export function QaWorkspace({
       rows.forEach((row, index) => { if (row.status === "rejected") importStates[detailNames[index]] = "error"; });
       if (failedRows) setWorkspaceError(`${failedRows} แท็บโหลดรายละเอียดไม่สำเร็จ — กดลองใหม่ที่แถวนั้น`);
       const workbookBuffer = await workbookPending;
-      const imported = importTestCases(workbookBuffer, `${selectedProject.name}.xlsx`);
+      const imported = alignGoogleWorkbookImport(importTestCases(workbookBuffer, `${selectedProject.name}.xlsx`), data.sheets);
       const alignedWorkbookCases = alignRegisterCaseIdentities(importWorkspaceCases, imported.cases);
       const workbookCaseIds = new Map(imported.cases.map((item, index) => [item.id, alignedWorkbookCases[index].id]));
       imported.cases = alignedWorkbookCases;
@@ -2158,7 +2150,7 @@ export function QaWorkspace({
       for (const item of nextCases) {
         if (!selectDetailSheets(mergedSheets, { testcaseId: item.id }).length) importStates[`testcase:${item.id}`] = "loaded";
       }
-      const latestRevision = await readSourceRevision(selectedProject.id, undefined, false);
+      const latestRevision = await checkImportRevision(false);
       const dataComplete = detailSheets.every(sheet => importStates[sheet.name] === "loaded")
         && approvalEvidenceReadiness({ ...importSource.sheetImport!, complete: true, refreshRequired: false, states: importStates, evidenceManifest }, nextCases, detailSheets.map(sheet => sheet.name)).ready;
       const revisionStatus = sheetImportRevisionStatus(sourceRevision, latestRevision, dataComplete);
@@ -2481,6 +2473,7 @@ export function QaWorkspace({
             missingEvidence={evidenceReadiness.missing}
             refreshRequired={source?.sheetImport?.refreshRequired}
             errorMessage={workspaceError}
+            revisionCheckFailed={sheetCheckFailed}
             actionLabel={importAction.label}
             actionDescription={importAction.description}
             canRetry={canEditProject && !testCaseId && !sheetName}

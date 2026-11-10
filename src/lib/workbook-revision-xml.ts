@@ -11,20 +11,30 @@ type AttributeResolver = (element: Element, name: string, value: string) => stri
 function canonical(node: Node, resolve: AttributeResolver, sharedStrings?: string[]): unknown {
   if (node.nodeType !== 1) return [node.nodeType, node.nodeValue];
   const element = node as Element;
-  const attributes = Array.from(element.attributes).filter(attribute => attribute.namespaceURI !== 'http://www.w3.org/2000/xmlns/' && attribute.name !== 'xmlns')
-    .map(attribute => [`${attribute.namespaceURI ?? ''}:${attribute.localName ?? attribute.name}`, resolve(element, attribute.localName ?? attribute.name, attribute.value)]);
+  const attributes: [string, string][] = [];
+  for (let index = 0; index < element.attributes.length; index += 1) {
+    const attribute = element.attributes[index];
+    if (attribute.namespaceURI === 'http://www.w3.org/2000/xmlns/' || attribute.name === 'xmlns') continue;
+    const name = attribute.localName ?? attribute.name;
+    attributes.push([`${attribute.namespaceURI ?? ''}:${name}`, resolve(element, name, attribute.value)]);
+  }
   const spreadsheet = !element.namespaceURI || element.namespaceURI === 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
   const defaults = spreadsheet && element.localName === 'c' ? ['s']
     : spreadsheet && element.localName === 'col' ? ['style']
     : spreadsheet && element.localName === 'xf' ? ['fontId', 'fillId', 'borderId', 'numFmtId', ...(element.parentNode?.localName === 'cellXfs' ? ['xfId'] : [])] : [];
   for (const name of defaults) if (!element.hasAttribute(name)) attributes.push([`:${name}`, resolve(element, name, '0')]);
-  attributes.sort(([left], [right]) => left.localeCompare(right));
+  if (attributes.length > 1) attributes.sort(([left], [right]) => left.localeCompare(right));
   const parent = element.parentNode as Element | null;
   const stringIndex = element.localName === 'v' && parent?.localName === 'c' && parent.getAttribute('t') === 's'
     ? Number(element.textContent) : undefined;
-  const content = stringIndex !== undefined && sharedStrings?.[stringIndex] !== undefined
-    ? [['shared-string', sharedStrings[stringIndex]]]
-    : Array.from(element.childNodes).map(child => canonical(child, resolve, sharedStrings));
+  const content: unknown[] = [];
+  if (stringIndex !== undefined && sharedStrings?.[stringIndex] !== undefined) {
+    content.push(['shared-string', sharedStrings[stringIndex]]);
+  } else {
+    for (let child = element.firstChild; child; child = child.nextSibling) {
+      content.push(canonical(child, resolve, sharedStrings));
+    }
+  }
   return [element.namespaceURI ?? '', element.localName ?? element.nodeName, attributes, content];
 }
 

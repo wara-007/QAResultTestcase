@@ -54,7 +54,27 @@ test('revision fallback retains the exact exported bytes instead of requiring a 
     const snapshot = await readGoogleSheetRevisionSnapshot('native-id', auth);
     assert.match(snapshot.revision, /^xlsx-v2:/);
     assert.deepEqual(new Uint8Array(snapshot.workbook!), bytes);
+    assert.equal(metadata.mock.callCount(), 1, 'Drive access was already checked before export');
     assert.equal(download.mock.callCount(), 1);
+  } finally { metadata.mock.restore(); download.mock.restore(); }
+});
+
+test('revision cancellation reaches hashing after the fallback export', async () => {
+  const controller = new AbortController();
+  const bytes = fixture();
+  const metadata = mock.method(api, 'drive', () => ({ files: { get: async () => { throw Object.assign(new Error('not found'), { code: 404 }); } } }));
+  const download = mock.method(globalThis, 'fetch', async () => {
+    const response = new Response(bytes);
+    const readBytes = response.arrayBuffer.bind(response);
+    response.arrayBuffer = async () => {
+      const workbook = await readBytes();
+      setImmediate(() => controller.abort());
+      return workbook;
+    };
+    return response;
+  });
+  try {
+    await assert.rejects(readGoogleSheetRevisionSnapshot('native-id', auth, controller.signal), { name: 'AbortError' });
   } finally { metadata.mock.restore(); download.mock.restore(); }
 });
 

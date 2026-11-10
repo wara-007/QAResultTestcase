@@ -5,6 +5,7 @@ import { checkpointSheetImport, readSheetImportState } from './sheet-import-stat
 import type { TestCase } from './types';
 import { casesFromRows } from './testcase-rows';
 import { parseStoredResults, serializeStoredResults } from './stored-results';
+import { assignRegisterCaseIdentities, displayTestCaseId } from './register-case-identity';
 const item = (name: string): TestCase => ({ id:'TC_01', name, sourceRow:2, platform:'', condition:'', scenario:'', steps:'', expected:'', status:'Not Start', device:'', testData:'', appVersion:'', environment:'', resultReference:'', executedBy:'', executedDate:'', executedTime:'', remark:'', evidence:[], results:[], defects:[], persistedLocally:true });
 test('only a known matching source revision avoids fresh import', () => {
  assert.equal(sheetRefreshRequired(undefined,'2'),true);
@@ -25,6 +26,33 @@ test('fresh source metadata replaces stored imports while preserving QA result a
  assert.equal(result.cases[0].name,'new');
  assert.equal(result.cases[0].results?.[0].actualResult,'QA notes');
  assert.equal(result.conflicts.length,0);
+});
+
+test('a corrected TCID reuses its own register record even when another row keeps the old TCID', () => {
+ const first = { ...item('Validate 5 BANNER'), scenario: 'BAN_01' };
+ const last = { ...item('Validate 7 BANNER'), sourceRow: 17, scenario: 'BAN_04' };
+ const [firstSaved, lastSaved] = assignRegisterCaseIdentities([first, last]);
+ lastSaved.recordId = 'row-17';
+ lastSaved.results = [{ id: 'WEB-1', source: 'web', status: 'Pass', actualResult: 'QA notes', apiResponse: '', log: '', evidence: [], createdAt: '' }];
+ const incoming = [first, { ...last, id: 'TC_04', status: 'Pass' as const }];
+ const refreshed = refreshRegisterCases([firstSaved, lastSaved], incoming).cases;
+ assert.deepEqual(refreshed.map(displayTestCaseId), ['TC_01', 'TC_04']);
+ assert.equal(refreshed[0].id, firstSaved.id);
+ assert.equal(refreshed[1].recordId, 'row-17');
+ assert.equal(refreshed[1].results?.[0].id, 'WEB-1');
+ assert.deepEqual(refreshRegisterCases(refreshed, incoming).cases.map(row => row.id), refreshed.map(row => row.id));
+});
+
+test('a previously imported replacement suppresses only its empty old register row', () => {
+ const [old, replacement, unrelated] = assignRegisterCaseIdentities([
+  { ...item('Validate 7 BANNER'), sourceRow: 17, scenario: 'BAN_04' },
+  { ...item('Validate 7 BANNER'), id: 'TC_04', sourceRow: 17, scenario: 'BAN_04', status: 'Pass' },
+  { ...item('Another definition'), id: 'TC_99', sourceRow: 17 },
+ ]);
+ const active = [replacement];
+ assert.deepEqual(refreshRegisterCases([old, replacement, unrelated], active).cases.map(displayTestCaseId), ['TC_04', 'TC_99']);
+ const withEvidence = { ...old, evidence: [{ fileId: 'proof', name: 'proof.png', mimeType: 'image/png' }] };
+ assert.deepEqual(refreshRegisterCases([withEvidence, replacement], active).cases.map(displayTestCaseId), ['TC_04', 'TC_01']);
 });
 test('Sheets wins local-only and simultaneous metadata changes without conflicts', () => {
  assert.equal(refreshRegisterCases([item('QA edit')],[item('original')]).cases[0].name,'original');

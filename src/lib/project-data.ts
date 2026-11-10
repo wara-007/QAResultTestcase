@@ -9,6 +9,8 @@ import type { RowLoadState } from "./result-preview";
 import type { TestCase, TestStatus, WorkbookSheet, WorkbookSource } from "@/lib/types";
 import { readAllRows, readAllRowsConcurrent } from "./paged-rows";
 import { retryTimedOutProjectWrite, enqueueProjectDetailWrite } from "./project-detail-lock";
+import { withoutSupersededRegisterPlaceholders } from "./register-case-identity";
+import { normalizedCaseId } from "./sync/client-conflicts";
 
 const SOURCE_BUCKET = "testcase-source-files";
 const SOURCE_CHUNK_SIZE = 8 * 1024 * 1024;
@@ -239,7 +241,10 @@ export async function loadProjectWorkspace(projectId: string, options: { include
     };
   });
 
-  return { cases, source };
+  const checkpoint = source?.sheetImport;
+  const baseline = checkpoint?.complete && !checkpoint.refreshRequired ? checkpoint.registerBaseline : undefined;
+  const activeIds = baseline && new Set(cases.filter(item => Object.hasOwn(baseline, normalizedCaseId(item.id))).map(item => item.id));
+  return { cases: activeIds ? withoutSupersededRegisterPlaceholders(cases, activeIds) : cases, source };
 }
 
 export async function persistImportedWorkbook(projectId: string, cases: TestCase[], source: WorkbookSource, persistCases = true, origin: "upload" | "google-sheets" = "upload") {

@@ -92,3 +92,35 @@ Evidence: Reported `google-sheet?revision=1` returns HTML HTTP 504. Revision fal
 Success: slow checks return a controlled JSON timeout, Google requests receive cancellation, HTML 504 yields actionable Thai text, and successful/auth-denied responses retain current behavior. Production load performance remains to be measured after deployment; this does not make a slow Google export faster.
 
 Verification: New cancellation tests failed before propagation; route tests reproduced unbounded hangs before the deadline change. Focused tests passed 27/27; full Node 22.23.2 suite passed 789/789. Final TypeScript, scoped ESLint and `git diff --check` passed. Corrected optional auth and untyped fetch mock parameters found by TypeScript. Concurrent workspace changes provide workbook reuse and HTML response handling; preserved those changes. No deployment or remote data writes. Next action: deploy through the normal release process and measure the affected project's revision/export latency; slow exports may still return the controlled timeout.
+# Sheets revision timeout on Netlify (2026-11-10)
+
+Objective: Keep the Sheets revision check responsive for large workbooks while preserving the existing revision and import checkpoint semantics.
+
+- [x] Reproduce the gateway timeout and measure the affected workbook. Chrome reported HTTP 500 after 36.09s. A direct metadata response also hit the inactivity timeout. Production is on `f2858ec`. The downloaded workbook has about 49.5 MB of XLSX data and 30.7 MB of uncompressed XML. Local synchronous hashing took 6.7s. Netlify server invocations around the retries ran 51–54s, with peak memory up to 929 MB. The logs do not break time down by stage.
+- [x] Add regression coverage for cancelling revision calculation and avoiding a repeated Drive lookup after 404. Both tests failed before the fix and passed afterward.
+- [x] Let the existing deadline interrupt workbook hashing between files. Hash each normalized entry in order as it is processed and preserve the `xlsx-v2` digest.
+- [x] Compare the real workbook hash and local time against the baseline. Same `xlsx-v2` digest in 5.2s locally. An artificial 1s deadline on the same workbook returned a controlled timeout in 1.07s.
+- [x] Verify focused tests (37/37), full suite (790/790), TypeScript, ESLint, and production build on Node 22.23.2. Restore Next's generated local type import after the build.
+
+Next action: Verify the affected production project after deploying the patch. The measured hashing improvement is local. A slow Google export can still reach the route's deadline.
+
+# Resume missing evidence on a long Sheets tab title (2026-11-10)
+
+- [x] Reproduce 72/73 on localhost. The full title shown in the tab queue is 39 characters. The workbook contains the remaining PNG at B30 under its 31-character export title, so the queue never reaches that image.
+- [x] Add a failing workbook regression and restore the Google title before deriving result IDs and evidence targets. Preserve exact matches and leave ambiguous prefixes unassigned.
+- [x] Verify the actual workbook still yields 73 evidence targets. The image at B30 now reaches the full-title import queue, and a simulated upload and checkpoint satisfy readiness. Focused tests 51/51, full suite 790/790, TypeScript, and scoped ESLint passed.
+
+The user resumed import and confirmed 73/73 evidence references and 37/37 tabs saved on localhost. The final Sheets revision check timed out after those checkpoints.
+
+# Show saved import separately from the Sheets revision check (2026-11-10)
+
+- [x] Trace the 100% import and paused banner to the final revision check. Record revision failures as such, including during manual resume.
+- [x] Show that data and evidence are saved while awaiting revision confirmation. Offer another revision check and retain the existing matching-revision requirement for finalizing the snapshot.
+- [x] Reproduce the misleading wording in a rendering test. All 37 focused evidence and progress tests passed.
+- [x] TypeScript, scoped ESLint, and diff checks passed. On the live localhost project, the automatic revision check finished and the completed page returned to the normal Sheets refresh action with 30 cases and no paused status.
+
+# Reconcile corrected Sheets TCIDs
+
+- [x] Verify the project in the screenshot. Both saved records use register row 17 and the same definition. The completed import baseline contains BAN_04_TC_01 and the separate row 2 case. The old row 17 record has one Not Start attempt and no results or defects.
+- [x] Reuse the same case record for an unambiguous TCID edit and filter existing empty placeholders from the active workspace using the completed register baseline. Preserve stored rows and QA evidence.
+- [x] Both new regression cases failed before the patch and passed after it. A read-only check through the real workspace loader returned four register cases, including BAN_01_TC_01 at row 2 and BAN_04_TC_01 at row 17 with its Pass result. All 793 tests, TypeScript, scoped ESLint, and diff checks passed.

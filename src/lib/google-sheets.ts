@@ -6,7 +6,7 @@ import { canonicalCaseId } from "./sync/canonical";
 import { prioritizeReferencedSheets, withResultReferenceIssues, resolveRegisterReferenceTargets } from "./register-result-references";
 import "server-only";
 import { needsCoverSnapshot } from "./google-sheet-read-plan";
-import { workbookContentRevision } from "./workbook-revision";
+import { abortableWorkbookContentRevision } from "./workbook-revision";
 import { googleDataRange } from "./google-data-range";
 import { sheetCellLink } from "./sheet-cell-link";
 import { driveWorkbookType, officeWorkbookData, OFFICE_SYNC_MESSAGE } from "./drive-workbook";
@@ -57,8 +57,9 @@ export async function readGoogleSheetRevisionSnapshot(spreadsheetId: string, aut
     // contents (including drawings/media) rather than requesting wider access.
     if (Number(reason.code ?? reason.response?.status) !== 404) throw error;
     signal?.throwIfAborted();
-    const workbook = await exportGoogleSheetWorkbook(spreadsheetId, auth, signal);
-    return { revision: workbookContentRevision(new Uint8Array(workbook)), workbook };
+    const workbook = await exportNativeSheetWorkbook(spreadsheetId, auth, false, signal);
+    const revision = await abortableWorkbookContentRevision(new Uint8Array(workbook), signal);
+    return { revision, workbook };
   }
 }
 
@@ -529,6 +530,10 @@ async function downloadOfficeWorkbook(fileId: string, auth: GoogleApiAuth, signa
 export async function exportGoogleSheetWorkbook(spreadsheetId: string, auth: GoogleApiAuth = getGoogleServiceAuth(), signal?: AbortSignal) {
   const file = await driveWorkbookMetadata(spreadsheetId, auth, signal);
   if (file && driveWorkbookType(file.mimeType) === "xlsx") return downloadOfficeWorkbook(spreadsheetId, auth, signal);
+  return exportNativeSheetWorkbook(spreadsheetId, auth, Boolean(file), signal);
+}
+
+async function exportNativeSheetWorkbook(spreadsheetId: string, auth: GoogleApiAuth, hasDriveFile: boolean, signal?: AbortSignal) {
   const { token } = await auth.getAccessToken();
   if (!token) throw new Error("ขอ access token สำหรับ Google Sheets ไม่สำเร็จ");
   signal?.throwIfAborted();
@@ -537,7 +542,7 @@ export async function exportGoogleSheetWorkbook(spreadsheetId: string, auth: Goo
     cache: "no-store", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000),
   });
   if (!response.ok) {
-    if (!file && [400, 403, 404].includes(response.status)) throw new GoogleFileSelectionRequiredError();
+    if (!hasDriveFile && [400, 403, 404].includes(response.status)) throw new GoogleFileSelectionRequiredError();
     throw new Error(`ดาวน์โหลด workbook จาก Google Sheets ไม่สำเร็จ (${response.status})`);
   }
   return response.arrayBuffer();

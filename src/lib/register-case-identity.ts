@@ -16,6 +16,31 @@ const referenceKey = (item: TestCase) => {
 };
 const rowId = (identity: RegisterCaseIdentity) => `qa-row:${hash(identity.sourceId)}:${identity.fingerprint}:${identity.occurrence}`;
 
+function registerRowDefinition(item: TestCase) {
+  if (!item.registerIdentity || item.sourceSheetName || item.sourceRow <= 0 || !item.name.trim()) return undefined;
+  return JSON.stringify([item.sourceRow, item.name, item.scenario, item.condition, item.platform, item.steps, item.expected, item.testData]);
+}
+
+/** A completed register can replace an empty row left by an older import. */
+export function withoutSupersededRegisterPlaceholders(cases: TestCase[], activeIds: ReadonlySet<string>) {
+  const activeByDefinition = new Map<string, TestCase[]>();
+  for (const item of cases) {
+    if (!activeIds.has(item.id)) continue;
+    const definition = registerRowDefinition(item);
+    if (!definition) continue;
+    const matches = activeByDefinition.get(definition) ?? [];
+    matches.push(item);
+    activeByDefinition.set(definition, matches);
+  }
+  return cases.filter(item => {
+    if (activeIds.has(item.id) || item.status !== "Not Start" || item.results?.length || item.defects?.length || item.evidence.length
+      || item.executedBy || item.executedDate || item.executedTime || item.remark) return true;
+    const definition = registerRowDefinition(item);
+    const matches = definition && activeByDefinition.get(definition);
+    return !matches || matches.length !== 1 || displayTestCaseId(matches[0]) === displayTestCaseId(item);
+  });
+}
+
 /** A register row owns its identity; Ref and execution edits do not change it. */
 export function assignRegisterCaseIdentities(cases: readonly TestCase[]): TestCase[] {
   const counts = new Map<string, number>();
@@ -23,7 +48,7 @@ export function assignRegisterCaseIdentities(cases: readonly TestCase[]): TestCa
   const occurrences = new Map<string, number>();
   const remaining = new Map(counts);
   let scope = '';
-  const used = new Set(cases.map(displayTestCaseId));
+  const used = new Set(cases.flatMap(item => [displayTestCaseId(item), item.id]));
   return cases.map(item => {
     if (item.sourceSheetName || item.sourceRow <= 0) return item;
     const sourceId = displayTestCaseId(item);
@@ -40,7 +65,7 @@ export function assignRegisterCaseIdentities(cases: readonly TestCase[]): TestCa
     const left = (remaining.get(sourceId) ?? 1) - 1;
     remaining.set(sourceId, left);
     let id = item.registerIdentity ? item.id : left === 0 ? sourceId : rowId(registerIdentity);
-    while (id !== sourceId && used.has(id)) id += '-row';
+    while (!item.registerIdentity && id !== sourceId && used.has(id)) id += '-row';
     used.add(id);
     return { ...item, id, registerIdentity };
   });
@@ -117,6 +142,28 @@ export function alignRegisterCaseIdentities(local: readonly TestCase[], incoming
     const sameRow = candidates.find(saved => saved.sourceRow === item.sourceRow);
     const fallback = sameDefinition.length === 1 ? sameDefinition[0] : remote.filter(row => displayTestCaseId(row) === sourceId).length === 1 && candidates.length === 1 ? candidates[0] : sameRow;
     if (fallback) { matched[index] = fallback.id; taken.add(fallback.id); }
+  });
+  // A TCID edit keeps its record when the row and definition still match.
+  // Match unchanged IDs first so a surviving duplicate keeps its own record.
+  const availableByDefinition = new Map<string, TestCase | null>();
+  for (const saved of identifiedLocal) {
+    if (taken.has(saved.id)) continue;
+    const definition = registerRowDefinition(saved);
+    if (definition) availableByDefinition.set(definition, availableByDefinition.has(definition) ? null : saved);
+  }
+  const incomingRows = new Map<number, number>();
+  for (const item of remote) {
+    if (!item.sourceSheetName) incomingRows.set(item.sourceRow, (incomingRows.get(item.sourceRow) ?? 0) + 1);
+  }
+  remote.forEach((item, index) => {
+    if (matched[index]) return;
+    const definition = registerRowDefinition(item);
+    if (!definition || incomingRows.get(item.sourceRow) !== 1) return;
+    const saved = availableByDefinition.get(definition);
+    if (saved) {
+      matched[index] = saved.id;
+      taken.add(saved.id);
+    }
   });
   const reserved = new Set([...local.map(item => item.id), ...matched.filter((id): id is string => !!id)]);
   const used = new Set<string>();

@@ -124,3 +124,11 @@ The user resumed import and confirmed 73/73 evidence references and 37/37 tabs s
 - [x] Verify the project in the screenshot. Both saved records use register row 17 and the same definition. The completed import baseline contains BAN_04_TC_01 and the separate row 2 case. The old row 17 record has one Not Start attempt and no results or defects.
 - [x] Reuse the same case record for an unambiguous TCID edit and filter existing empty placeholders from the active workspace using the completed register baseline. Preserve stored rows and QA evidence.
 - [x] Both new regression cases failed before the patch and passed after it. A read-only check through the real workspace loader returned four register cases, including BAN_01_TC_01 at row 2 and BAN_04_TC_01 at row 17 with its Pass result. All 793 tests, TypeScript, scoped ESLint, and diff checks passed.
+
+# Stream long Sheets revision checks (2026-11-10)
+
+- [x] Production still reached the 20s application deadline on an XLSX revision check. The previous patch converted the gateway failure into an application timeout. The affected workbook export is 49.5 MB.
+- [x] Return response headers and an initial heartbeat before waiting for Google. Give the opted-in stream up to 55s within the documented 60s function budget. Keep the existing short JSON path for older clients.
+- [x] Test early response, unchanged and changed snapshots, truncated responses, authorization, and timeout cancellation. All 33 focused tests passed.
+- [x] The actual TOL Reboot Router project completed its automatic revision check on localhost and returned to the normal update action with 30 cases. All 798 tests, ESLint and the production build passed.
+- [ ] Verify the affected request on Netlify after deployment, including the transfer of a large changed workbook.

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test, { mock } from 'node:test';
 import { readGoogleSourceRevision } from './google-source-revision';
 import { clearProjectWorkbook, getProjectWorkbook } from './workbook-cache';
+import { sheetRevisionStreamType, streamGoogleRevision } from './google-revision-stream';
 
 test('fallback revision bytes satisfy the later workbook load without another request', async () => {
   clearProjectWorkbook('revision-project');
@@ -68,4 +69,37 @@ test('missing revision and binary response errors cannot poison the workbook cac
   }
   assert.deepEqual([...new Uint8Array(await getProjectWorkbook('bad:google:sheet:xlsx-v2:bad', async () => new Uint8Array([9]).buffer))], [9]);
   clearProjectWorkbook('bad');
+});
+
+test('the browser caches a complete streamed workbook and rejects truncated streams', async () => {
+  const id = 'streamed-revision';
+  const revision = 'xlsx-v2:changed';
+  const request = mock.method(globalThis, 'fetch', async () => streamGoogleRevision(
+    async () => ({ revision, workbook: new Uint8Array([1, 2, 3]).buffer }),
+    async () => ({ status: 504, error: 'timed out' }),
+    new AbortController().signal,
+  ));
+  try {
+    assert.equal(await readGoogleSourceRevision(id, 'sheet', () => {}), revision);
+    const cached = await getProjectWorkbook(`${id}:google:sheet:${revision}`, async () => { throw new Error('duplicate download'); });
+    assert.deepEqual([...new Uint8Array(cached)], [1, 2, 3]);
+  } finally { request.mock.restore(); clearProjectWorkbook(id); }
+
+  const truncated = mock.method(globalThis, 'fetch', async () => new Response(
+    '\n{"revision":"xlsx-v2:partial","workbookLength":3}\nX', { headers: { 'Content-Type': sheetRevisionStreamType } },
+  ));
+  try { await assert.rejects(readGoogleSourceRevision(id, 'sheet', () => {}), /ไม่ครบ/); }
+  finally { truncated.mock.restore(); }
+});
+
+test('the browser reads timeout and Google authorization from a stream that already started', async () => {
+  let authorization = '';
+  for (const frame of [{ status: 504, error: 'Sheets timeout' }, { status: 401, authUrl: '/api/google/auth/start' }]) {
+    const request = mock.method(globalThis, 'fetch', async () => new Response(
+      `\n${JSON.stringify(frame)}\n`, { headers: { 'Content-Type': sheetRevisionStreamType } },
+    ));
+    try { await assert.rejects(readGoogleSourceRevision('p', 'sheet', url => { authorization = url; }), frame.status === 504 ? /Sheets timeout/ : /Google/); }
+    finally { request.mock.restore(); }
+  }
+  assert.equal(authorization, '/api/google/auth/start');
 });

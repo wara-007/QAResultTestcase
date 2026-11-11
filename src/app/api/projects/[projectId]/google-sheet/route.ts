@@ -8,6 +8,7 @@ import { loadBaselines, replaceBaselines } from "@/lib/sync/store";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { ProjectAccessError, requireProjectCapability } from "@/lib/project-access-server";
 import { ImportTimeoutError, withImportTimeout } from "@/lib/import-timeout";
+import { streamGoogleRevision } from "@/lib/google-revision-stream";
 
 export const runtime = "nodejs";
 
@@ -44,30 +45,49 @@ function googleAuthError(reason: unknown, request: Request) {
   return Response.json({ error: "กรุณาอนุญาตสิทธิ์ Google Drive และ Sheets ใหม่", authUrl: `/api/google/auth/start?returnTo=${encodeURIComponent(current.pathname.replace(/\/api\/projects\/[^/]+\/google-sheet$/, "/groups"))}` }, { status: 401 });
 }
 
+function googleReadError(reason: unknown, request: Request) {
+  const authError = googleAuthError(reason, request);
+  if (authError) return authError;
+  if (reason instanceof ImportTimeoutError) return Response.json({ error: reason.message }, { status: 504, headers: { "Cache-Control": "no-store" } });
+  return Response.json({ error: reason instanceof Error ? reason.message : "โหลด Google Sheet ไม่สำเร็จ" }, { status: reason instanceof ProjectAccessError ? reason.status : 400 });
+}
+
 export async function GET(request: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
     const query = new URL(request.url).searchParams;
     if (query.get("revision") === "1") {
-      // Keep access/auth and every Google fallback within one budget so the
-      // host can receive a JSON error before its inactivity cutoff.
-      return await withImportTimeout(async signal => {
+      const read = async (signal: AbortSignal): Promise<{ revision: string; workbook?: ArrayBuffer }> => {
         const spreadsheetId = await spreadsheetIdForProject(projectId);
         signal.throwIfAborted();
         const auth = await getGoogleUserAuth();
         signal.throwIfAborted();
         if (query.get("includeWorkbook") === "1") {
           const snapshot = await readGoogleSheetRevisionSnapshot(spreadsheetId, auth, signal);
-          if (snapshot.workbook && snapshot.revision !== query.get("knownRevision")) return new Response(snapshot.workbook, { headers: {
-            "Cache-Control": "private, no-store",
-            "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "X-Workbook-Revision": snapshot.revision,
-          } });
-          return Response.json({ revision: snapshot.revision }, { headers: { "Cache-Control": "private, no-store" } });
+          return snapshot.revision === query.get("knownRevision") ? { revision: snapshot.revision } : snapshot;
         }
-        const revision = await readGoogleSheetRevision(spreadsheetId, auth, signal);
-        return Response.json({ revision }, { headers: { "Cache-Control": "no-store" } });
-      }, 20_000, "ตรวจข้อมูลล่าสุดจาก Sheets");
+        return { revision: await readGoogleSheetRevision(spreadsheetId, auth, signal) };
+      };
+      const stage = "ตรวจข้อมูลล่าสุดจาก Sheets";
+      if (query.get("stream") === "1") {
+        // Respond before the edge header deadline while the Node function
+        // continues the export and hash within its own execution budget.
+        return streamGoogleRevision(
+          disconnected => withImportTimeout(signal => read(AbortSignal.any([signal, disconnected])), 55_000, stage),
+          async reason => {
+            const response = googleReadError(reason, request);
+            return { ...await response.json(), status: response.status };
+          },
+          request.signal,
+        );
+      }
+      const snapshot = await withImportTimeout(read, 20_000, stage);
+      if (snapshot.workbook) return new Response(snapshot.workbook, { headers: {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "X-Workbook-Revision": snapshot.revision,
+      } });
+      return Response.json({ revision: snapshot.revision }, { headers: { "Cache-Control": "private, no-store" } });
     }
     const summary = query.get("summary") === "1";
     const requestedSheets = query.getAll("sheet");
@@ -76,10 +96,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ proj
     const baseline = await loadBaselines(createAdminClient(), projectId);
     return Response.json({ ...result, baseline }, { headers: { "Cache-Control": "no-store" } });
   } catch (reason) {
-    const authError = googleAuthError(reason, request);
-    if (authError) return authError;
-    if (reason instanceof ImportTimeoutError) return Response.json({ error: reason.message }, { status: 504, headers: { "Cache-Control": "no-store" } });
-    return Response.json({ error: reason instanceof Error ? reason.message : "โหลด Google Sheet ไม่สำเร็จ" }, { status: reason instanceof ProjectAccessError ? reason.status : 400 });
+    return googleReadError(reason, request);
   }
 }
 

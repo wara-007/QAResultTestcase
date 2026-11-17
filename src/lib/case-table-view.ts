@@ -56,6 +56,8 @@ export function caseColumnValue(item:TestCase,column:CaseColumn):string {
       // Shared metadata (e.g. Spint/Env) is repeated on every Step in the source.
       // Only annotate values with Step names when those values actually differ.
       const distinct=[...new Set(values.map(value=>value.value.trim()))];
+      // Sprint is a case summary; keep per-Step assignments in the details.
+      if(['sprint','spint'].includes(stepHeaderKey(column.sourceLabel ?? column.label))) return distinct.join(', ');
       if(distinct.length<=1) return distinct[0] ?? '';
       return values.map(value=>value.name.trim()===value.value.trim()?value.value:`${value.name}: ${value.value}`).join('\n');
     }

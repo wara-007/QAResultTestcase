@@ -56,6 +56,21 @@ test('repeated Spint values show the source value once without unrelated Step na
   assert.equal(filterCaseTable([item],columns,{query:'',status:'All',selected:[],filters:[{column:sprint.key,operator:'equals',value:'Sprint 67'}]}).length,1);
 });
 
+for(const label of ['Sprint','Spint','Sprint*']) test(`${label} summarizes distinct step values without Step names`,()=>{
+  const headers=['Test Case (TC ID)*','Test Case Name*','Step#*','Description Step*','Expected Result*',label];
+  const item=casesFromRows([headers,
+    ['RBR_02_TC_04','Reboot router','step 01 Validate FE','Validate FE','Ready','68'],
+    ['','','step 02 Validate BE','Validate BE','Ready',' 68 '],
+    ['','','step 03 Validate MY','Validate MY','Ready','69'],
+    ['','','step 04 Validate KM','Validate KM','Ready','69'],
+    ['','','step 05 Validate log','Validate log','Ready',''],
+  ])[0];
+  const sprint=collectCaseColumns([item]).find(column=>column.label===label)!;
+  assert.equal(caseColumnValue(item,sprint),'68, 69');
+  assert.equal(item.stepDefinitions![0].sourceFields!.find(field=>field.label===label)!.value,'68');
+  assert.equal(item.stepDefinitions![2].sourceFields!.find(field=>field.label===label)!.value,'69');
+});
+
 test('step-based registers expose every original header and keep values grouped by Step',()=>{
   const item={...base,id:'TC-step',stepDefinitions:[
     {id:'s1',name:'Step 01',sourceFields:[{ref:'F2',column:5,label:'Support*',value:'iOS',mapped:false}]},
